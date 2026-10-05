@@ -31,8 +31,9 @@ filters and searches, and watch in the browser - on a desktop or a phone.
 - Docker (with Docker Compose, or Portainer), on a 64-bit **x86-64** machine.
 - Optional: an **Intel or AMD GPU** for hardware transcoding (`/dev/dri`). Without one,
   transcoding runs on the CPU.
-- The browser currently loads a few front-end libraries (Tailwind, Alpine.js, video.js,
-  hls.js, a web font) from public CDNs, so the device you watch on needs internet access.
+- No internet needed while watching: all front-end libraries ship with lustr (see
+  [`static/vendor`](static/vendor/README.md)). Only building the image and the optional
+  external-database features go online.
 
 ## Install
 
