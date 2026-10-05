@@ -1,0 +1,33 @@
+# lustr - Portainer stack (Stacks -> Add stack -> Web editor), or `docker compose -f portainer-stack.yml up -d`.
+#
+# Folder layout this assumes (change the paths below to yours - use full paths, not ~):
+#   /home/YOU/docker/lustr/src    the lustr source, if you build the image yourself
+#                                 (cd there && docker build -t lustr:0.1.0 .)
+#   /home/YOU/docker/lustr/data   everything lustr keeps: database, thumbnails, previews,
+#                                 users, settings (create it first: mkdir -p .../data)
+#
+# API keys (optional): add STASHDB_API_KEY / TPDB_API_KEY under "Environment variables"
+# (Portainer) or in a .env file next to this one (compose).
+#
+# After deploying, open http://<host>:8008 and create your account straight away:
+# the first account to sign up becomes the owner.
+services:
+  lustr:
+    image: lustr:0.1.0
+    container_name: lustr
+    restart: unless-stopped
+    ports:
+      - "8008:8008"                               # host port : container port
+    environment:
+      - STASHDB_API_KEY=${STASHDB_API_KEY:-}
+      - TPDB_API_KEY=${TPDB_API_KEY:-}
+    volumes:
+      - /home/YOU/docker/lustr/data:/app/data     # <- your data folder
+      - /path/to/videos:/media:ro                 # <- your videos (read-only); make libraries under /media
+      # - /path/to/more/videos:/media0:ro         # optional second folder, under /media0
+    # GPU transcoding (optional, Intel / AMD): remove the # on the next 5 lines.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - "109"                                   # render group id: getent group render | cut -d: -f3

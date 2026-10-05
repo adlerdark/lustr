@@ -1,0 +1,185 @@
+/*
+ * LUSTR Theme: Noir
+ * File: noir.css
+ *
+ * This file overrides the default Tailwind color classes used throughout
+ * index.html. Edit the CSS custom properties in :root to change colors.
+ *
+ * Color roles:
+ *   --surface-*     Background surfaces (page, panels, cards)
+ *   --border-*      Borders and dividers
+ *   --text-*        Text at different emphasis levels
+ *   --primary-*     Primary action color (buttons, links, accents)
+ *   --success-*     Positive / confirmed states
+ *   --danger-*      Destructive / error states
+ *   --warning-*     Caution states
+ *   --special-*     Tag badges, cast badges, misc UI elements
+ *
+ * To add a new theme:
+ *   1. Copy this file and rename it (e.g. mytheme.css)
+ *   2. Edit the :root values below
+ *   3. Place the file in the same directory as index.html
+ *   4. Register it in the LUSTR_THEMES array in index.html (search for THEMES_CONFIG)
+ *      or upload it via Settings → Appearance → Upload Theme
+ */
+
+:root {
+    /*  */
+    --surface-deepest: #000000;  /* Deepest background — page chrome, sidebars behind sidebars */
+    --surface-base: #0a0a0a;  /* Page background */
+    --surface-raised: #141414;  /* Modals, cards, panels */
+    --surface-mid: #1a1a1a;  /* Nested panels inside cards */
+    --surface-elevated: #222222;  /* Buttons, interactive elements at rest */
+    --surface-high: #2c2c2c;  /* Hover states for elevated elements */
+    --surface-higher: #383838;  /* Active/pressed states */
+    --border-subtle: #1a1a1a;  /* Subtle separator — barely visible */
+    --border-default: #242424;  /* Standard border on panels and cards */
+    --border-strong: #303030;  /* Input field borders */
+    --border-stronger: #3c3c3c;  /* High-contrast borders */
+    --text-default: #ffffff;  /* Body text default (white in dark themes) */
+    --text-brightest: #f0f0f0;  /* Near-white text on dark surfaces */
+    --text-brighter: #d8d8d8;  /* Headings, labels */
+    --text-primary: #b8b8b8;  /* Normal readable text */
+    --text-secondary: #909090;  /* Supporting text, metadata */
+    --text-muted: #606060;  /* Placeholder text, disabled state */
+    --text-faint: #383838;  /* Very subtle, barely readable */
+    --primary-subtle: #181818;  /* Tinted background for selected items / focus areas */
+    --primary-dark: #444444;  /* Pressed/active button state */
+    --primary-base: #606060;  /* Primary button fill — the main action color */
+    --primary-light: #787878;  /* Hover state for primary buttons */
+    --primary-soft: #a0a0a0;  /* Accent text, active nav indicators */
+    --primary-softer: #c0c0c0;  /* Lighter accent text */
+    --primary-faint: #e0e0e0;  /* Very light tint on dark surfaces */
+    --primary-faintest: #f4f4f4;  /* Barely-there tint */
+    --success-subtle: #0a180a;  /* Tinted background for success states */
+    --success-dark: #205020;  /* Dark success button */
+    --success-base: #306030;  /* Success button fill */
+    --success-light: #408040;  /* Success hover / border */
+    --success-soft: #60a060;  /* Success text on dark surface */
+    --danger-subtle: #180a0a;  /* Tinted background for error/delete areas */
+    --danger-dark: #602020;  /* Dark danger button */
+    --danger-base: #803030;  /* Delete / destructive button fill */
+    --danger-light: #a04040;  /* Danger hover */
+    --danger-soft: #c06060;  /* Error text */
+    --danger-softer: #d89090;  /* Light error text */
+    --danger-faint: #f0c8c8;  /* Very light error tint */
+    --warning-subtle: #181408;  /* Tinted background for warnings / favorites */
+    --warning-dark: #585010;  /* Dark warning button */
+    --warning-base: #787020;  /* Warning button fill */
+    --warning-light: #989030;  /* Warning hover */
+    --warning-soft: #b8b050;  /* Warning text (favorite star) */
+    --warning-softer: #d0c870;  /* Light warning text */
+    --warning-softest: #282828;
+    --special-cast: #1e1e1e;  /* Cast member badge background */
+    --special-cast-dark: #383838;  /* Cast member badge hover */
+    --special-purple: #2c2c2c;  /* Watchlist / playlist badge */
+    --special-purple-dark: #909090;  /* Watchlist badge hover */
+    --special-purple-text: #b0b0b0;  /* Purple text (tags, categories) */
+    --special-purple-text-light: #484838;  /* Light purple text */
+    --special-orange: #342e1c;  /* VLC button / external app buttons */
+    --special-orange-dark: #787878;  /* VLC button hover */
+    --special-orange-text: #989898;  /* Orange text / icons */
+    --special-orange-text-light: #686868;  /* Light orange text */
+}
+
+/* ── Override Tailwind classes with theme variables ─────────────────────── */
+/* Surfaces */
+.bg-gray-950 { background-color: var(--surface-deepest) !important; }
+.bg-gray-900 { background-color: var(--surface-base) !important; }
+.bg-gray-800 { background-color: var(--surface-raised) !important; }
+.bg-gray-750 { background-color: var(--surface-mid) !important; }
+.bg-gray-700 { background-color: var(--surface-elevated) !important; }
+.bg-gray-600 { background-color: var(--surface-high) !important; }
+.bg-gray-500 { background-color: var(--surface-higher) !important; }
+
+/* Borders */
+.border-gray-800 { border-color: var(--border-subtle) !important; }
+.border-gray-700 { border-color: var(--border-default) !important; }
+.border-gray-600 { border-color: var(--border-strong) !important; }
+.border-gray-500 { border-color: var(--border-stronger) !important; }
+hr, .divide-gray-700 > * + * { border-color: var(--border-default) !important; }
+
+/* Text */
+.text-gray-100 { color: var(--text-brightest) !important; }
+.text-gray-200 { color: var(--text-brighter) !important; }
+.text-gray-300 { color: var(--text-primary) !important; }
+.text-gray-400 { color: var(--text-secondary) !important; }
+.text-gray-500 { color: var(--text-muted) !important; }
+.text-gray-600 { color: var(--text-faint) !important; }
+body, .text-white { color: var(--text-default) !important; }
+
+/* Primary (accent) */
+.bg-blue-900  { background-color: var(--primary-subtle) !important; }
+.bg-blue-700  { background-color: var(--primary-dark) !important; }
+.bg-blue-600  { background-color: var(--primary-base) !important; }
+.bg-blue-500  { background-color: var(--primary-light) !important; }
+.text-blue-600 { color: var(--primary-base) !important; }
+.text-blue-500 { color: var(--primary-light) !important; }
+.text-blue-400 { color: var(--primary-soft) !important; }
+.text-blue-300 { color: var(--primary-softer) !important; }
+.text-blue-200 { color: var(--primary-faint) !important; }
+.text-blue-100 { color: var(--primary-faintest) !important; }
+.border-blue-700 { border-color: var(--primary-dark) !important; }
+.border-blue-500 { border-color: var(--primary-light) !important; }
+.border-blue-400 { border-color: var(--primary-soft) !important; }
+.ring-blue-500  { --tw-ring-color: var(--primary-light) !important; }
+.focus\:border-blue-500:focus { border-color: var(--primary-light) !important; }
+
+/* Indigo (often used for cast badges) */
+.bg-indigo-700 { background-color: var(--special-cast-dark) !important; }
+.bg-indigo-600 { background-color: var(--special-cast) !important; }
+
+/* Purple (watchlist etc) */
+.bg-purple-700 { background-color: var(--special-purple-dark) !important; }
+.bg-purple-600 { background-color: var(--special-purple) !important; }
+.text-purple-400 { color: var(--special-purple-text) !important; }
+.text-purple-300 { color: var(--special-purple-text-light) !important; }
+.border-purple-700 { border-color: var(--special-purple-dark) !important; }
+
+/* Orange (VLC button etc) */
+.bg-orange-700 { background-color: var(--special-orange-dark) !important; }
+.bg-orange-600 { background-color: var(--special-orange) !important; }
+.text-orange-400 { color: var(--special-orange-text) !important; }
+.text-orange-300 { color: var(--special-orange-text-light) !important; }
+
+/* Success */
+.bg-green-800  { background-color: var(--success-subtle) !important; }
+.bg-green-700  { background-color: var(--success-dark) !important; }
+.bg-green-600  { background-color: var(--success-base) !important; }
+.text-green-600 { color: var(--success-base) !important; }
+.text-green-500 { color: var(--success-light) !important; }
+.text-green-400 { color: var(--success-soft) !important; }
+.border-green-900 { border-color: var(--success-subtle) !important; }
+.border-green-500 { border-color: var(--success-light) !important; }
+.ring-green-500 { --tw-ring-color: var(--success-light) !important; }
+
+/* Danger */
+.bg-red-900  { background-color: var(--danger-subtle) !important; }
+.bg-red-700  { background-color: var(--danger-dark) !important; }
+.bg-red-600  { background-color: var(--danger-base) !important; }
+.bg-red-500  { background-color: var(--danger-light) !important; }
+.text-red-500 { color: var(--danger-light) !important; }
+.text-red-400 { color: var(--danger-soft) !important; }
+.text-red-300 { color: var(--danger-softer) !important; }
+.text-red-200 { color: var(--danger-faint) !important; }
+.border-red-900 { border-color: var(--danger-subtle) !important; }
+.border-red-500 { border-color: var(--danger-light) !important; }
+
+/* Warning */
+.bg-yellow-900  { background-color: var(--warning-subtle) !important; }
+.bg-yellow-700  { background-color: var(--warning-dark) !important; }
+.bg-yellow-600  { background-color: var(--warning-base) !important; }
+.bg-yellow-500  { background-color: var(--warning-light) !important; }
+.text-yellow-600 { color: var(--warning-base) !important; }
+.text-yellow-500 { color: var(--warning-light) !important; }
+.text-yellow-400 { color: var(--warning-soft) !important; }
+.text-yellow-300 { color: var(--warning-softer) !important; }
+.border-yellow-900 { border-color: var(--warning-subtle) !important; }
+.border-yellow-700 { border-color: var(--warning-dark) !important; }
+.border-yellow-500 { border-color: var(--warning-light) !important; }
+
+/* Scrollbar theming */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--surface-base); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local settings and secrets
+.env
+
+# Everything lustr keeps at runtime (database, thumbnails, users, settings, backups)
+data/
+logs/
+*.db
+*.db-*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

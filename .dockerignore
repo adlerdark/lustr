@@ -1,0 +1,17 @@
+# The image holds the code only; everything lustr keeps lives in the /app/data volume.
+.git/
+.gitignore
+.dockerignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+data/
+logs/
+*.db
+*.db-*
+deploy/
+tests/
+docs/
+*.md
