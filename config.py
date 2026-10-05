@@ -8,6 +8,8 @@ environment variables override them:
                      and kept in <data>/.secret_key)
   LUSTR_MEDIA_ROOTS  comma-separated folders inside the container that may hold libraries
                      (default: /media,/media0 - mount your media there)
+  LUSTR_STARTUP_BACKUPS  database copies kept in <data>/backups, one made at every start
+                     (default: 5; 0 = none)
 """
 import os
 import secrets
@@ -86,6 +88,12 @@ LIST_FIELDS = [
 
 # Watch history directory (same as DATA_FILE directory)
 WATCH_HISTORY_DIR = os.path.dirname(DATA_FILE)
+
+# Database copies kept in <data>/backups (one is made at every start; 0 = off)
+try:
+    STARTUP_BACKUPS = max(0, int(os.environ.get('LUSTR_STARTUP_BACKUPS', '5')))
+except ValueError:
+    STARTUP_BACKUPS = 5
 
 # --- DATABASE SETTINGS ---
 USE_SQLITE = True

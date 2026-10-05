@@ -78,14 +78,15 @@ from routes.collections import router as collections_router
 # --- BACKUP FUNCTION ---
 
 def backup_database():
-    """Create database backup on startup. Keeps last 30."""
+    """Copy the database to <data>/backups on every start; keeps the newest STARTUP_BACKUPS (0 = off)."""
     if not USE_SQLITE:
         return
     
     from config import DATA_DIR as data_dir
     db_path = os.path.join(data_dir, 'library.db')
     
-    if not os.path.exists(db_path):
+    from config import STARTUP_BACKUPS
+    if not os.path.exists(db_path) or STARTUP_BACKUPS <= 0:
         return
     
     backup_dir = os.path.join(data_dir, 'backups')
@@ -98,9 +99,9 @@ def backup_database():
         shutil.copy2(db_path, backup_path)
         print(f"Database backed up: {os.path.basename(backup_path)}")
         
-        # Keep last 30 backups
+        # Keep the newest STARTUP_BACKUPS
         backups = sorted(glob.glob(os.path.join(backup_dir, 'library_*.db')))
-        for old in backups[:-30]:
+        for old in backups[:-STARTUP_BACKUPS]:
             os.remove(old)
     except Exception as e:
         print(f"Backup failed: {e}")
