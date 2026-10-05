@@ -33,7 +33,7 @@ from datetime import datetime
 # Import configuration
 from config import (
     CACHE_DIR, WATCH_HISTORY_DIR, SHOW_INACTIVITY_TIMER, 
-    INACTIVITY_TIMEOUT, USE_SQLITE
+    INACTIVITY_TIMEOUT, USE_SQLITE, DATABASE_FILE
 )
 
 # Import your existing business logic modules
@@ -45,7 +45,7 @@ from search_parser import SearchParser
 from cast_manager import CastManager
 
 # Import helper utilities
-from helpers import check_auth, load_json_file
+from helpers import check_auth, load_json_file, same_origin
 
 # Import all route modules
 from routes import (
@@ -113,6 +113,9 @@ app = FastAPI(title="Video Library Manager")
 # Initialize your existing models
 model = LibraryModel()
 user_model = UserModel()
+# Login sessions live in library.db (auth_sessions.py)
+import auth_sessions
+auth_sessions.set_db_path(DATABASE_FILE)
 watch_history_instance = WatchHistory(WATCH_HISTORY_DIR)
 
 # --- STATIC FILE SERVING ---
@@ -163,6 +166,11 @@ async def auth_middleware(request: Request, call_next):
     Authentication middleware - checks auth for all requests except public endpoints.
     """
     path = request.url.path
+
+    # Requests that change something must come from lustr's own pages, so another website
+    # open in the same browser can't act with your login (cross-site request forgery).
+    if request.method not in ('GET', 'HEAD', 'OPTIONS') and not same_origin(request):
+        return JSONResponse(status_code=403, content={"detail": "Request from another site refused"})
     
     # Public endpoints (no auth required)
     public_endpoints = [
@@ -281,7 +289,9 @@ def inject_dependencies():
     # Inactivity auto-logout setting (Settings -> General)
     if getattr(model, 'db', None):
         from helpers import load_session_settings
-        load_session_settings(model.db)
+        s = load_session_settings(model.db)
+        import auth_sessions
+        auth_sessions.purge(s['timeout'])
         # Routine library scans (Settings -> General -> Automatic scans)
         import automation
         automation.start_scheduler(model)

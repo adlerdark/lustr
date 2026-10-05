@@ -9,19 +9,19 @@ import os
 import json
 import hashlib
 import time
-import hmac
 from typing import Optional, Dict, Any
 from datetime import datetime
 from fastapi import Request
-from config import SECRET_KEY, INACTIVITY_TIMEOUT, AUTH_COOKIE_NAME, CACHE_DIR
+from config import INACTIVITY_TIMEOUT, AUTH_COOKIE_NAME, CACHE_DIR
 try:
     from config import SHOW_INACTIVITY_TIMER as _SHOW_TIMER_DEFAULT
 except ImportError:
     _SHOW_TIMER_DEFAULT = True
 
 # Auto-logout after inactivity: changeable in Settings (stored in the metadata table under
-# 'session'). timeout = seconds, 0 = never log out for inactivity.
-SESSION = {'timeout': INACTIVITY_TIMEOUT, 'show_countdown': _SHOW_TIMER_DEFAULT}
+# 'session'). timeout = seconds, 0 = never log out for inactivity; during_playback = keep
+# counting while a video plays (off: playing pauses the countdown).
+SESSION = {'timeout': INACTIVITY_TIMEOUT, 'show_countdown': _SHOW_TIMER_DEFAULT, 'during_playback': False}
 SESSION_KEY = 'session'
 
 
@@ -33,26 +33,25 @@ def load_session_settings(db):
             saved = json.loads(row[0])
             SESSION['timeout'] = max(0, int(saved.get('timeout', SESSION['timeout'])))
             SESSION['show_countdown'] = bool(saved.get('show_countdown', SESSION['show_countdown']))
+            SESSION['during_playback'] = bool(saved.get('during_playback', SESSION['during_playback']))
     except Exception as e:
         print(f"Session settings not loaded: {e}")
     return dict(SESSION)
 
 
-def save_session_settings(db, timeout=None, show_countdown=None):
+def save_session_settings(db, timeout=None, show_countdown=None, during_playback=None):
     if timeout is not None:
         SESSION['timeout'] = max(0, min(int(timeout), 7 * 24 * 3600))
     if show_countdown is not None:
         SESSION['show_countdown'] = bool(show_countdown)
+    if during_playback is not None:
+        SESSION['during_playback'] = bool(during_playback)
     conn = db.get_connection()
     conn.execute('INSERT INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
                  'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP',
                  (SESSION_KEY, json.dumps(SESSION)))
     conn.commit()
     return dict(SESSION)
-
-# Session/Token Management
-auth_tokens: Dict[str, Dict[str, Any]] = {}
-
 
 def load_json_file(filepath: str, default: Any = None) -> Any:
     """
@@ -117,69 +116,89 @@ def get_thumbnail_path(cache_id: str) -> Optional[str]:
 
 
 def sign_token(username: str) -> str:
-    """
-    Creates a signed, temporary session token using HMAC.
-    
-    Args:
-        username: Username to create token for
-        
-    Returns:
-        Signed token string
-    """
-    timestamp = str(int(time.time()))
-    msg = f"{username}|{timestamp}"
-    signature = hmac.new(SECRET_KEY.encode('utf-8'), msg.encode('utf-8'), hashlib.sha256).hexdigest()
-    token = f"{msg}|{signature}"
-    auth_tokens[signature] = {"username": username, "last_active": time.time()}
-    return token
+    """Start a login session (auth_sessions.py); returns the token for the cookie."""
+    import auth_sessions
+    return auth_sessions.create(username)
+
+
+def session_token(request: Request) -> Optional[str]:
+    return request.cookies.get(AUTH_COOKIE_NAME)
 
 
 def check_auth(request: Request, check_inactivity: bool = True) -> Optional[str]:
     """
-    Validates the session token and returns username if valid.
-    
-    Args:
-        request: FastAPI request object
-        check_inactivity: Whether to enforce inactivity timeout
-        
-    Returns:
-        Username if authenticated, None otherwise
+    The logged-in username, or None.
+
+    The inactivity timeout is always enforced: a session that has run out is deleted and stays
+    gone. check_inactivity=False only means "this request doesn't count as activity" (used by
+    /api/check_auth, so asking whether you're logged in never keeps a session alive).
     """
-    token = request.cookies.get(AUTH_COOKIE_NAME)
-    if not token:
-        return None
-    
     try:
-        parts = token.split('|')
-        if len(parts) != 3:
-            return None
-        username, timestamp, signature = parts[0], parts[1], parts[2]
-        
-        # Verify signature
-        msg = f"{username}|{timestamp}"
-        expected_sig = hmac.new(SECRET_KEY.encode('utf-8'), msg.encode('utf-8'), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected_sig):
-            return None
-            
-        # Verify server state
-        if signature not in auth_tokens:
-            return None
-            
-        session = auth_tokens[signature]
-        current_time = time.time()
-        
-        # Check inactivity (sliding window); a timeout of 0 means "never"
-        if check_inactivity and SESSION['timeout'] > 0:
-            if current_time - session['last_active'] > SESSION['timeout']:
-                del auth_tokens[signature]
-                return None
-        
-        # Update activity
-        session['last_active'] = current_time
-        return username
-        
-    except Exception:
+        import auth_sessions
+        return auth_sessions.check(session_token(request), SESSION['timeout'], touch=check_inactivity)
+    except Exception as e:
+        print(f"Session check failed: {e}")
         return None
+
+
+def request_is_https(request: Request) -> bool:
+    """True when the browser reached lustr over HTTPS (directly or through a reverse proxy)."""
+    proto = request.headers.get('x-forwarded-proto', '').split(',')[0].strip().lower()
+    return proto == 'https' or request.url.scheme == 'https'
+
+
+def same_origin(request: Request) -> bool:
+    """For requests that change something: the Origin (or Referer) must be this server.
+    A browser always sends one of them on such requests; a missing pair means a non-browser
+    client (curl, scripts), which is allowed."""
+    from urllib.parse import urlsplit
+    source = request.headers.get('origin') or request.headers.get('referer')
+    if not source:
+        return True
+    if source == 'null':
+        return False
+    host = request.headers.get('x-forwarded-host') or request.headers.get('host') or ''
+    host = host.split(',')[0].strip().lower()
+    try:
+        return urlsplit(source).netloc.lower() == host
+    except ValueError:
+        return False
+
+
+class LoginLimiter:
+    """Brute-force brake: after `limit` wrong passwords from one address within `window`
+    seconds, that address can't try again until the window has passed. In memory only."""
+
+    def __init__(self, limit: int = 5, window: int = 300):
+        self.limit, self.window = limit, window
+        self._fails: Dict[str, list] = {}
+
+    def _recent(self, ip: str, now: float) -> list:
+        fails = [t for t in self._fails.get(ip, []) if now - t < self.window]
+        if fails:
+            self._fails[ip] = fails
+        else:
+            self._fails.pop(ip, None)
+        return fails
+
+    def retry_after(self, ip: str, now: Optional[float] = None) -> int:
+        """Seconds until this address may try again (0 = it may try now)."""
+        now = time.time() if now is None else now
+        fails = self._recent(ip, now)
+        if len(fails) < self.limit:
+            return 0
+        return max(1, int(fails[0] + self.window - now) + 1)
+
+    def failed(self, ip: str, now: Optional[float] = None):
+        now = time.time() if now is None else now
+        self._recent(ip, now)
+        self._fails.setdefault(ip, []).append(now)
+
+    def succeeded(self, ip: str):
+        self._fails.pop(ip, None)
+
+
+login_limiter = LoginLimiter()
 
 
 def get_file_data(model, path: str) -> Optional[Dict[str, Any]]:

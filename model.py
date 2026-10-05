@@ -24,10 +24,19 @@ class UserModel:
     def load(self):
         if os.path.exists(USER_FILE):
             try:
+                self._loaded_mtime = os.path.getmtime(USER_FILE)
                 with open(USER_FILE, 'r', encoding='utf-8') as f:
                     self.users = json.load(f)
             except Exception as e:
                 print(f"Error loading user data: {e}")
+
+    def _reload_if_changed(self):
+        """Pick up a password set by reset_password.py while the server runs."""
+        try:
+            if os.path.getmtime(USER_FILE) != getattr(self, '_loaded_mtime', None):
+                self.load()
+        except OSError:
+            pass
 
     def save(self):
         def _write():
@@ -40,9 +49,12 @@ class UserModel:
                     if os.path.exists(USER_FILE): 
                         os.remove(USER_FILE)
                     os.rename(temp_file, USER_FILE)
+                    self._loaded_mtime = os.path.getmtime(USER_FILE)
                 except Exception as e:
                     print(f"Error saving user data: {e}")
-        threading.Thread(target=_write, daemon=True).start()
+        th = threading.Thread(target=_write, daemon=True)
+        th.start()
+        return th
 
     def _hash_password(self, password, salt=None):
         if salt is None: salt = os.urandom(16)
@@ -60,6 +72,7 @@ class UserModel:
         return True, "User created successfully."
 
     def verify_user(self, username, password):
+        self._reload_if_changed()
         username = username.lower().strip()
         if username not in self.users: return False
         stored_value = self.users[username]
@@ -77,7 +90,17 @@ class UserModel:
                 return True
             return False
     
-    def get_user_count(self): return len(self.users)
+    def set_password(self, username, password):
+        """Give an existing account a new password; returns the save thread (join it before exiting)."""
+        username = username.lower().strip()
+        if username not in self.users:
+            raise KeyError(username)
+        self.users[username] = self._hash_password(password)
+        return self.save()
+
+    def get_user_count(self):
+        self._reload_if_changed()
+        return len(self.users)
     def get_max_users(self): return MAX_USERS
 
 

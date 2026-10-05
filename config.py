@@ -4,15 +4,12 @@ lustr settings. Defaults suit the Docker image (code in /app, data in /app/data)
 environment variables override them:
 
   LUSTR_DATA_DIR     where the database, cache, users and backups live   (default: /app/data)
-  LUSTR_SECRET_KEY   key for signing session cookies                    (default: generated once
-                     and kept in <data>/.secret_key)
   LUSTR_MEDIA_ROOTS  comma-separated folders inside the container that may hold libraries
                      (default: /media,/media0 - mount your media there)
   LUSTR_STARTUP_BACKUPS  database copies kept in <data>/backups, one made at every start
                      (default: 5; 0 = none)
 """
 import os
-import secrets
 
 VERSION = "0.1.0"
 
@@ -36,35 +33,11 @@ MAX_USERS = 1
 
 # Session timeout in seconds (15 minutes = 900 seconds)
 INACTIVITY_TIMEOUT = 900
-COOKIE_MAX_AGE = 30 * 24 * 3600
 
 # Show/Hide inactivity countdown timer in the UI
 SHOW_INACTIVITY_TIMER = True
 
-
-def _secret_key():
-    key = os.environ.get('LUSTR_SECRET_KEY')
-    if key:
-        return key
-    path = os.path.join(DATA_DIR, '.secret_key')
-    try:
-        with open(path, 'r', encoding='utf-8') as fh:
-            key = fh.read().strip()
-    except OSError:
-        key = ''
-    if not key:
-        key = secrets.token_urlsafe(48)
-        try:
-            with open(path, 'w', encoding='utf-8') as fh:
-                fh.write(key)
-            os.chmod(path, 0o600)
-        except OSError:
-            pass                          # read-only data dir: a new key each start (sessions reset)
-    return key
-
-
-# Key for signing session cookies
-SECRET_KEY = _secret_key()
+# Login cookie: holds a random session token (see auth_sessions.py)
 AUTH_COOKIE_NAME = "video_library_session"
 
 # Supported Extensions

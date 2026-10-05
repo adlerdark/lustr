@@ -5,8 +5,7 @@ Point it at your video folders, tag performers, sites and attributes, find anyth
 filters and searches, and watch in the browser - on a desktop or a phone.
 
 > **Status: 0.1.0, early release.** lustr works and is in daily use, but expect rough
-> edges. For now an install has **one account** (the owner); multiple users with their
-> own favourites and playlists are planned.
+> edges. An install has **one account** (the owner).
 
 ## Features
 
@@ -75,7 +74,8 @@ Then open **http://&lt;your-server&gt;:8008**.
 ### 4. Create your account straight away
 
 On a new install the first page is **Create Account**, and the first account created
-becomes the owner. Do this before you make the port reachable by anyone else.
+becomes the owner (password: at least 8 characters). Do this before you make the port
+reachable by anyone else.
 
 ### 5. Add your videos
 
@@ -83,6 +83,31 @@ In lustr: **Manage Libraries → add a library → add folders**. You can pick f
 `/media` (and `/media0`) - wherever you mounted your videos. lustr scans them right away;
 length, codec and resolution fill in a moment later. Then make thumbnails with the 📷 button
 (or Manage Library → Generate thumbnails).
+
+## Login and privacy
+
+lustr always asks for the password, so nobody else in the house can open it by accident:
+
+- **Logs out after inactivity**: 15 minutes by default (Settings → General). Playing a
+  video pauses the countdown, unless you tick "Also while a video plays". When it logs
+  out, the page reloads to the login screen, so nothing is left on screen.
+- **Closing the browser logs out** too. Even with the timeout set to "Never", a login
+  lasts at most 30 days.
+- **Lock screen**: by default phones and media keys show only "lustr", not the video's
+  title or picture (Settings → Player → Lock screen).
+- After 5 wrong passwords from one device, that device has to wait 5 minutes.
+- **Change the password** in Settings → General → Account. Other browsers that are
+  logged in are logged out.
+- **Forgot the password?** On the server, run:
+
+  ```sh
+  docker exec -it lustr python3 reset_password.py
+  ```
+
+  (`lustr` is the container's name.) It asks for a new password and logs every browser out.
+
+If you reach lustr from outside your home, put it behind a reverse proxy with HTTPS
+(lustr marks its login cookie as secure when the proxy sends `X-Forwarded-Proto: https`).
 
 ## Hardware transcoding (Intel / AMD)
 
@@ -118,7 +143,6 @@ TPDB_API_KEY=...
 | `STASHDB_API_KEY` / `TPDB_API_KEY` | - | API keys for the external databases |
 | `LUSTR_MEDIA_ROOTS` | `/media,/media0` | Folders inside the container that libraries can use |
 | `LUSTR_STARTUP_BACKUPS` | `5` | Database copies kept in `data/backups` (one per start; `0` = off) |
-| `LUSTR_SECRET_KEY` | generated | Key for login sessions; generated once into `data/.secret_key` if not set |
 | `LUSTR_DATA_DIR` | `/app/data` | Where lustr keeps its data inside the container |
 | `LUSTR_DRI_DEVICE` | `/dev/dri/renderD128` | GPU render device for VAAPI |
 | `LIBVA_DRIVER_NAME` | auto | Force a VA driver (`iHD` for Intel, `radeonsi` for AMD) |
@@ -127,7 +151,8 @@ TPDB_API_KEY=...
 
 The data folder holds:
 
-- `library.db` - the database (libraries, metadata, collections, playlists, settings)
+- `library.db` - the database (libraries, metadata, collections, playlists, settings,
+  login sessions)
 - `users.json`, `watch_history.json`, `quicktags.json`, `metadata_schema.json`
 - `cache/` - thumbnails and seek-bar previews (can be regenerated)
 - `backups/` - automatic database copies (one per start, plus the ones made by

@@ -414,33 +414,52 @@
         }
     </style>
     <script>
-        // Global timer state outside Alpine component
+        // Inactivity lock: after the set time without input (Settings -> General) lustr logs out
+        // and reloads, so nothing stays on screen or in memory behind the login page.
         const TimerManager = {
             inactivityTimer: null,
             countdownInterval: null,
+            keepAliveInterval: null,
             inactivityDeadline: null,
             lastActivityPing: 0,
             appInstance: null,
             initialized: false,
-            
+            playing: false,                 // a video is playing
+
             ACTIVITY_PING_INTERVAL: 60 * 1000,
-            INACTIVITY_TIMEOUT_MS: {{ inactivity_timeout or 900 }} * 1000,
+            INACTIVITY_TIMEOUT_MS: {{ inactivity_timeout or 0 }} * 1000,
             SHOW_INACTIVITY_TIMER: {{ 'true' if show_inactivity_timer else 'false' }},
-            
+            COUNT_DURING_PLAYBACK: {{ 'true' if count_during_playback else 'false' }},
+
             init(app) {
                 if (this.initialized) return;
                 this.appInstance = app;
                 this.initialized = true;
-                console.log('TimerManager initialized');
+                // a phone asleep or a hidden tab may not run timers: check on return
+                const check = () => { if (!document.hidden) this.checkExpired(); };
+                document.addEventListener('visibilitychange', check);
+                window.addEventListener('pageshow', check);
+                window.addEventListener('focus', check);
+                // any request refused for an ended session locks the page
+                const origFetch = window.fetch.bind(window);
+                window.fetch = async (...args) => {
+                    const res = await origFetch(...args);
+                    if (res.status === 401 && this.appInstance?.isLoggedIn) {
+                        const u = String((args[0] && args[0].url) || args[0] || '');
+                        if (!/\/api\/(login|signup|logout)\b/.test(u))
+                            this.appInstance.lock('Your session has ended. Log in again.');
+                    }
+                    return res;
+                };
             },
-            
-            pingActivity() {
+
+            pingActivity(force = false) {
                 const now = Date.now();
-                if (now - this.lastActivityPing < this.ACTIVITY_PING_INTERVAL) return;
+                if (!force && now - this.lastActivityPing < this.ACTIVITY_PING_INTERVAL) return;
                 this.lastActivityPing = now;
                 fetch('/api/activity', { method: 'POST' }).catch(() => {});
             },
-            
+
             fmt(ms) {
                 const s = Math.max(0, Math.floor(ms / 1000));
                 return `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
@@ -448,186 +467,63 @@
 
             updateCountdownDisplay() {
                 if (!this.appInstance) return;
-                if (!this.appInstance.showInactivityTimer) return;
-                if (!this.inactivityDeadline) {
-                    this.appInstance.inactivityCountdown = this.fmt(this.INACTIVITY_TIMEOUT_MS);
-                    return;
-                }
-                const remainingMs = Math.max(0, this.inactivityDeadline - Date.now());
-                const totalSeconds = Math.floor(remainingMs / 1000);
-                const minutes = Math.floor(totalSeconds / 60);
-                const seconds = totalSeconds % 60;
-                this.appInstance.inactivityCountdown =
-                    `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                
-                if (remainingMs <= 0) {
-                    this.stop();
-                    this.handleLogout();
-                }
+                const remainingMs = this.inactivityDeadline ? Math.max(0, this.inactivityDeadline - Date.now()) : this.INACTIVITY_TIMEOUT_MS;
+                if (this.appInstance.showInactivityTimer) this.appInstance.inactivityCountdown = this.fmt(remainingMs);
+                if (this.inactivityDeadline && remainingMs <= 0) this.handleLogout();
             },
-            
+
+            checkExpired() {
+                if (this.inactivityDeadline && Date.now() >= this.inactivityDeadline) this.handleLogout();
+            },
+
             start() {
                 if (!this.appInstance?.isLoggedIn) return;
-                
-                // Timer started (removed verbose console log)
+                if (this.INACTIVITY_TIMEOUT_MS <= 0) { this.stop(); return; }      // auto-logout is off (Settings)
+                if (this.playing && !this.COUNT_DURING_PLAYBACK) { this.holdForPlayback(); return; }
                 this.stop();
-                if (this.INACTIVITY_TIMEOUT_MS <= 0) return;      // auto-logout is off (Settings)
-
                 this.inactivityDeadline = Date.now() + this.INACTIVITY_TIMEOUT_MS;
                 this.updateCountdownDisplay();
                 this.countdownInterval = setInterval(() => this.updateCountdownDisplay(), 1000);
                 this.inactivityTimer = setTimeout(() => this.handleLogout(), this.INACTIVITY_TIMEOUT_MS);
                 this.pingActivity();
             },
-            
+
             reset() {
                 if (!this.appInstance?.isLoggedIn) return;
                 this.start();
             },
-            
-            pause() {
-                if (this.inactivityTimer) {
-                    clearTimeout(this.inactivityTimer);
-                    this.inactivityTimer = null;
-                }
-                if (this.countdownInterval) {
-                    clearInterval(this.countdownInterval);
-                    this.countdownInterval = null;
-                }
+
+            // Players call this on play (true) and on pause / end / close (false)
+            videoPlaying(on) {
+                this.playing = !!on;
+                if (on && !this.COUNT_DURING_PLAYBACK) this.holdForPlayback();
+                else this.reset();
             },
-            
+
+            holdForPlayback() {
+                // Watching counts as activity: no countdown, and the server session is kept alive
+                this.stop();
+                if (this.appInstance) this.appInstance.inactivityCountdown = this.fmt(this.INACTIVITY_TIMEOUT_MS);
+                this.pingActivity(true);
+                this.keepAliveInterval = setInterval(() => this.pingActivity(true), this.ACTIVITY_PING_INTERVAL);
+            },
+
             stop() {
-                this.pause();
+                clearTimeout(this.inactivityTimer);
+                clearInterval(this.countdownInterval);
+                clearInterval(this.keepAliveInterval);
+                this.inactivityTimer = this.countdownInterval = this.keepAliveInterval = null;
                 this.inactivityDeadline = null;
             },
-            
+
             handleLogout() {
-                if (this.appInstance?.isLoggedIn) {
-                    this.appInstance.logout(false);
-                    this.appInstance.showLogin = true;
-                    const mins = Math.round(this.INACTIVITY_TIMEOUT_MS / 60000);
-                    this.appInstance.loginMessage = `Session expired after ${mins} minute${mins === 1 ? '' : 's'} of inactivity.`;
-                }
+                if (!this.appInstance?.isLoggedIn) return;
+                const mins = Math.round(this.INACTIVITY_TIMEOUT_MS / 60000);
+                this.appInstance.lock(`Logged out after ${mins} minute${mins === 1 ? '' : 's'} of inactivity.`);
             }
         };
 
         function libraryApp() {
-            // Inactivity + countdown state
-            let inactivityTimer;
-            let countdownInterval;
-            let inactivityDeadline = null;
-            let lastActivityPing = 0;
-            const ACTIVITY_PING_INTERVAL = 60 * 1000; // 1 minute throttle for /api/activity
-
-            // Values from backend config (Jinja will render literals)
-            const INACTIVITY_TIMEOUT_MS = {{ inactivity_timeout or 900 }} * 1000;
-            const SHOW_INACTIVITY_TIMER = {{ 'true' if show_inactivity_timer else 'false' }};
-
-            // Store reference to app instance
-            let appInstance = null;
-
-            // Helper to ping backend (refresh server-side inactivity window)
-            function pingActivity() {
-                const now = Date.now();
-                if (now - lastActivityPing < ACTIVITY_PING_INTERVAL) return;
-                lastActivityPing = now;
-                fetch('/api/activity', { method: 'POST' }).catch(() => {});
-            }
-
-            function updateCountdownDisplay() {
-                if (!appInstance) {
-                    console.log('appInstance not ready');
-                    return;
-                }
-                if (!appInstance.showInactivityTimer) {
-                    console.log('Timer display disabled');
-                    return;
-                }
-                if (!inactivityDeadline) {
-                    appInstance.inactivityCountdown = '15:00';
-                    return;
-                }
-                const remainingMs = Math.max(0, inactivityDeadline - Date.now());
-                const totalSeconds = Math.floor(remainingMs / 1000);
-                const minutes = Math.floor(totalSeconds / 60);
-                const seconds = totalSeconds % 60;
-                appInstance.inactivityCountdown =
-                    `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                
-                // Check if time has expired
-                if (remainingMs <= 0) {
-                    stopCountdown();
-                    handleInactivityLogout();
-                }
-            }
-
-            function startCountdown() {
-                if (!appInstance) {
-                    console.log('Cannot start countdown - appInstance not ready');
-                    return;
-                }
-                if (!appInstance.showInactivityTimer) {
-                    console.log('Timer display disabled in config');
-                    return;
-                }
-                if (countdownInterval) clearInterval(countdownInterval);
-                console.log('Starting countdown timer');
-                updateCountdownDisplay();
-                countdownInterval = setInterval(updateCountdownDisplay, 1000);
-            }
-
-            function stopCountdown() {
-                if (countdownInterval) {
-                    clearInterval(countdownInterval);
-                    countdownInterval = null;
-                }
-            }
-
-            function resetTimer() {
-                if (!appInstance) {
-                    console.log('resetTimer called but appInstance not ready');
-                    return;
-                }
-                if (!appInstance.isLoggedIn) {
-                    console.log('resetTimer called but user not logged in');
-                    return;
-                }
-                
-                console.log('Resetting inactivity timer');
-                
-                // Restart client-side inactivity window
-                if (inactivityTimer) clearTimeout(inactivityTimer);
-                stopCountdown();
-
-                inactivityDeadline = Date.now() + INACTIVITY_TIMEOUT_MS;
-                updateCountdownDisplay();
-                startCountdown();
-
-                // Schedule logout
-                inactivityTimer = setTimeout(handleInactivityLogout, INACTIVITY_TIMEOUT_MS);
-
-                // Keep server-side session alive (sliding window)
-                pingActivity();
-            }
-
-            function pauseInactivityTimer() {
-                // Used while a video is playing: stop auto-logout and freeze countdown
-                if (inactivityTimer) {
-                    clearTimeout(inactivityTimer);
-                    inactivityTimer = null;
-                }
-                stopCountdown();
-                // NOTE: we leave inactivityDeadline as-is so the displayed value is "paused"
-            }
-
-            function handleInactivityLogout() {
-                if (appInstance && appInstance.isLoggedIn) {
-                    appInstance.logout(false);
-                    appInstance.showLogin = true;
-                    appInstance.loginMessage = "Session expired due to 15 minutes of inactivity.";
-                }
-            }
-            
             const app = {
                 isLoggedIn: false,
                 isSearching: false,
@@ -758,6 +654,8 @@
                 showInactivityTimer: TimerManager.SHOW_INACTIVITY_TIMER,
                 inactivityCountdown: TimerManager.fmt(TimerManager.INACTIVITY_TIMEOUT_MS),
                 sessionTimeoutMinutes: Math.round(TimerManager.INACTIVITY_TIMEOUT_MS / 60000),   // 0 = never
+                countDuringPlayback: TimerManager.COUNT_DURING_PLAYBACK,
+                account: { username: '', open: false, current: '', next: '', again: '', busy: false, msg: '', err: '' },
                 // display_filter.py: library orientation types + this user's shown types
                 libraryTypes: {},          // effective type per library (own, else group's, else mixed)
                 libraryOwnTypes: {},       // libraries with their own type (others follow their group)
@@ -843,6 +741,7 @@
                     itemsPerPage: 150,
                     paginationMode: 'button',
                     hideZeroLength: 'hide', // 'button' or 'prevnext'
+                    lockScreenInfo: false,  // new player: title + thumbnail in the Media Session (lock screen)
                     thumbnailQuality: 75, // WebP quality 0-100
                     thumbnailFrames: 8, // Number of preview frames
                     lengthSliderMode: false, // Use slider instead of buttons for length filter
@@ -1786,9 +1685,8 @@
                     TimerManager.init(this);
                     
                     // Set up event listeners
-                    document.addEventListener('mousemove', () => TimerManager.reset());
-                    document.addEventListener('keydown', () => TimerManager.reset());
-                    document.addEventListener('click', () => TimerManager.reset());
+                    ['mousemove', 'keydown', 'click', 'touchstart', 'wheel']
+                        .forEach(ev => document.addEventListener(ev, () => TimerManager.reset(), { passive: true }));
                     
                     console.log('Event listeners attached');
                 },
@@ -1931,7 +1829,7 @@
                                 this.progressInterval = null;
                             }
                             this.activeVideo = null;
-                            if (this.isLoggedIn) TimerManager.reset();
+                            TimerManager.videoPlaying(false);
                         }
                     });
 
@@ -1950,6 +1848,10 @@
                 },
                 
                 async authInit() {
+                    try {                                    // why the last session ended (lock())
+                        const m = sessionStorage.getItem('lustrLoginMessage');
+                        if (m !== null) { this.loginMessage = m; sessionStorage.removeItem('lustrLoginMessage'); }
+                    } catch (e) {}
                     try {
                         const res = await fetch('/api/check_auth');
                         const data = await res.json();
@@ -1959,6 +1861,7 @@
                         this.currentUserCount = maxUserData.current_users;
 
                         if (data.authenticated) {
+                            this.account.username = data.username || '';
                             this.isLoggedIn = true;
                             this.showLogin = false;
                             this.startApp();
@@ -2009,6 +1912,8 @@
                             body: JSON.stringify({ username: this.loginUsername, password: this.loginPassword })
                         });
                         if (res.ok) {
+                            this.account.username = this.loginUsername.toLowerCase().trim();
+                            this.loginMessage = '';
                             this.isLoggedIn = true;
                             this.showLogin = false;
                             this.loginPassword = '';
@@ -2029,19 +1934,24 @@
                     }
                 },
 
-                async logout(showAlert = true) {
-                    if (this.activeVideo) this.closeVideo();
-                    
-                    // Stop the timer
+                logout() { return this.lock(''); },
+
+                // Log out and reload: the login page comes back with nothing of the library left
+                // on screen, in memory, fullscreen or on the lock screen.
+                async lock(message) {
+                    if (this._locking) return;
+                    this._locking = true;
                     TimerManager.stop();
-                    
-                    try {
-                        await fetch('/api/logout', { method: 'POST' });
-                        this.isLoggedIn = false;
-                        this.showLogin = true;
-                        this.videos = []; 
-                        await this.authInit();
-                    } catch (e) {}
+                    this.isLoggedIn = false;
+                    this.showLogin = true;                                   // cover everything at once
+                    document.querySelectorAll('video').forEach(v => { try { v.pause(); } catch (e) {} });
+                    try { if (document.fullscreenElement) await document.exitFullscreen(); } catch (e) {}
+                    try { if (this.np.open) this.npTeardown(); } catch (e) {}
+                    try { if (this.activeVideo) this.closeVideo(); } catch (e) {}
+                    try { this.npMediaClear(); } catch (e) {}
+                    try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {}
+                    try { sessionStorage.setItem('lustrLoginMessage', message || ''); } catch (e) {}
+                    window.location.replace('/');
                 },
                 
                 // ---- display filter (library orientation types) ----
@@ -2179,16 +2089,38 @@
                     this.saveAutomation({ scan: { libraries: libs.includes(name) ? libs.filter(l => l !== name) : [...libs, name] } });
                 },
 
+                async changePassword() {
+                    const a = this.account;
+                    a.err = ''; a.msg = '';
+                    if (a.next.length < 8) { a.err = 'Use a password of at least 8 characters.'; return; }
+                    if (a.next !== a.again) { a.err = 'The new passwords differ.'; return; }
+                    a.busy = true;
+                    try {
+                        const res = await fetch('/api/account/password', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ current_password: a.current, new_password: a.next }) });
+                        const d = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(d.detail || 'not changed');
+                        const n = d.other_sessions_ended || 0;
+                        a.msg = 'Password changed.' + (n ? ` ${n} other browser${n === 1 ? ' was' : 's were'} logged out.` : '');
+                        a.open = false; a.current = a.next = a.again = '';
+                    } catch (e) {
+                        a.err = e.message;
+                    } finally { a.busy = false; }
+                },
+
                 async saveSessionSettings() {
                     try {
                         const res = await fetch('/api/settings/session', {
                             method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ timeout_minutes: Number(this.sessionTimeoutMinutes), show_countdown: this.showInactivityTimer })
+                            body: JSON.stringify({ timeout_minutes: Number(this.sessionTimeoutMinutes), show_countdown: this.showInactivityTimer,
+                                                  during_playback: this.countDuringPlayback })
                         });
                         const d = await res.json();
                         if (!d.success) throw new Error(d.error || 'not saved');
                         TimerManager.INACTIVITY_TIMEOUT_MS = d.timeout_minutes * 60000;
                         TimerManager.SHOW_INACTIVITY_TIMER = d.show_countdown;
+                        TimerManager.COUNT_DURING_PLAYBACK = d.during_playback;
+                        this.countDuringPlayback = d.during_playback;
                         this.sessionTimeoutMinutes = d.timeout_minutes;
                         this.showInactivityTimer = d.show_countdown;
                         TimerManager.reset();
@@ -2588,7 +2520,7 @@
                         console.log(`API responded in ${performance.now() - fetchStart}ms`);
                         
                         if (!res.ok) {
-                            if (res.status === 401) { this.logout(false); this.loginMessage = "Session expired."; }
+                            if (res.status === 401) this.lock('Your session has ended. Log in again.');
                             throw new Error(`Fetch Failed`);
                         }
                         
@@ -9059,13 +8991,13 @@ No metadata is changed.`)) return;
                     });
                     p.on('durationchange', () => this.npRenderMarkers());
                     p.on('loadedmetadata', () => this.npNativeSize());
-                    p.on('play', () => { TimerManager.pause(); this.npWake(true); });
+                    p.on('play', () => { TimerManager.videoPlaying(true); this.npWake(true); });
                     p.on('timeupdate', () => { this.npStripFollow(); this.npMediaPosition(); });
-                    p.on('pause', () => { this.npSaveProgress(); this.npWake(false); if (this.isLoggedIn) TimerManager.reset(); });
+                    p.on('pause', () => { this.npSaveProgress(); this.npWake(false); TimerManager.videoPlaying(false); });
                     p.on('ended', () => {
                         this.npSaveProgress(true);
                         this.npWake(false);
-                        if (this.isLoggedIn) TimerManager.reset();
+                        TimerManager.videoPlaying(false);
                         if (this.np.next && this.np.autoNext) this.npGo('next');          // playlist: play on
                     });
                 },
@@ -9459,8 +9391,10 @@ No metadata is changed.`)) return;
                     if (!('mediaSession' in navigator)) return;
                     const ms = navigator.mediaSession, d = this.np.data || {}, np = this.np;
                     try {
-                        ms.metadata = new MediaMetadata({ title: this.npTitle(), artist: 'lustr',
-                            artwork: d.cache_id ? [{ src: `/cache/${d.cache_id}/thumb_0.webp`, sizes: '480x270', type: 'image/webp' }] : [] });
+                        ms.metadata = this.appSettings.lockScreenInfo        // Settings -> Player -> Lock screen
+                            ? new MediaMetadata({ title: this.npTitle(), artist: 'lustr',
+                                artwork: d.cache_id ? [{ src: `/cache/${d.cache_id}/thumb_0.webp`, sizes: '480x270', type: 'image/webp' }] : [] })
+                            : new MediaMetadata({ title: 'lustr', artist: '', artwork: [] });
                     } catch (e) { /* not supported */ }
                     const p = () => this.npPlayer();
                     const set = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (e) { /* not supported */ } };
@@ -9643,7 +9577,7 @@ No metadata is changed.`)) return;
                     if (sv) sv.innerHTML = '';
                     np.stripReady = false;
                     np.open = false;
-                    if (this.isLoggedIn) TimerManager.reset();
+                    TimerManager.videoPlaying(false);
                 },
 
                 npClose() {
@@ -9817,15 +9751,15 @@ No metadata is changed.`)) return;
 
                     // Track playback state for inactivity timer
                     videoEl.onplay = () => {
-                        TimerManager.pause();
+                        TimerManager.videoPlaying(true);
                     };
 
                     videoEl.onpause = () => {
-                        if (this.isLoggedIn) TimerManager.reset();
+                        TimerManager.videoPlaying(false);
                     };
 
                     videoEl.onended = () => {
-                        if (this.isLoggedIn) TimerManager.reset();
+                        TimerManager.videoPlaying(false);
                     };
                 },
 
@@ -10187,7 +10121,7 @@ No metadata is changed.`)) return;
                     }
                     
                     // When the video panel is closed, restart inactivity window
-                    if (this.isLoggedIn) TimerManager.reset();
+                    TimerManager.videoPlaying(false);
                     
                     // Use browser back button behavior
                     if (window.history.length > 1) {
@@ -12705,9 +12639,25 @@ No metadata is changed.`)) return;
                             <button @click="toggleSetting('loadAll')" class="w-10 h-5 rounded-full transition-colors relative" :class="appSettings.loadAll ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.loadAll ? 'translate-x-5' : ''"></div></button>
                         </div>
                         
+                        <div class="bg-gray-900 p-3 rounded space-y-2">
+                            <div><span class="block text-sm font-medium">Account</span>
+                                <span class="block text-xs text-gray-500">Logged in as <span class="text-gray-300" x-text="account.username"></span>.
+                                    Forgot the password? Run <code class="text-gray-300">docker exec -it lustr python3 reset_password.py</code> on the server.</span></div>
+                            <button x-show="!account.open" @click="account.open = true; account.msg = ''; account.err = ''" class="text-xs text-blue-400 hover:text-blue-300">Change password →</button>
+                            <form x-show="account.open" @submit.prevent="changePassword()" class="flex flex-wrap items-center gap-2 text-sm">
+                                <input type="password" x-model="account.current" placeholder="Current password" autocomplete="current-password" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 w-44">
+                                <input type="password" x-model="account.next" placeholder="New password (8+)" autocomplete="new-password" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 w-44">
+                                <input type="password" x-model="account.again" placeholder="New password again" autocomplete="new-password" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 w-44">
+                                <button type="submit" :disabled="account.busy" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-xs">Save</button>
+                                <button type="button" @click="account.open = false; account.current = account.next = account.again = ''" class="text-xs text-gray-400 hover:text-gray-200">Cancel</button>
+                            </form>
+                            <p x-show="account.err" class="text-xs text-red-400" x-text="account.err"></p>
+                            <p x-show="account.msg" class="text-xs text-green-400" x-text="account.msg"></p>
+                        </div>
+
                         <div class="flex items-center justify-between gap-3 bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Log out after inactivity</span>
-                                <span class="block text-xs text-gray-500">Applies to everyone. Playing a video pauses the timer.</span></div>
+                                <span class="block text-xs text-gray-500">So nobody else can open your library if you leave it open. Closing the browser logs out too.</span></div>
                             <div class="flex items-center gap-3 flex-shrink-0">
                                 <select x-model.number="sessionTimeoutMinutes" @change="saveSessionSettings()" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm">
                                     <template x-for="m in [[0, 'Never'], [5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours'], [480, '8 hours'], [1440, '24 hours']]" :key="m[0]">
@@ -12718,6 +12668,9 @@ No metadata is changed.`)) return;
                                 </select>
                                 <label class="flex items-center gap-1 text-xs text-gray-400" :class="sessionTimeoutMinutes ? '' : 'opacity-40'">
                                     <input type="checkbox" class="rounded" :disabled="!sessionTimeoutMinutes" x-model="showInactivityTimer" @change="saveSessionSettings()"> Show countdown</label>
+                                <label class="flex items-center gap-1 text-xs text-gray-400" :class="sessionTimeoutMinutes ? '' : 'opacity-40'"
+                                       title="Off: playing a video pauses the countdown">
+                                    <input type="checkbox" class="rounded" :disabled="!sessionTimeoutMinutes" x-model="countDuringPlayback" @change="saveSessionSettings()"> Also while a video plays</label>
                             </div>
                         </div>
 
@@ -12833,6 +12786,12 @@ No metadata is changed.`)) return;
                                 <span class="text-gray-100">Classic</span></label>
                             <label class="flex items-start gap-2 cursor-pointer"><input type="radio" class="mt-1" :checked="appSettings.playerMode === 'new'" @change="npSetMode('new')">
                                 <span class="text-gray-100">New</span></label>
+                        </div>
+                        <div class="bg-gray-900 p-4 rounded space-y-2 text-sm">
+                            <h4 class="font-bold text-blue-400">Lock screen</h4>
+                            <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="rounded" x-model="appSettings.lockScreenInfo"
+                                   @change="localStorage.setItem('appSettings', JSON.stringify(appSettings)); if (np.open) npMediaSession()"> Show the video's title and picture on the lock screen</label>
+                            <p class="text-xs text-gray-500">Off: phones, media keys and the browser's media controls only show "lustr" (play, pause and seeking still work). Applies to the new player, in this browser.</p>
                         </div>
                         <div class="bg-gray-900 p-4 rounded space-y-3 text-sm">
                             <h4 class="font-bold text-blue-400">New player - transcoding</h4>

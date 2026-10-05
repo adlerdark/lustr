@@ -40,19 +40,22 @@ def serve_home(request: Request):
     return _templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={'inactivity_timeout': SESSION['timeout'], 'show_inactivity_timer': SESSION['show_countdown']}
+        context={'inactivity_timeout': SESSION['timeout'], 'show_inactivity_timer': SESSION['show_countdown'],
+                 'count_during_playback': SESSION['during_playback']}
     )
 
 
 class SessionSettingsRequest(BaseModel):
     timeout_minutes: Optional[int] = None      # 0 = never log out for inactivity
     show_countdown: Optional[bool] = None
+    during_playback: Optional[bool] = None     # keep counting while a video plays
 
 
 @api_router.get("/settings/session")
 def get_session_settings():
     from helpers import SESSION
-    return {'timeout_minutes': SESSION['timeout'] // 60, 'show_countdown': SESSION['show_countdown']}
+    return {'timeout_minutes': SESSION['timeout'] // 60, 'show_countdown': SESSION['show_countdown'],
+            'during_playback': SESSION['during_playback']}
 
 
 @api_router.post("/settings/session")
@@ -60,8 +63,9 @@ def set_session_settings(req: SessionSettingsRequest, request: Request, model = 
     """Auto-logout after inactivity (minutes, 0 = off) and whether the countdown is shown."""
     from helpers import save_session_settings
     s = save_session_settings(model.db, None if req.timeout_minutes is None else max(0, req.timeout_minutes) * 60,
-                              req.show_countdown)
-    return {'success': True, 'timeout_minutes': s['timeout'] // 60, 'show_countdown': s['show_countdown']}
+                              req.show_countdown, req.during_playback)
+    return {'success': True, 'timeout_minutes': s['timeout'] // 60, 'show_countdown': s['show_countdown'],
+            'during_playback': s['during_playback']}
 
 
 class DisplayFilterRequest(BaseModel):
