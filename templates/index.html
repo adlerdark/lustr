@@ -2426,6 +2426,7 @@
                         this.hasMore = true;
                         this.videos = [];
                         await this.fetchVideos('reset');
+                        if (this.currentLibrary !== 'Home') this.setLibraryTab('recommended', false);   // started in a library: Recommended
                         
                         try {
                             const notepadRes = await fetch('/api/config/get?key=notepad_content');
@@ -2687,7 +2688,7 @@
                     this.fetchVideos('reset');
                     this.mobileSidebar = false;
                     this.coll.view = null;
-                    this.setLibraryTab(this.libraryTabs[item.name] || 'library', false);
+                    this.setLibraryTab(this.libraryTabs[item.name] || 'recommended', false);   // a library opens on Recommended
                     
                     // Update available filters if filters are active
                     // if (Object.keys(this.activeTags).length > 0 || Object.keys(this.activeSites).length > 0) {
