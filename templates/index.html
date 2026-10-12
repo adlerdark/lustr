@@ -15881,7 +15881,7 @@ No metadata is changed.`)) return;
                         class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-40">Back to linked scene</button>
                 <button x-show="extScene.mode === 'suggest'" @click="extSceneSuggestApply()" :disabled="(!extSceneSuggestCount() && !extSceneGenderSaves().length) || !!extScene.busy"
                         class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40"
-                        x-text="extScene.busy === 'apply' ? 'Adding…' : (extScene.busy === 'apply-videos' ? 'Applying attributes…' : (extSceneSuggestCount() ? 'Add selected (' + extSceneSuggestCount() + ')' : 'Save genders (' + extSceneGenderSaves().length + ')')))"></button>
+                        x-text="extScene.busy === 'apply' ? 'Adding…' : (extScene.busy === 'apply-videos' ? 'Applying attributes…' : (extSceneSuggestCount() ? 'Add selected (' + extSceneSuggestCount() + ')' : 'Save genders (' + extSceneGenderSaves().length + ')'))"></button>
                 <button x-show="extScene.mode === 'linked'" @click="extSceneRefresh()" :disabled="!!extScene.busy"
                         class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40"
                         x-text="extScene.busy === 'refresh' ? 'Refreshing…' : 'Refresh'"></button>
