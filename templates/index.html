@@ -587,7 +587,7 @@
                                        // your changes for this video only: Cast <-> Male Cast, and values you add yourself (no mapping)
                                        castSwap: {}, extra: [], ownPath: '', ownField: 'tags', ownValue: '',
                                        edits: {}, editing: null, editValue: '',
-                                       genderPick: {} },                                // performer genders you picked (saved with Add selected)      // suggested values you corrected (this video only)
+                                       genderPick: {}, typeEdit: null },              // typeEdit: {key, value} - a mapping's value on this video's orientation                                // performer genders you picked (saved with Add selected)      // suggested values you corrected (this video only)
                             // ▶ Preview: the gallery's animated thumbnail, shown over the window without closing it
                             preview: { open: false, pinned: false, frame: 0, timer: null, failed: false, staticOnly: false },
                             // hover card on a candidate's thumbnail; your tag mappings to highlight its tags
@@ -860,7 +860,7 @@
                 // what Suggest metadata pre-ticks (server-side; title / Male Cast stay in appSettings)
                 sceneTick: { year: true, site: true, cast_linked: true, cast_name: false, tags: 'never' },
                 extCfg: { tab: 'tagmap', loaded: false, loading: false, error: '', message: '', rows: [], seen: [], fields: [], vocab: {},
-                          sources: [], filter: 'all', source: 'all', q: '', editKey: null, edit: { field: 'tags', value: '' },
+                          sources: [], filter: 'all', source: 'all', q: '', editKey: null, edit: { field: 'tags', value: '', types: {}, showTypes: false },
                           showAdd: false, add: { source: 'stashdb', tag: '', field: 'tags', value: '', ignore: false, valueTouched: false },
                           cache: null, overview: null, busy: false, types: [],
                           links: { rows: [], total: 0, page: 1, per_page: 100, q: '', source: '', library: '', libraries: [], loading: false } },
@@ -3634,6 +3634,32 @@
                         if (!it.already_set) c[this.extSceneSuggestKey(it)] = true;    // editing it means you want it
                     }
                     sg.checked = c;
+                },
+
+                // a tag mapping's own value(s) on this video's orientation (saved to the mapping, for later videos too)
+                extSceneTypeEditStart(it) {
+                    const sg = this.extScene.suggest, ty = sg.videoTypes[0];
+                    sg.typeEdit = { key: this.extSceneSuggestKey(it), value: (it.type_values || {})[ty] || '' };
+                },
+                async extSceneTypeEditSave(it) {
+                    const sg = this.extScene.suggest, e = sg.typeEdit;
+                    if (!e || !sg.videoTypes.length) return;
+                    this.extScene.busy = 'tagmap';
+                    this.extScene.error = '';
+                    try {
+                        for (const ty of sg.videoTypes)
+                            await this.extDbPost('/api/extdb/tagmap/type-value', { source: sg.source, tag: it.ext_tag, type: ty, value: (e.value || '').trim() });
+                        const v = (e.value || '').trim(), on = sg.videoTypes.map(t => this.tagTypeShort(t)).join('/');
+                        this.extScene.message = v ? `"${it.ext_tag}" on ${on} videos → ${v === '-' ? 'nothing' : v} (remembered for later scenes)`
+                                                  : `"${it.ext_tag}" on ${on} videos uses its normal value again`;
+                        sg.typeEdit = null;
+                        this.extScene.tagMap = null;
+                        await this.extSceneSuggestOpen(true);
+                    } catch (err) {
+                        this.extScene.error = err.message;
+                    } finally {
+                        this.extScene.busy = '';
+                    }
                 },
 
                 // a performer's gender (their bio setting - not the Cast / Male Cast split)
@@ -6491,18 +6517,26 @@ No metadata is changed.`)) return;
 
                 extCfgStartEdit(r) {
                     this.extCfg.editKey = this.extCfgKey(r);
-                    this.extCfg.edit = { field: r.field || 'tags', value: r.value || this.extCfgFmt(r.tag) };
+                    const tv = { ...(r.type_values || {}) };
+                    this.extCfg.edit = { field: r.field || 'tags', value: r.value || this.extCfgFmt(r.tag), types: tv, showTypes: Object.keys(tv).length > 0 };
                 },
 
-                async extCfgSave(source, tag, field, value, ignore) {
+                // typeValues: {orientation type: value(s) or '-'} - other values on some orientations (undefined = leave them)
+                tagTypeValuesText(tv) {
+                    return Object.entries(tv || {}).map(([ty, v]) => this.tagTypeShort(ty) + ': ' + (v === '-' ? 'nothing' : v)).join(' · ');
+                },
+
+                async extCfgSave(source, tag, field, value, ignore, typeValues) {
                     const c = this.extCfg;
                     if (!ignore && !(field && (value || '').trim())) { c.error = 'Choose a field and enter a value.'; return false; }
                     c.busy = true;
                     Object.assign(c, { error: '', message: '' });
                     try {
-                        const d = await this.extDbPost('/api/extdb/scene/tagmap', { source, tag, field: ignore ? null : field,
-                                                                                    value: ignore ? null : value, ignore });
-                        c.message = ignore ? `"${tag}" is ignored.` : `"${tag}" → ${d.field}: ${d.value}`;
+                        const body = { source, tag, field: ignore ? null : field, value: ignore ? null : value, ignore };
+                        if (typeValues !== undefined) body.type_values = typeValues;
+                        const d = await this.extDbPost('/api/extdb/scene/tagmap', body);
+                        c.message = ignore ? `"${tag}" is ignored.` : `"${tag}" → ${d.field}: ${d.value}`
+                                    + (d.type_values && Object.keys(d.type_values).length ? ' · ' + this.tagTypeValuesText(d.type_values) : '');
                         c.editKey = null;
                         await this.extCfgLoad();
                         return true;
@@ -13558,6 +13592,8 @@ No metadata is changed.`)) return;
                                                         <span x-show="r.status === 'ignored' && r.field" class="font-mono text-gray-500 line-through" title="Ignored - not suggested"
                                                               x-text="r.field + ': ' + r.value"></span>
                                                         <span x-show="r.status === 'ignored' && !r.field" class="text-gray-500">—</span>
+                                                        <div x-show="r.status && r.status !== 'ignored' && Object.keys(r.type_values || {}).length"
+                                                             class="text-gray-400 font-mono" title="Other values on these orientations" x-text="tagTypeValuesText(r.type_values)"></div>
                                                         <span x-show="!r.status" class="text-gray-400" x-text="r.videos + ' linked video' + (r.videos === 1 ? '' : 's')"></span>
                                                         <span x-show="r.missing" class="ml-1 px-1 rounded bg-yellow-700 text-white"
                                                               title="No video uses this value any more - it will be created as a new value if applied">not in library</span>
@@ -13569,9 +13605,23 @@ No metadata is changed.`)) return;
                                                             </select>
                                                             <input type="text" x-model="extCfg.edit.value" :list="'extcfg-vocab-' + extCfg.edit.field"
                                                                    x-init="$nextTick(() => $el.focus())"
-                                                                   @keydown.enter="extCfgSave(r.source, r.tag, extCfg.edit.field, extCfg.edit.value, false)"
+                                                                   @keydown.enter="extCfgSave(r.source, r.tag, extCfg.edit.field, extCfg.edit.value, false, extCfg.edit.types)"
                                                                    @keydown.escape.stop="extCfg.editKey = null" placeholder="value(s), comma-separated"
                                                                    class="flex-1 min-w-[7rem] bg-gray-700 border border-gray-600 rounded px-1 py-0.5 font-mono">
+                                                            <button type="button" @click="extCfg.edit.showTypes = !extCfg.edit.showTypes" class="text-gray-400 hover:text-white"
+                                                                    x-text="extCfg.edit.showTypes ? 'By orientation ▾' : 'By orientation ▸'"></button>
+                                                            <div x-show="extCfg.edit.showTypes" class="w-full grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 items-center mt-1">
+                                                                <template x-for="ty in tagTypesAll()" :key="ty">
+                                                                    <div class="contents">
+                                                                        <span class="text-gray-400" x-text="tagTypeShort(ty)"></span>
+                                                                        <input type="text" :value="extCfg.edit.types[ty] || ''" :list="'extcfg-vocab-' + extCfg.edit.field"
+                                                                               @input="extCfg.edit.types = { ...extCfg.edit.types, [ty]: $event.target.value }"
+                                                                               @keydown.enter="extCfgSave(r.source, r.tag, extCfg.edit.field, extCfg.edit.value, false, extCfg.edit.types)"
+                                                                               placeholder="same as default · - for nothing"
+                                                                               class="min-w-0 bg-gray-700 border border-gray-600 rounded px-1 py-0.5 font-mono">
+                                                                    </div>
+                                                                </template>
+                                                            </div>
                                                         </div>
                                                     </template>
                                                 </td>
@@ -13604,7 +13654,7 @@ No metadata is changed.`)) return;
                                                 <td class="p-2 text-right">
                                                     <template x-if="extCfg.editKey === extCfgKey(r)">
                                                         <span>
-                                                            <button @click="extCfgSave(r.source, r.tag, extCfg.edit.field, extCfg.edit.value, false)" :disabled="extCfg.busy"
+                                                            <button @click="extCfgSave(r.source, r.tag, extCfg.edit.field, extCfg.edit.value, false, extCfg.edit.types)" :disabled="extCfg.busy"
                                                                     class="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-40">Save</button>
                                                             <button @click="extCfg.editKey = null" class="px-2 py-0.5 text-gray-400 hover:text-white">Cancel</button>
                                                         </span>
@@ -15713,6 +15763,27 @@ No metadata is changed.`)) return;
                                         <div class="text-xs text-gray-400 mt-0.5" x-text="it.reason"></div>
                                         <div x-show="(it.field === 'cast' || it.field === 'male_cast') && extSceneGenderHint(it)"
                                              class="text-xs text-blue-300 mt-0.5" x-text="extSceneGenderHint(it)"></div>
+                                        <div x-show="it.ext_tag" class="flex flex-wrap items-center gap-1 mt-1 text-xs" @click.prevent.stop>
+                                            <template x-if="!(extScene.suggest.typeEdit && extScene.suggest.typeEdit.key === extSceneSuggestKey(it))">
+                                                <button type="button" @click="extSceneTypeEditStart(it)" :disabled="!extScene.suggest.videoTypes.length"
+                                                        class="text-gray-500 hover:text-white disabled:opacity-40 disabled:hover:text-gray-500"
+                                                        :title="extScene.suggest.videoTypes.length ? 'Map “' + it.ext_tag + '” to something else on videos like this one (remembered for later scenes)'
+                                                                                                    : 'This video\'s orientation can\'t be told - tag it or set its library\'s orientation first'"
+                                                        x-text="'⚙ “' + it.ext_tag + '” on ' + (extScene.suggest.videoTypes.length ? extScene.suggest.videoTypes.map(t => tagTypeShort(t)).join('/') : '…') + ' videos'"></button>
+                                            </template>
+                                            <template x-if="extScene.suggest.typeEdit && extScene.suggest.typeEdit.key === extSceneSuggestKey(it)">
+                                                <span class="flex flex-1 flex-wrap items-center gap-1">
+                                                    <span class="text-gray-400" x-text="'“' + it.ext_tag + '” on ' + extScene.suggest.videoTypes.map(t => tagTypeShort(t)).join('/') + ' videos →'"></span>
+                                                    <input type="text" x-model="extScene.suggest.typeEdit.value" :list="'extscene-vocab-' + it.field"
+                                                           x-init="$nextTick(() => $el.focus())" @keydown.enter.prevent="extSceneTypeEditSave(it)"
+                                                           @keydown.escape.prevent.stop="extScene.suggest.typeEdit = null"
+                                                           :placeholder="'empty = ' + (it.default_value || 'normal value') + ' · - for nothing'"
+                                                           class="flex-1 min-w-[8rem] bg-gray-700 border border-gray-600 rounded px-2 py-0.5 text-gray-200">
+                                                    <button type="button" @click="extSceneTypeEditSave(it)" :disabled="!!extScene.busy" class="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-40">Save</button>
+                                                    <button type="button" @click="extScene.suggest.typeEdit = null" class="px-1 text-gray-400 hover:text-white">Cancel</button>
+                                                </span>
+                                            </template>
+                                        </div>
                                         <div x-show="it.ext_tag && !it.already_set" class="flex flex-wrap items-center gap-1 mt-1 text-xs">
                                             <span class="text-gray-500" x-text="'Pre-tick “' + it.ext_tag + '”:'"></span>
                                             <select :value="it.tick || 'default'" @change="extSceneSetTagTick(it, $event.target.value)"

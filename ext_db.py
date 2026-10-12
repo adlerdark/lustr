@@ -294,7 +294,9 @@ def ensure_schema():
     # Pre-tick rule per mapping: NULL = the Settings default, 'always', 'never',
     # or 'types' = only on videos of these orientation types (tick_types: 'gay,bisexual,trans')
     have = {r[1] for r in conn.execute('PRAGMA table_info(ext_tag_map)').fetchall()}
-    for col in ('tick', 'tick_types'):
+    # type_values: other values on some orientations, JSON {"gay": "breeding", "bisexual": "creampie, breeding"};
+    # '-' = nothing on that orientation. field / value stay the default.
+    for col in ('tick', 'tick_types', 'type_values'):
         if col not in have:
             conn.execute(f'ALTER TABLE ext_tag_map ADD COLUMN {col} TEXT')
     # Bulk scene matching: latest outcome per video (lets re-runs skip them)
@@ -3859,6 +3861,46 @@ def _tick_types(value):
     return [t for t in ORIENTATION_TYPES if t in {x.strip().lower() for x in str(value or '').split(',')}]
 
 
+def _type_values(raw):
+    """ext_tag_map.type_values -> {orientation type: value(s)}; '-' means nothing on that orientation."""
+    try:
+        d = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+    except ValueError:
+        d = {}
+    if not isinstance(d, dict):
+        return {}
+    return {ty: str(d[ty]).strip() for ty in ORIENTATION_TYPES if str(d.get(ty) or '').strip()}
+
+
+def _format_map_value(conn, field, raw):
+    """'Thigh Highs, boots' -> 'thigh.highs, boots': your spelling when you use the value, else your format."""
+    fvocab = _video_vocab(conn, [field])
+    values = []
+    for part in split_values(raw or ''):
+        v = _vocab_lookup(fvocab, field, part) or user_tag_format(part)
+        if v and v not in values:
+            values.append(v)
+    return ', '.join(values)
+
+
+def mapping_values(m, vtypes):
+    """-> (values, types that used their own value) a mapping gives on a video of these orientation types."""
+    tv = _type_values(m.get('type_values'))
+    if not vtypes or not tv:
+        return split_values(m.get('value') or ''), []
+    out, used = [], []
+    for ty in vtypes:
+        v = tv.get(ty)
+        if v is None:
+            v = m.get('value') or ''
+        else:
+            used.append(ty)
+        for x in ([] if v == '-' else split_values(v)):
+            if x not in out:
+                out.append(x)
+    return out, used
+
+
 def video_types(conn, video_id, orientations=None, straight=None):
     """A video's orientation types for tick rules: its orientation tags, else its library's type,
     else 'straight' when the scene looks straight. Empty when it can't be told."""
@@ -3940,10 +3982,11 @@ def _tag_mapping(conn, source, name, vocab):
     No stored mapping yet: an exact match (in your format) in exactly one field
     becomes an 'auto' mapping; several fields -> 'ambiguous'; none -> 'unmapped'."""
     key = (name or '').strip().lower()
-    row = conn.execute('SELECT field, value, status, tick, tick_types FROM ext_tag_map WHERE ext_source = ? AND ext_tag = ?',
-                       (source, key)).fetchone()
+    row = conn.execute('SELECT field, value, status, tick, tick_types, type_values FROM ext_tag_map '
+                       'WHERE ext_source = ? AND ext_tag = ?', (source, key)).fetchone()
     if row:
-        return {'status': row[2], 'field': row[0], 'value': row[1], 'choices': [], 'tick': row[3], 'tick_types': row[4]}
+        return {'status': row[2], 'field': row[0], 'value': row[1], 'choices': [], 'tick': row[3], 'tick_types': row[4],
+                'type_values': _type_values(row[5])}
     want = user_tag_format(name)
     hits = [(f, v) for f in vocab for v in [_vocab_lookup(vocab, f, want)] if v]
     if len(hits) == 1:
@@ -4106,14 +4149,17 @@ def build_scene_suggestions(conn, path, full_movie=None):
         if m['status'] == 'ignored':
             ignored.append(name)
         elif m['status'] in ('auto', 'confirmed') and m['field'] in fields and m['value']:
-            for value in split_values(m['value']):          # one tag can map to several values
+            values, own = mapping_values(m, vtypes)          # this video's orientation may have its own value(s)
+            shown = ', '.join(values) + (f' (on {"/".join(own)} videos)' if own else '')
+            for value in values:                              # one tag can map to several values
                 n = vocab.get(m['field'], {}).get(value, 0)
                 pre, rule_label = tag_pre_tick(m, n, tick, vtypes)
-                add(m['field'], value, f'tag mapping: {name} → {m["field"]}: {m["value"]}'
+                add(m['field'], value, f'tag mapping: {name} → {m["field"]}: {shown}'
                     + (' (confirmed)' if m['status'] == 'confirmed' else f' (exact name, on {n} video{"s" if n != 1 else ""})')
                     + f' · {rule_label}',
                     pre, new_value=not n, ext_tag=name, tick=m.get('tick') or 'default',
-                    tick_types=_tick_types(m.get('tick_types')))
+                    tick_types=_tick_types(m.get('tick_types')), type_values=m.get('type_values') or {},
+                    default_value=m['value'])
         else:
             unmapped.append({'tag': name, 'suggested': m['value'], 'choices': m['choices']})
 
@@ -4143,6 +4189,7 @@ class TagMapBody(BaseModel):
     field: Optional[str] = None
     value: Optional[str] = None
     ignore: bool = False
+    type_values: Optional[dict] = None     # {orientation type: value(s) or '-'}; None = leave as they are
 
 
 class TagUsedBody(BaseModel):
@@ -4177,18 +4224,9 @@ def scene_tagmap(body: TagMapBody, model=Depends(get_model)):
             field = (body.field or '').strip().lower()
             if field not in _tag_fields():
                 raise ExtDBError(f'Unknown field: {body.field}')
-            raw = (body.value or '').strip()
-            if not raw:
+            value = _format_map_value(conn, field, body.value)    # 'thigh.highs, boots' -> two values
+            if not value:
                 raise ExtDBError('No value given')
-            fvocab = _video_vocab(conn, [field])
-            values = []
-            for part in split_values(raw):                  # 'thigh.highs, boots' -> two values
-                v = _vocab_lookup(fvocab, field, part) or user_tag_format(part)
-                if v and v not in values:
-                    values.append(v)
-            if not values:
-                raise ExtDBError('No value given')
-            value = ', '.join(values)
             status = 'confirmed'
         # ignoring keeps an existing field/value, so the tag can be switched back without retyping
         conn.execute('INSERT INTO ext_tag_map (ext_source, ext_tag, field, value, status, updated_at) '
@@ -4196,8 +4234,17 @@ def scene_tagmap(body: TagMapBody, model=Depends(get_model)):
                      'field = COALESCE(excluded.field, ext_tag_map.field), value = COALESCE(excluded.value, ext_tag_map.value), '
                      'status = excluded.status, updated_at = CURRENT_TIMESTAMP',
                      (source, key, field, value, status))
+        tv = None
+        if body.type_values is not None and not body.ignore:
+            tv = {}
+            for ty, raw in _type_values(body.type_values).items():
+                v = '-' if raw == '-' else _format_map_value(conn, field, raw)
+                if v:
+                    tv[ty] = v
+            conn.execute('UPDATE ext_tag_map SET type_values = ? WHERE ext_source = ? AND ext_tag = ?',
+                         (json.dumps(tv) if tv else None, source, key))
         conn.commit()
-        return {'success': True, 'tag': body.tag, 'field': field, 'value': value, 'status': status}
+        return {'success': True, 'tag': body.tag, 'field': field, 'value': value, 'status': status, 'type_values': tv}
     except Exception as e:
         return _err(e)
 
@@ -4261,6 +4308,42 @@ def tagmap_tick(body: TagTickBody, model=Depends(get_model)):
         return _err(e)
 
 
+class TagTypeValueBody(BaseModel):
+    source: str
+    tag: str
+    type: str                               # orientation type
+    value: Optional[str] = None             # value(s), '-' = nothing, empty = back to the default
+
+
+@router.post('/tagmap/type-value')
+def tagmap_type_value(body: TagTypeValueBody, model=Depends(get_model)):
+    """Give a mapping its own value(s) on one orientation (Creampie -> breeding on gay videos)."""
+    try:
+        ensure_schema()
+        ty = (body.type or '').strip().lower()
+        if ty not in ORIENTATION_TYPES:
+            raise ExtDBError(f'Unknown orientation: {body.type}')
+        conn = _conn()
+        key = (body.tag or '').strip().lower()
+        row = conn.execute('SELECT field, status, type_values FROM ext_tag_map WHERE ext_source = ? AND ext_tag = ?',
+                           (body.source, key)).fetchone()
+        if not row or not row[0] or row[1] == 'ignored':
+            raise ExtDBError(f'"{body.tag}" has no mapping to give another value')
+        tv = _type_values(row[2])
+        raw = (body.value or '').strip()
+        v = '-' if raw == '-' else _format_map_value(conn, row[0], raw)
+        if v:
+            tv[ty] = v
+        else:
+            tv.pop(ty, None)
+        conn.execute("UPDATE ext_tag_map SET type_values = ?, status = 'confirmed', updated_at = CURRENT_TIMESTAMP "
+                     'WHERE ext_source = ? AND ext_tag = ?', (json.dumps(tv) if tv else None, body.source, key))
+        conn.commit()
+        return {'success': True, 'tag': key, 'type_values': tv}
+    except Exception as e:
+        return _err(e)
+
+
 class SceneTickBody(BaseModel):
     changes: dict = {}
 
@@ -4314,14 +4397,17 @@ def tagmap_list(model=Depends(get_model)):
         fields = _tag_fields()
         vocab = _video_vocab(conn, fields)
         rows = []
-        for r in _rows(conn, 'SELECT ext_source, ext_tag, field, value, status, uses, updated_at, tick, tick_types FROM ext_tag_map '
-                             'ORDER BY ext_tag, ext_source'):
+        for r in _rows(conn, 'SELECT ext_source, ext_tag, field, value, status, uses, updated_at, tick, tick_types, type_values '
+                             'FROM ext_tag_map ORDER BY ext_tag, ext_source'):
             parts = split_values(r[3]) if r[2] else []
             counts = [vocab.get(r[2], {}).get(v, 0) for v in parts]
+            tv = _type_values(r[9])
+            every = parts + [x for v in tv.values() if v != '-' for x in split_values(v)] if r[2] else []
             rows.append({'source': r[0], 'tag': r[1], 'field': r[2], 'value': r[3], 'values': parts, 'status': r[4],
                          'uses': r[5] or 0, 'updated_at': r[6], 'tick': r[7] or 'default', 'tick_types': _tick_types(r[8]),
                          'videos': (counts[0] if len(counts) == 1 else ' / '.join(map(str, counts))) if counts else 0,
-                         'missing': bool(r[4] != 'ignored' and parts and any(not _vocab_lookup(vocab, r[2], v) for v in parts))})
+                         'type_values': tv,
+                         'missing': bool(r[4] != 'ignored' and every and any(not _vocab_lookup(vocab, r[2], v) for v in every))})
         seen = {}
         for src, tags_json in _rows(conn, 'SELECT ext_source, ext_tags FROM video_ext_link'):
             try:
