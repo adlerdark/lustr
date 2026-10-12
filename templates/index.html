@@ -531,7 +531,8 @@
                 themeUploading: false,
                 showLogin: true,
                 authMode: 'login', 
-                folderAdding: false,           // Add Folders: scanning the new folder
+                folderAdding: false,           // Add Folders: scanning the new folder (keeps going if the window is closed)
+                folderAddingLib: '',           // ...into this library (header indicator)
                 loginUsername: '',
                 loginPassword: '',
                 loginError: '',
@@ -8197,6 +8198,7 @@ No metadata is changed.`)) return;
                 
                 openBrowser(lib) { 
                     this.activeMenu = null; // Fix: Close context menu
+                    if (this.folderAdding) { this.modals.browser = true; return; }   // still adding: show its progress
                     this.targetLib = lib;
                     this.selectedFolders = new Set(); // Reset selection
                     this.modals.browser = true; 
@@ -8232,20 +8234,21 @@ No metadata is changed.`)) return;
                 // adding a folder scans it right away: show that it's working
                 async selectFolder() {
                     if (this.folderAdding) return;
-                    this.folderAdding = true;
+                    this.folderAdding = true; this.folderAddingLib = this.targetLib;
                     try { await this._selectFolder(); } finally { this.folderAdding = false; }
                 },
 
                 async selectSelectedFolders() {
                     if (this.folderAdding) return;
-                    this.folderAdding = true;
+                    this.folderAdding = true; this.folderAddingLib = this.targetLib;
                     try { await this._selectSelectedFolders(); } finally { this.folderAdding = false; }
                 },
 
                 async _selectFolder() { 
+                    const lib = this.targetLib, folder = this.browserPath;   // fixed now: the window may be closed meanwhile
                     const res = await fetch('/api/library/add_folder', { 
                         method: 'POST', 
-                        body: JSON.stringify({library: this.targetLib, path: this.browserPath}), 
+                        body: JSON.stringify({library: lib, path: folder}), 
                         headers:{'Content-Type': 'application/json'} 
                     });
                     
@@ -8255,7 +8258,7 @@ No metadata is changed.`)) return;
                     }
 
                     // Show success message
-                    alert(`Added folder: ${this.browserPath}`);
+                    alert(`Added folder: ${folder}`);
                     
                     // Refresh library list
                     const initRes = await fetch('/api/init');
@@ -8264,8 +8267,8 @@ No metadata is changed.`)) return;
                     this.libraryDataVersion++; // Force reactivity
                     
                     // If this library is currently active, trigger scan and refresh
-                    if (this.currentLibrary === this.targetLib) {
-                        await this.rescanLibrary(this.targetLib);
+                    if (this.currentLibrary === lib) {
+                        await this.rescanLibrary(lib);
                         this.page = 1;
                         await this.fetchVideos('reset');
                     }
@@ -8279,6 +8282,7 @@ No metadata is changed.`)) return;
                         return;
                     }
                     
+                    const lib = this.targetLib;
                     const folders = Array.from(this.selectedFolders).map(p => p);
                     let successCount = 0;
                     let failedFolders = [];
@@ -8286,7 +8290,7 @@ No metadata is changed.`)) return;
                     for (const path of folders) {
                         const res = await fetch('/api/library/add_folder', { 
                             method: 'POST', 
-                            body: JSON.stringify({library: this.targetLib, path: path}), 
+                            body: JSON.stringify({library: lib, path: path}), 
                             headers:{'Content-Type': 'application/json'} 
                         });
                         
@@ -8311,8 +8315,8 @@ No metadata is changed.`)) return;
                     this.libraryDataVersion++; // Force reactivity
                     
                     // If this library is currently active, trigger scan and refresh
-                    if (this.currentLibrary === this.targetLib) {
-                        await this.rescanLibrary(this.targetLib);
+                    if (this.currentLibrary === lib) {
+                        await this.rescanLibrary(lib);
                         this.page = 1;
                         await this.fetchVideos('reset');
                     }
@@ -11000,9 +11004,10 @@ No metadata is changed.`)) return;
                 </div>
                 <button @click="modals.settings = true; loadAutomation()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
                 <button @click="generateAllThumbs(currentLibrary)" class="text-gray-400 hover:text-white p-1" title="Gen All Thumbs">&#128247;</button>
-                <button @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning">
-                    <svg x-show="scanning" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    <span x-text="scanning ? 'Scanning...' : 'Rescan'" class="hidden sm:inline"></span>
+                <button @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning || folderAdding"
+                        :title="folderAdding ? 'Adding a folder to ' + folderAddingLib + ' and looking for videos' : ''">
+                    <svg x-show="scanning || folderAdding" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    <span x-text="scanning ? 'Scanning...' : folderAdding ? 'Adding folder...' : 'Rescan'" class="hidden sm:inline"></span>
                 </button>
                 <button @click="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded text-sm flex items-center gap-2" title="Log Out">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
@@ -13639,12 +13644,14 @@ No metadata is changed.`)) return;
         </div>
 
         <!-- Browser Modal -->
-        <div x-show="modals.browser" x-cloak class="fixed inset-0 z-[2000] bg-black/90 flex items-center justify-center p-4">
+        <div x-show="modals.browser" x-cloak @click.self="if (folderAdding) modals.browser = false" class="fixed inset-0 z-[2000] bg-black/90 flex items-center justify-center p-4">
             <div class="bg-gray-800 rounded-lg w-[95%] max-w-2xl flex flex-col max-h-[80vh] relative">
                 <div x-show="folderAdding" class="absolute inset-0 z-20 rounded-lg bg-gray-900/90 flex flex-col items-center justify-center gap-3 text-center p-6">
                     <svg class="animate-spin h-10 w-10 text-blue-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                     <p class="font-semibold text-gray-100">Adding the folder and looking for videos…</p>
                     <p class="text-sm text-gray-400">Large folders can take a few minutes. Details like length and codec fill in shortly after.</p>
+                    <button @click="modals.browser = false" class="mt-2 px-4 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-200">Continue in background</button>
+                    <p class="text-xs text-gray-500">The Rescan button at the top shows it's still working; you'll get a message when it's done.</p>
                 </div>
                 <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
                     <h3 class="font-bold">Add Folders to <span class="text-blue-400" x-text="targetLib"></span></h3>
