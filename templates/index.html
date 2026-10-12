@@ -888,6 +888,7 @@
                 targetLib: null,
                 manageLibTarget: '', // Name of library currently being managed via wrench icon
                 selectedFolders: new Set(), // Track selected folders for multi-add
+                folderFind: '',             // Manage Libraries: find which library has a folder
                 
                 // Group Management
                 editingGroupName: null,
@@ -2132,9 +2133,12 @@
                     }
                 },
 
-                // a library's folders in the chosen order (stored order = order added)
-                sortedFolders(lib) {
-                    const f = [...(this.allLibraries[lib] || [])];
+                // a library's folders in the chosen order (stored order = order added);
+                // with find: only folders whose path contains it, or that contain the path typed
+                sortedFolders(lib, find = '') {
+                    let f = [...(this.allLibraries[lib] || [])];
+                    const q = find.trim().toLowerCase();
+                    if (q) f = f.filter(p => { const l = p.toLowerCase(); return l.includes(q) || q.startsWith(l.replace(/\/+$/, '') + '/'); });
                     if (this.appSettings.folderSort === 'name') f.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
                     return f;
                 },
@@ -8079,6 +8083,7 @@ No metadata is changed.`)) return;
                 },
 
                 openLibraryModal() {
+                    this.folderFind = '';
                     // CRITICAL PROTECTION: Don't open if data isn't loaded yet
                     if (!this.isDataFullyLoaded) {
                         alert('⏳ Please wait for library data to finish loading before managing libraries.');
@@ -12049,9 +12054,18 @@ No metadata is changed.`)) return;
                         </select>
                     </div>
                     
+                    <div class="mb-3 flex items-center gap-2">
+                        <input type="text" x-model="folderFind" placeholder="Find a folder in your libraries..." class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                        <button x-show="folderFind" @click="folderFind = ''" class="text-gray-400 hover:text-white text-xl font-bold px-1" title="Clear">&times;</button>
+                    </div>
+                    <div x-show="folderFind.trim()" class="mb-3 text-xs"
+                         :class="tempLibraryOrder.some(n => sortedFolders(n, folderFind).length) ? 'text-green-400' : 'text-yellow-400'"
+                         x-text="(() => { const hits = tempLibraryOrder.filter(n => !libraryGroups[n] && sortedFolders(n, folderFind).length); return hits.length ? 'Found in: ' + hits.join(', ') : 'Not in any library'; })()"></div>
+
                     <div class="space-y-4 overflow-y-auto pr-2 scroller flex-1">
                         <template x-for="(name, index) in tempLibraryOrder" :key="name">
-                            <div class="bg-gray-900 p-2 rounded border border-gray-700 relative group flex flex-col gap-2"
+                            <div x-show="!folderFind.trim() || (!libraryGroups[name] && sortedFolders(name, folderFind).length)"
+                                 class="bg-gray-900 p-2 rounded border border-gray-700 relative group flex flex-col gap-2"
                                  draggable="true" 
                                  @dragstart="startDrag(index)" 
                                  @dragover.prevent 
@@ -12072,7 +12086,7 @@ No metadata is changed.`)) return;
                                     </div>
                                 </div>
                                 <ul x-show="allLibraries[name]" class="text-sm text-gray-400 space-y-1">
-                                    <template x-for="folder in sortedFolders(name)" :key="folder">
+                                    <template x-for="folder in sortedFolders(name, folderFind)" :key="folder">
                                         <li class="flex items-center gap-2 justify-between bg-gray-800 p-1 rounded">
                                             <span x-text="folder" class="truncate"></span>
                                             <button @click="removeFolder(name, folder)" class="text-red-500 hover:text-red-300 text-xl font-bold">&times;</button>
