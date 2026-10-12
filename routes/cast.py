@@ -1253,8 +1253,9 @@ def set_cast_gender(body: SetGenderRequest, request: Request, model = Depends(ge
     if not USE_SQLITE:
         raise HTTPException(status_code=501, detail="Gender requires SQLite mode")
     
-    if body.gender not in ['female', 'male', 'trans']:
-        raise HTTPException(status_code=400, detail="Gender must be 'female', 'male', or 'trans'")
+    from database import GENDERS
+    if body.gender not in GENDERS:
+        raise HTTPException(status_code=400, detail="Gender must be one of: " + ', '.join(GENDERS))
     
     try:
         model.db.set_cast_gender(body.cast_name, body.gender)

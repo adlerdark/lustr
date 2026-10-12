@@ -5,11 +5,28 @@ SQLite-based storage for video metadata.
 Provides better performance and indexing compared to JSON.
 """
 import os
+import re
 import sqlite3
 import json
 import threading
 from datetime import datetime, timedelta
 from config import DATA_FILE, LIST_FIELDS
+
+GENDERS = ('female', 'male', 'trans_female', 'trans_male')
+
+
+def gender_from_external(raw):
+    """A StashDB / ThePornDB gender ('TRANSGENDER_FEMALE', 'Trans Female', 'MALE', ...) -> one of GENDERS,
+    or None (unknown, non-binary, or 'trans' without a direction)."""
+    g = re.sub(r'[\s-]+', '_', str(raw or '').strip().upper())
+    if 'TRANS' in g:
+        if 'FEMALE' in g or 'WOMAN' in g:
+            return 'trans_female'
+        if 'MALE' in g or g.endswith('_MAN'):
+            return 'trans_male'
+        return None
+    return {'FEMALE': 'female', 'MALE': 'male'}.get(g)
+
 
 class Database:
     def __init__(self, db_path=None):
@@ -257,7 +274,7 @@ class Database:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cast_gender (
                     cast_name TEXT PRIMARY KEY,
-                    gender TEXT NOT NULL CHECK(gender IN ('female', 'male', 'trans')),
+                    gender TEXT NOT NULL CHECK(gender IN ('female', 'male', 'trans_female', 'trans_male')),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -273,6 +290,7 @@ class Database:
                 )
             ''')
             
+            self._migrate_trans_genders(conn)
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_cast_gender_gender ON cast_gender(gender)')
             
             # File changes tracking - for move detection and replacement suggestions
@@ -318,6 +336,65 @@ class Database:
                     cursor.execute(f'ALTER TABLE playlists ADD COLUMN {col} {typ}')
             conn.commit()
     
+    def _migrate_trans_genders(self, conn):
+        """Once: 'trans' becomes 'trans_female' / 'trans_male'. The direction comes from the performer's
+        StashDB link, then ThePornDB link, then how linked StashDB / ThePornDB scenes credit them;
+        otherwise trans_female. The CHECK constraint needs the table rebuilt."""
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cast_gender'").fetchone()
+        if not row or 'trans_female' in (row[0] or ''):
+            return
+        conn.commit()                                 # the copy can't be taken inside an open transaction
+        try:                                          # a copy first: this runs before the startup backup
+            bdir = os.path.join(os.path.dirname(self.db_path), 'backups')
+            os.makedirs(bdir, exist_ok=True)
+            dest = sqlite3.connect(os.path.join(bdir, f"library_before_trans_genders_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"))
+            conn.backup(dest)
+            dest.close()
+        except Exception as e:
+            print(f"[gender] backup before migration failed: {e}")
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        order = {'stashdb': 0, 'tpdb': 1}
+        trans = [r[0] for r in conn.execute("SELECT cast_name FROM cast_gender WHERE gender NOT IN ('female', 'male')")]
+        found = {}
+        if trans and 'cast_ext_link' in tables:
+            links = {}
+            for name, src, eid, eg in conn.execute('SELECT cast_name, ext_source, ext_id, ext_gender FROM cast_ext_link'):
+                links[name] = (src, eid)
+                g = gender_from_external(eg)
+                if name in trans and g and g.startswith('trans'):
+                    found[name] = (order.get(src, 2), g)
+            if 'video_ext_link' in tables:
+                by_id = {(s, i): n for n, (s, i) in links.items()}
+                by_name = {n.lower(): n for n in trans}
+                for src, perf in conn.execute('SELECT ext_source, ext_performers FROM video_ext_link'):
+                    try:
+                        plist = json.loads(perf or '[]')
+                    except ValueError:
+                        continue
+                    for p in plist if isinstance(plist, list) else []:
+                        g = gender_from_external((p or {}).get('gender'))
+                        if not (g and g.startswith('trans')):
+                            continue
+                        name = by_id.get((src, p.get('id'))) or by_name.get((p.get('name') or '').lower())
+                        rank = 2 + order.get(src, 2)          # scene credits rank after the performer's own link
+                        if name in by_name.values() and (name not in found or rank < found[name][0]):
+                            found[name] = (rank, g)
+        conn.execute('''CREATE TABLE cast_gender_new (
+                    cast_name TEXT PRIMARY KEY,
+                    gender TEXT NOT NULL CHECK(gender IN ('female', 'male', 'trans_female', 'trans_male')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        conn.execute("INSERT INTO cast_gender_new SELECT cast_name, gender, created_at, updated_at FROM cast_gender "
+                     "WHERE gender IN ('female', 'male')")
+        for name in trans:
+            conn.execute("INSERT INTO cast_gender_new (cast_name, gender) VALUES (?, ?)",
+                         (name, found.get(name, (0, 'trans_female'))[1]))
+        conn.execute('DROP TABLE cast_gender')
+        conn.execute('ALTER TABLE cast_gender_new RENAME TO cast_gender')
+        conn.commit()
+        print(f"[gender] 'trans' split into trans_female / trans_male: {len(trans)} performer(s), "
+              f"{len(found)} from StashDB / ThePornDB data")
+
     def _migrate_add_length_seconds_column(self):
         """
         Migration: Add length_seconds column and populate from existing length strings.
@@ -1971,8 +2048,8 @@ class Database:
     
     def set_cast_gender(self, cast_name, gender):
         """Set gender for a cast member."""
-        if gender not in ['female', 'male', 'trans']:
-            raise ValueError(f"Invalid gender: {gender}. Must be 'female', 'male', or 'trans'")
+        if gender not in GENDERS:
+            raise ValueError(f"Invalid gender: {gender}. Must be one of {', '.join(GENDERS)}")
         
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -2018,7 +2095,7 @@ class Database:
         total = cursor.fetchone()[0]
         
         stats['total'] = total
-        stats['assigned'] = sum(stats.get(g, 0) for g in ['female', 'male', 'trans'])
+        stats['assigned'] = sum(stats.get(g, 0) for g in GENDERS)
         stats['unassigned'] = total - stats['assigned']
         
         return stats

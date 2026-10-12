@@ -36,6 +36,8 @@ import requests
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
+from database import gender_from_external      # 'TRANSGENDER_FEMALE' -> 'trans_female', ...
+
 router = APIRouter(prefix="/api/extdb", tags=["extdb"])
 
 # ---------------------------------------------------------------------------
@@ -807,8 +809,10 @@ def norm_name(s):
     return re.sub(r'[^a-z0-9]+', '', s.lower())
 
 
-_GENDER_MAP = {'FEMALE': 'female', 'MALE': 'male',
-               'TRANSGENDER_FEMALE': 'trans', 'TRANSGENDER_MALE': 'trans'}
+def _gender_bucket(g):
+    """Gender filters (bulk linker / bulk suggest): 'trans' covers trans_female and trans_male."""
+    g = g or 'female'
+    return 'trans' if g.startswith('trans') else g
 
 
 def score_candidate(p, local, gender):
@@ -851,7 +855,7 @@ def score_candidate(p, local, gender):
         else:
             score, reasons = 40, []
 
-    eg = _GENDER_MAP.get(p.get('gender') or '')
+    eg = gender_from_external(p.get('gender'))
     if gender and eg:
         if eg == gender:
             score += 3
@@ -1425,7 +1429,7 @@ def bulk_candidates(conn, source, genders, categories, skip_checked, names=None)
                 continue
             stats['selected'] += 1
         stats['total'] += 1
-        if selected is None and (gmap.get(name, 'female') not in genders
+        if selected is None and (_gender_bucket(gmap.get(name)) not in genders
                                  or cmap.get(name, 'pro') not in categories):
             stats['filtered_out'] += 1
         elif name in linked:
@@ -1977,6 +1981,8 @@ def build_suggestions(conn, primary, ctx=None):
     cal = [c for c in ctx['cal_all'] if c['row']['cast_name'] != primary]     # everyone except this performer
     m = _measures(link)
     gender = local_gender(conn, primary) or 'female'
+    if gender == 'trans_male':          # body attributes and black.male: as for men
+        gender = 'male'
     label = SOURCES.get(link['ext_source'], {}).get('label', 'the external DB')
     items, hints = [], []
 
@@ -2210,7 +2216,7 @@ def suggest_bulk(genders: str = 'female', categories: str = 'pro', status: str =
         stats = Counter()
         out = []
         for (name,) in _rows(conn, 'SELECT cast_name FROM cast_ext_link ORDER BY cast_name COLLATE NOCASE'):
-            if name in aliases or gmap.get(name, 'female') not in g or cmap.get(name, 'pro') not in c:
+            if name in aliases or _gender_bucket(gmap.get(name)) not in g or cmap.get(name, 'pro') not in c:
                 continue
             if needle and needle not in name.lower():
                 continue
@@ -3950,10 +3956,10 @@ def _tag_mapping(conn, source, name, vocab):
 
 
 def _scene_gender(p, local):
-    g = (p.get('gender') or '').upper().replace(' ', '_')
-    if g.startswith('TRANS'):
-        return 'trans'
-    return _GENDER_MAP.get(g) or local or None
+    g = gender_from_external(p.get('gender'))
+    if not g and 'TRANS' in str(p.get('gender') or '').upper():
+        g = local if local and local.startswith('trans') else 'trans_female'
+    return g or local or None
 
 
 FULL_MOVIE_TAG = 'full.movie'       # a video with this tag is the whole movie: suggest the movie's full cast
@@ -4065,6 +4071,11 @@ def build_scene_suggestions(conn, path, full_movie=None):
             ext_label += f' (as {p["as"]})'
         is_man = straight and gender == 'male'
         field = 'male_cast' if is_man else 'cast'
+        # gender for the bio (separate from Cast / Male Cast): what you have, and what the scene says
+        stored = genders.get(local) if local else None
+        ext_g = gender_from_external(p.get('gender'))
+        gx = {'gender': stored, 'ext_gender': ext_g,
+              'gender_default': stored or ext_g or ('male' if is_man else 'female')}
         if local:
             in_cast = local.lower() in cast_prim
             if how in ('linked', 'tpdb-name'):
@@ -4077,12 +4088,12 @@ def build_scene_suggestions(conn, path, full_movie=None):
             if is_man:
                 if in_cast and local.lower() not in marked:
                     reason = f'{ext_label} · already in Cast, mark as Male Cast'
-                add('male_cast', local, reason, pre, already_set=local.lower() in marked, linked=how == 'linked')
+                add('male_cast', local, reason, pre, already_set=local.lower() in marked, linked=how == 'linked', **gx)
             else:
-                add('cast', local, reason, pre, already_set=in_cast, linked=how == 'linked')
+                add('cast', local, reason, pre, already_set=in_cast, linked=how == 'linked', **gx)
         else:
             add(field, p.get('name') or '', f'{ext_label} · not in your cast yet' +
-                (' · man in a straight scene' if is_man else ''), False, already_set=False, new_cast=True)
+                (' · man in a straight scene' if is_man else ''), False, already_set=False, new_cast=True, **gx)
 
     # --- tags, through the tag mapping ---
     vtypes = video_types(conn, vid, orient, straight)
@@ -5021,7 +5032,7 @@ def is_straight_video(orientations, genders):
     if o & STRAIGHT_ORIENTATIONS:
         return True
     g = [x.lower() for x in genders]
-    return not o and 'male' in g and 'female' in g and 'trans' not in g
+    return not o and 'male' in g and 'female' in g and not any(x.startswith('trans') for x in g)
 
 
 @router.get('/male-cast/map')

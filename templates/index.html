@@ -586,7 +586,8 @@
                     movieCast: null, fullMovie: null, fullMoviePath: '',
                                        // your changes for this video only: Cast <-> Male Cast, and values you add yourself (no mapping)
                                        castSwap: {}, extra: [], ownPath: '', ownField: 'tags', ownValue: '',
-                                       edits: {}, editing: null, editValue: '' },      // suggested values you corrected (this video only)
+                                       edits: {}, editing: null, editValue: '',
+                                       genderPick: {} },                                // performer genders you picked (saved with Add selected)      // suggested values you corrected (this video only)
                             // ▶ Preview: the gallery's animated thumbnail, shown over the window without closing it
                             preview: { open: false, pinned: false, frame: 0, timer: null, failed: false, staticOnly: false },
                             // hover card on a candidate's thumbnail; your tag mappings to highlight its tags
@@ -1357,7 +1358,8 @@
                     
                     // Filter by gender
                     if (this.castBrowserGenderFilter !== 'all') {
-                        filtered = filtered.filter(c => c.gender === this.castBrowserGenderFilter);
+                        const gf = this.castBrowserGenderFilter;
+                        filtered = filtered.filter(c => gf === 'trans' ? String(c.gender || '').startsWith('trans') : c.gender === gf);
                         if (this.castBrowserGenderFilter === 'male' && this.castBrowserMaleScope !== 'all') {
                             const mc = this.maleCast.counts || {};
                             filtered = filtered.filter(c => this.castBrowserMaleScope === 'straight'
@@ -3399,7 +3401,7 @@
                     Object.assign(sc, { mode: 'suggest', error: '', message: keepTicks ? sc.message : '' });
                     sg.loading = true;
                     if (sg.fullMoviePath !== sc.path) Object.assign(sg, { fullMovie: null, fullMoviePath: sc.path });   // your choice, per video
-                    if (sg.ownPath !== sc.path) Object.assign(sg, { castSwap: {}, extra: [], edits: {}, ownPath: sc.path, ownValue: '' });
+                    if (sg.ownPath !== sc.path) Object.assign(sg, { castSwap: {}, extra: [], edits: {}, genderPick: {}, ownPath: sc.path, ownValue: '' });
                     sg.editing = null;
                     try {
                         const d = await (await fetch('/api/extdb/scene/suggest?path=' + encodeURIComponent(sc.path)
@@ -3634,6 +3636,38 @@
                     sg.checked = c;
                 },
 
+                // a performer's gender (their bio setting - not the Cast / Male Cast split)
+                extSceneGender(it) {
+                    const p = this.extScene.suggest.genderPick[String(it.value).toLowerCase()];
+                    return p || it.gender_default || 'female';
+                },
+                extSceneSetGender(it, g) {
+                    const sg = this.extScene.suggest;
+                    sg.genderPick = { ...sg.genderPick, [String(it.value).toLowerCase()]: g };
+                },
+                extSceneGenderHint(it) {
+                    const g = this.extSceneGender(it), src = this.extScene.suggest.sourceLabel || 'scene';
+                    const out = [];
+                    if (!it.gender) out.push(it.new_cast ? 'gender for the new entry' : 'gender not set yet');
+                    else if (g !== it.gender) out.push('gender will change from ' + this.genderLabel(it.gender));
+                    if (it.ext_gender && it.ext_gender !== g) out.push(src + ' says ' + this.genderLabel(it.ext_gender));
+                    return out.join(' · ');
+                },
+                // genders to save with Add selected: ticked performers whose gender differs from what's stored,
+                // plus anyone whose gender you picked yourself
+                extSceneGenderSaves() {
+                    const sg = this.extScene.suggest, out = [];
+                    for (const it of sg.items) {
+                        if (it.field !== 'cast' && it.field !== 'male_cast') continue;
+                        const picked = sg.genderPick[String(it.value).toLowerCase()];
+                        const g = this.extSceneGender(it);
+                        const ticked = !it.already_set && this.extSceneSuggestIsChecked(it);
+                        if (it.new_cast && !ticked) continue;             // not being added: no bio to set
+                        if (g !== it.gender && (picked || ticked) && !out.some(o => o.name === it.value)) out.push({ name: it.value, gender: g });
+                    }
+                    return out;
+                },
+
                 // a value you add yourself: this video only, nothing is mapped or remembered
                 extSceneOwnItem(field, value, current, vocab) {
                     const lc = value.toLowerCase();
@@ -3724,7 +3758,8 @@
                 async extSceneSuggestApply() {
                     const sc = this.extScene, sg = sc.suggest;
                     const picked = sg.items.filter(i => !i.already_set && this.extSceneSuggestIsChecked(i));
-                    if (!picked.length || sc.busy) return;
+                    const genderSaves = this.extSceneGenderSaves();
+                    if ((!picked.length && !genderSaves.length) || sc.busy) return;
                     const updates = {}, addTo = {}, male = [], unmale = [], castAdded = [], tags = [];
                     const lc = v => String(v).toLowerCase();
                     for (const it of picked) {
@@ -3739,20 +3774,27 @@
                     sc.busy = 'apply';
                     sc.error = '';
                     try {
-                        const res = await fetch('/api/metadata/update', {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ paths: [sc.path], updates, add_to_lists: addTo })
-                        });
-                        if (!res.ok) {
-                            const err = await res.json().catch(() => ({}));
-                            throw new Error(err.detail || `Saving metadata failed (${res.status})`);
+                        if (picked.length) {
+                            const res = await fetch('/api/metadata/update', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ paths: [sc.path], updates, add_to_lists: addTo })
+                            });
+                            if (!res.ok) {
+                                const err = await res.json().catch(() => ({}));
+                                throw new Error(err.detail || `Saving metadata failed (${res.status})`);
+                            }
                         }
                         if (male.length || unmale.length) await this.saveMaleCastMarks([sc.path], { add: male, remove: unmale });
+                        // genders last, so your choice replaces the automatic 'male' of new Male Cast entries
+                        const gOk = [], gFail = [];
+                        for (const s of genderSaves) (await this.setCastGender(s.name, s.gender, true) ? gOk : gFail).push(s);
                         if (tags.length) {
                             try { await this.extDbPost('/api/extdb/scene/tagmap/used', { source: sg.source, tags }); } catch (e) { /* bookkeeping only */ }
                         }
                         await this.fetchVideos('none');
-                        let msg = `Added ${picked.length} item${picked.length === 1 ? '' : 's'}: ` + picked.map(i => i.value).join(', ');
+                        let msg = picked.length ? `Added ${picked.length} item${picked.length === 1 ? '' : 's'}: ` + picked.map(i => i.value).join(', ') : '';
+                        if (gOk.length) msg += (msg ? ' · ' : '') + 'gender: ' + gOk.map(s => s.name + ' ' + this.genderLabel(s.gender)).join(', ');
+                        if (gFail.length) sc.error = 'Could not save the gender of ' + gFail.map(s => s.name).join(', ');
                         const withAttrs = castAdded.filter(n => !male.includes(n));
                         if (withAttrs.length && confirm(`Also apply the starred attributes of the added cast to their videos?\n\n${withAttrs.join('\n')}`)) {
                             sc.busy = 'apply-videos';
@@ -4933,7 +4975,10 @@ No metadata is changed.`)) return;
                     }
                 },
 
-                async setCastGender(castName, gender) {
+                genderOptions() { return [['female', '♀ Female'], ['male', '♂ Male'], ['trans_female', '⚧ Trans Female'], ['trans_male', '⚧ Trans Male']]; },
+                genderLabel(g) { return (this.genderOptions().find(o => o[0] === g) || [null, g || 'not set'])[1]; },
+
+                async setCastGender(castName, gender, quiet = false) {
                     try {
                         const res = await fetch('/api/cast/gender/set', {
                             method: 'POST',
@@ -4957,13 +5002,15 @@ No metadata is changed.`)) return;
                             if (castMember) {
                                 castMember.gender = gender;
                             }
+                            return true;
                         } else {
-                            alert('Failed to update gender');
+                            if (!quiet) alert('Failed to update gender');
                         }
                     } catch (e) {
                         console.error('Failed to set gender:', e);
-                        alert('Error updating gender');
+                        if (!quiet) alert('Error updating gender');
                     }
+                    return false;
                 },
 
                 async setCastCategory(castName, category) {
@@ -11756,9 +11803,9 @@ No metadata is changed.`)) return;
                                                 :value="castBioData?.gender || 'female'"
                                                 @change="setCastGender(castBioData?.name, $event.target.value)"
                                                 class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
-                                                <option value="female">♀ Female</option>
-                                                <option value="male">♂ Male</option>
-                                                <option value="trans">⚧ Trans</option>
+                                                <template x-for="g in genderOptions()" :key="g[0]">
+                                                    <option :value="g[0]" x-text="g[1]" :selected="(castBioData?.gender || 'female') === g[0]"></option>
+                                                </template>
                                             </select>
                                         </div>
 
@@ -15652,10 +15699,20 @@ No metadata is changed.`)) return;
                                             <button x-show="it.field === 'cast' || it.field === 'male_cast'" type="button" @click.prevent.stop="extSceneSwapCast(it)"
                                                     class="ml-auto text-xs px-1.5 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white"
                                                     title="Wrong cast type? Switch it for this video" x-text="it.field === 'cast' ? '⇄ Male Cast' : '⇄ Cast'"></button>
+                                            <select x-show="it.field === 'cast' || it.field === 'male_cast'" @click.stop @change="extSceneSetGender(it, $event.target.value)"
+                                                    class="text-xs bg-gray-700 border border-gray-600 rounded px-1 py-0.5"
+                                                    :class="extSceneGender(it) !== it.gender ? 'text-blue-200 border-blue-500' : 'text-gray-300'"
+                                                    title="Gender on their bio (saved with Add selected) - separate from Cast / Male Cast">
+                                                <template x-for="g in genderOptions()" :key="g[0]">
+                                                    <option :value="g[0]" x-text="g[1]" :selected="extSceneGender(it) === g[0]"></option>
+                                                </template>
+                                            </select>
                                             <button x-show="it.custom" type="button" @click.prevent.stop="extSceneRemoveOwn(it)"
                                                     class="ml-auto text-gray-500 hover:text-red-400 text-lg leading-none px-1" title="Remove">&times;</button>
                                         </div>
                                         <div class="text-xs text-gray-400 mt-0.5" x-text="it.reason"></div>
+                                        <div x-show="(it.field === 'cast' || it.field === 'male_cast') && extSceneGenderHint(it)"
+                                             class="text-xs text-blue-300 mt-0.5" x-text="extSceneGenderHint(it)"></div>
                                         <div x-show="it.ext_tag && !it.already_set" class="flex flex-wrap items-center gap-1 mt-1 text-xs">
                                             <span class="text-gray-500" x-text="'Pre-tick “' + it.ext_tag + '”:'"></span>
                                             <select :value="it.tick || 'default'" @change="extSceneSetTagTick(it, $event.target.value)"
@@ -15751,9 +15808,9 @@ No metadata is changed.`)) return;
                         class="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 rounded text-sm disabled:opacity-40">Suggest metadata</button>
                 <button x-show="extScene.mode === 'suggest'" @click="Object.assign(extScene, { mode: 'linked', error: '', message: '' })" :disabled="!!extScene.busy"
                         class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-40">Back to linked scene</button>
-                <button x-show="extScene.mode === 'suggest'" @click="extSceneSuggestApply()" :disabled="!extSceneSuggestCount() || !!extScene.busy"
+                <button x-show="extScene.mode === 'suggest'" @click="extSceneSuggestApply()" :disabled="(!extSceneSuggestCount() && !extSceneGenderSaves().length) || !!extScene.busy"
                         class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40"
-                        x-text="extScene.busy === 'apply' ? 'Adding…' : (extScene.busy === 'apply-videos' ? 'Applying attributes…' : ('Add selected (' + extSceneSuggestCount() + ')'))"></button>
+                        x-text="extScene.busy === 'apply' ? 'Adding…' : (extScene.busy === 'apply-videos' ? 'Applying attributes…' : (extSceneSuggestCount() ? 'Add selected (' + extSceneSuggestCount() + ')' : 'Save genders (' + extSceneGenderSaves().length + ')')))"></button>
                 <button x-show="extScene.mode === 'linked'" @click="extSceneRefresh()" :disabled="!!extScene.busy"
                         class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40"
                         x-text="extScene.busy === 'refresh' ? 'Refreshing…' : 'Refresh'"></button>
