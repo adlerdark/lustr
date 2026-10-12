@@ -862,7 +862,7 @@
                 sceneTick: { year: true, site: true, cast_linked: true, cast_name: false, tags: 'never' },
                 extCfg: { tab: 'tagmap', loaded: false, loading: false, error: '', message: '', rows: [], seen: [], fields: [], vocab: {},
                           sources: [], filter: 'all', source: 'all', q: '', editKey: null, edit: { field: 'tags', value: '', types: {}, showTypes: false },
-                          showAdd: false, add: { source: 'stashdb', tag: '', field: 'tags', value: '', ignore: false, valueTouched: false },
+                          showAdd: false, add: { source: 'stashdb', tag: '', field: 'tags', value: '', ignore: false, valueTouched: false, types: {}, showTypes: false },
                           cache: null, overview: null, busy: false, types: [],
                           links: { rows: [], total: 0, page: 1, per_page: 100, q: '', source: '', library: '', libraries: [], loading: false } },
                 // Quick Tags editor (data/quicktags.json)
@@ -6560,10 +6560,11 @@ No metadata is changed.`)) return;
                     if (cur.size) this.extCfgSetTick(r, 'types', [...cur]);
                 },
 
-                extCfgStartEdit(r) {
+                extCfgStartEdit(r, showTypes = false) {
                     this.extCfg.editKey = this.extCfgKey(r);
                     const tv = { ...(r.type_values || {}) };
-                    this.extCfg.edit = { field: r.field || 'tags', value: r.value || this.extCfgFmt(r.tag), types: tv, showTypes: Object.keys(tv).length > 0 };
+                    this.extCfg.edit = { field: r.field || 'tags', value: r.value || this.extCfgFmt(r.tag), types: tv,
+                                         showTypes: showTypes || Object.keys(tv).length > 0 };
                 },
 
                 // typeValues: {orientation type: value(s) or '-'} - other values on some orientations (undefined = leave them)
@@ -6596,8 +6597,8 @@ No metadata is changed.`)) return;
                 async extCfgAddSubmit() {
                     const a = this.extCfg.add;
                     if (!a.tag.trim()) { this.extCfg.error = 'Enter the external tag name.'; return; }
-                    if (await this.extCfgSave(a.source, a.tag.trim(), a.field, a.value, a.ignore)) {
-                        Object.assign(a, { tag: '', value: '', ignore: false, valueTouched: false });
+                    if (await this.extCfgSave(a.source, a.tag.trim(), a.field, a.value, a.ignore, a.ignore ? undefined : a.types)) {
+                        Object.assign(a, { tag: '', value: '', ignore: false, valueTouched: false, types: {}, showTypes: false });
                     }
                 },
 
@@ -13600,7 +13601,20 @@ No metadata is changed.`)) return;
                                        :disabled="extCfg.add.ignore" placeholder="your value(s), comma-separated" @keydown.enter="extCfgAddSubmit()"
                                        class="flex-1 min-w-[8rem] bg-gray-700 border border-gray-600 rounded px-2 py-1 disabled:opacity-40">
                                 <label class="flex items-center gap-1 text-gray-400"><input type="checkbox" x-model="extCfg.add.ignore" class="rounded"> ignore this tag</label>
+                                <button type="button" x-show="!extCfg.add.ignore" @click="extCfg.add.showTypes = !extCfg.add.showTypes" class="text-blue-400 hover:text-blue-300"
+                                        x-text="extCfg.add.showTypes ? 'By orientation ▾' : '+ different by orientation'"></button>
                                 <button @click="extCfgAddSubmit()" :disabled="extCfg.busy" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-40">Save</button>
+                                <div x-show="extCfg.add.showTypes && !extCfg.add.ignore" class="w-full grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 items-center">
+                                    <template x-for="ty in tagTypesAll()" :key="ty">
+                                        <div class="contents">
+                                            <span class="text-gray-400" x-text="'On ' + tagTypeShort(ty) + ' videos'"></span>
+                                            <input type="text" :value="extCfg.add.types[ty] || ''" :list="'extcfg-vocab-' + extCfg.add.field"
+                                                   @input="extCfg.add.types = { ...extCfg.add.types, [ty]: $event.target.value }"
+                                                   placeholder="same as above · - for nothing"
+                                                   class="min-w-0 bg-gray-700 border border-gray-600 rounded px-2 py-1">
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
 
                             <div x-show="extCfg.loading" class="text-center text-gray-400 py-6">Loading…</div>
@@ -13631,6 +13645,10 @@ No metadata is changed.`)) return;
                                                         <span x-show="r.status === 'ignored' && !r.field" class="text-gray-500">—</span>
                                                         <div x-show="r.status && r.status !== 'ignored' && Object.keys(r.type_values || {}).length"
                                                              class="text-gray-400 font-mono" title="Other values on these orientations" x-text="tagTypeValuesText(r.type_values)"></div>
+                                                        <button x-show="r.status && r.status !== 'ignored'" type="button" @click="extCfgStartEdit(r, true)" :disabled="extCfg.busy"
+                                                                class="block text-blue-400 hover:text-blue-300"
+                                                                title="Map this tag to something else on gay / bi / trans / lesbian / straight videos"
+                                                                x-text="Object.keys(r.type_values || {}).length ? '✎ by orientation' : '+ different by orientation'"></button>
                                                         <span x-show="!r.status" class="text-gray-400" x-text="r.videos + ' linked video' + (r.videos === 1 ? '' : 's')"></span>
                                                         <span x-show="r.missing" class="ml-1 px-1 rounded bg-yellow-700 text-white"
                                                               title="No video uses this value any more - it will be created as a new value if applied">not in library</span>
@@ -13650,7 +13668,7 @@ No metadata is changed.`)) return;
                                                             <div x-show="extCfg.edit.showTypes" class="w-full grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 items-center mt-1">
                                                                 <template x-for="ty in tagTypesAll()" :key="ty">
                                                                     <div class="contents">
-                                                                        <span class="text-gray-400" x-text="tagTypeShort(ty)"></span>
+                                                                        <span class="text-gray-400" x-text="'On ' + tagTypeShort(ty)"></span>
                                                                         <input type="text" :value="extCfg.edit.types[ty] || ''" :list="'extcfg-vocab-' + extCfg.edit.field"
                                                                                @input="extCfg.edit.types = { ...extCfg.edit.types, [ty]: $event.target.value }"
                                                                                @keydown.enter="extCfgSave(r.source, r.tag, extCfg.edit.field, extCfg.edit.value, false, extCfg.edit.types)"
