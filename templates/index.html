@@ -583,7 +583,9 @@
                             // Suggest metadata (mode 'suggest'): from the linked scene, add only
                             suggest: { loading: false, items: [], checked: {}, info: [], unmapped: [], ignored: [], vocab: {}, fields: [],
                                        straight: false, source: '', sourceLabel: '', mapDraft: {}, showIgnored: false, current: {}, videoTypes: [],
-                    movieCast: null, fullMovie: null, fullMoviePath: '' },
+                    movieCast: null, fullMovie: null, fullMoviePath: '',
+                                       // your changes for this video only: Cast <-> Male Cast, and values you add yourself (no mapping)
+                                       castSwap: {}, extra: [], ownPath: '', ownField: 'tags', ownValue: '' },
                             // ▶ Preview: the gallery's animated thumbnail, shown over the window without closing it
                             preview: { open: false, pinned: false, frame: 0, timer: null, failed: false, staticOnly: false },
                             // hover card on a candidate's thumbnail; your tag mappings to highlight its tags
@@ -3396,17 +3398,29 @@
                     Object.assign(sc, { mode: 'suggest', error: '', message: keepTicks ? sc.message : '' });
                     sg.loading = true;
                     if (sg.fullMoviePath !== sc.path) Object.assign(sg, { fullMovie: null, fullMoviePath: sc.path });   // your choice, per video
+                    if (sg.ownPath !== sc.path) Object.assign(sg, { castSwap: {}, extra: [], ownPath: sc.path, ownValue: '' });
                     try {
                         const d = await (await fetch('/api/extdb/scene/suggest?path=' + encodeURIComponent(sc.path)
                                                      + (sg.fullMovie === null ? '' : '&full_movie=' + sg.fullMovie))).json();
                         if (!d.success) throw new Error(d.error || 'Could not build suggestions');
+                        const items = d.items || [];
+                        // your Cast <-> Male Cast switches and own values survive a reload (e.g. after mapping a tag)
+                        items.forEach(i => {
+                            const to = sg.castSwap[String(i.value).toLowerCase()];
+                            if (to && ['cast', 'male_cast'].includes(i.field) && to !== i.field) this.extSceneCastMove(i, to, d.current || {});
+                        });
+                        sg.extra.forEach(e => {
+                            const same = items.find(i => i.field === e.field && String(i.value).toLowerCase() === e.value.toLowerCase());
+                            if (same) same.custom_tick = true;
+                            else items.push(this.extSceneOwnItem(e.field, e.value, d.current || {}, d.vocab || {}));
+                        });
                         const checked = {};
-                        (d.items || []).forEach(i => {
+                        items.forEach(i => {
                             const k = this.extSceneSuggestKey(i);
                             if (i.already_set) return;
                             // keep the user's own ticks; new items (e.g. a tag just mapped) use their pre-tick
                             if (prev && prevKeys.has(k)) { if (prev[k]) checked[k] = true; }
-                            else if (i.pre_tick || this.extSceneDefaultTick(i)) checked[k] = true;
+                            else if (i.pre_tick || i.custom || i.custom_tick || this.extSceneDefaultTick(i)) checked[k] = true;
                         });
                         const drafts = {};
                         (d.unmapped || []).forEach(u => {
@@ -3415,7 +3429,8 @@
                         });
                         Object.assign(sg, { current: d.current || {} });
                         if (d.cache_id && this.extScene.clues) this.extScene.clues.cache_id = d.cache_id;
-                        Object.assign(sg, { items: d.items || [], checked, info: d.info || [], unmapped: d.unmapped || [], ignored: d.ignored || [],
+                        if ((d.fields || []).length && !d.fields.includes(sg.ownField)) sg.ownField = d.fields[0];
+                        Object.assign(sg, { items, checked, info: d.info || [], unmapped: d.unmapped || [], ignored: d.ignored || [],
                                             vocab: d.vocab || {}, fields: d.fields || [], straight: !!d.straight, source: d.source,
                                             sourceLabel: d.source_label || '', mapDraft: drafts, videoTypes: d.video_types || [],
                                             movieCast: d.movie_cast || null });
@@ -3542,6 +3557,64 @@
                     await this.extSceneSuggestOpen(true);
                 },
 
+                // Cast <-> Male Cast for one suggestion (this video only)
+                extSceneCastMove(it, to, current) {
+                    it.field = to;
+                    it.already_set = (current[to] || []).some(v => String(v).toLowerCase() === String(it.value).toLowerCase());
+                    it.reason = (it.reason || '').replace(/ · man in a straight scene| · moved to (Male )?Cast by you$/g, '')
+                                + (to === 'male_cast' ? ' · moved to Male Cast by you' : ' · moved to Cast by you');
+                },
+
+                extSceneSwapCast(it) {
+                    const sg = this.extScene.suggest;
+                    const was = !!sg.checked[this.extSceneSuggestKey(it)];
+                    const c = { ...sg.checked };
+                    delete c[this.extSceneSuggestKey(it)];
+                    const to = it.field === 'cast' ? 'male_cast' : 'cast';
+                    this.extSceneCastMove(it, to, sg.current);
+                    sg.castSwap = { ...sg.castSwap, [String(it.value).toLowerCase()]: to };
+                    if (!it.already_set) c[this.extSceneSuggestKey(it)] = true;      // switching it means you want it
+                    sg.checked = c;
+                },
+
+                // a value you add yourself: this video only, nothing is mapped or remembered
+                extSceneOwnItem(field, value, current, vocab) {
+                    const lc = value.toLowerCase();
+                    return { field, value, reason: 'added by you · this video only', custom: true, pre_tick: true,
+                             already_set: (current[field] || []).some(v => String(v).toLowerCase() === lc),
+                             new_value: !(vocab[field] || []).some(v => String(v).toLowerCase() === lc) };
+                },
+
+                extSceneAddOwn() {
+                    const sg = this.extScene.suggest, field = sg.ownField;
+                    if (!field) return;
+                    const c = { ...sg.checked };
+                    for (const part of (sg.ownValue || '').split(',')) {
+                        if (!part.trim()) continue;
+                        // your existing spelling if you use it, else your format: 'Big Tits' -> 'big.tits'
+                        const value = (sg.vocab[field] || []).find(v => String(v).toLowerCase() === part.trim().toLowerCase()) || this.extCfgFmt(part);
+                        if (!value) continue;
+                        let it = sg.items.find(i => i.field === field && String(i.value).toLowerCase() === value.toLowerCase());
+                        if (!it) {
+                            it = this.extSceneOwnItem(field, value, sg.current, sg.vocab);
+                            sg.items.push(it);
+                        }
+                        if (!sg.extra.some(e => e.field === field && e.value.toLowerCase() === value.toLowerCase())) sg.extra.push({ field, value });
+                        if (!it.already_set) c[this.extSceneSuggestKey(it)] = true;
+                    }
+                    sg.checked = c;
+                    sg.ownValue = '';
+                },
+
+                extSceneRemoveOwn(it) {
+                    const sg = this.extScene.suggest;
+                    sg.extra = sg.extra.filter(e => !(e.field === it.field && e.value.toLowerCase() === String(it.value).toLowerCase()));
+                    const c = { ...sg.checked };
+                    delete c[this.extSceneSuggestKey(it)];
+                    sg.checked = c;
+                    sg.items = sg.items.filter(i => i !== it);
+                },
+
                 extSceneSuggestKey(it) { return it.field + '|' + it.value; },
                 extSceneSuggestIsChecked(it) { return !!this.extScene.suggest.checked[this.extSceneSuggestKey(it)]; },
                 extSceneSuggestCount() { return Object.keys(this.extScene.suggest.checked).length; },
@@ -3595,12 +3668,14 @@
                     const sc = this.extScene, sg = sc.suggest;
                     const picked = sg.items.filter(i => !i.already_set && this.extSceneSuggestIsChecked(i));
                     if (!picked.length || sc.busy) return;
-                    const updates = {}, addTo = {}, male = [], castAdded = [], tags = [];
+                    const updates = {}, addTo = {}, male = [], unmale = [], castAdded = [], tags = [];
+                    const lc = v => String(v).toLowerCase();
                     for (const it of picked) {
                         if (it.field === 'title' || it.field === 'year') { updates[it.field] = it.value; continue; }
                         const f = it.field === 'male_cast' ? 'cast' : it.field;
                         (addTo[f] = addTo[f] || []).push(it.value);
                         if (it.field === 'male_cast') male.push(it.value);
+                        else if (f === 'cast' && (sg.current.male_cast || []).some(v => lc(v) === lc(it.value))) unmale.push(it.value);   // moved back to Cast
                         if (f === 'cast') castAdded.push(it.value);
                         if (it.ext_tag) tags.push(it.ext_tag);
                     }
@@ -3615,7 +3690,7 @@
                             const err = await res.json().catch(() => ({}));
                             throw new Error(err.detail || `Saving metadata failed (${res.status})`);
                         }
-                        if (male.length) await this.saveMaleCastMarks([sc.path], { add: male, remove: [] });
+                        if (male.length || unmale.length) await this.saveMaleCastMarks([sc.path], { add: male, remove: unmale });
                         if (tags.length) {
                             try { await this.extDbPost('/api/extdb/scene/tagmap/used', { source: sg.source, tags }); } catch (e) { /* bookkeeping only */ }
                         }
@@ -15499,6 +15574,11 @@ No metadata is changed.`)) return;
                                             <span x-show="it.change" class="text-xs px-1.5 rounded bg-orange-700 text-white"
                                                   title="Replaces the value you have now">change</span>
                                             <span x-show="it.already_set" class="text-xs text-gray-400">already set</span>
+                                            <button x-show="it.field === 'cast' || it.field === 'male_cast'" type="button" @click.prevent.stop="extSceneSwapCast(it)"
+                                                    class="ml-auto text-xs px-1.5 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white"
+                                                    title="Wrong cast type? Switch it for this video" x-text="it.field === 'cast' ? '⇄ Male Cast' : '⇄ Cast'"></button>
+                                            <button x-show="it.custom" type="button" @click.prevent.stop="extSceneRemoveOwn(it)"
+                                                    class="ml-auto text-gray-500 hover:text-red-400 text-lg leading-none px-1" title="Remove">&times;</button>
                                         </div>
                                         <div class="text-xs text-gray-400 mt-0.5" x-text="it.reason"></div>
                                         <div x-show="it.ext_tag && !it.already_set" class="flex flex-wrap items-center gap-1 mt-1 text-xs">
@@ -15524,6 +15604,22 @@ No metadata is changed.`)) return;
                         </div>
                     </div>
                 </template>
+                <div x-show="!extScene.suggest.loading && extScene.suggest.fields.length">
+                    <h3 class="font-semibold mb-1">Add your own</h3>
+                    <p class="text-xs text-gray-500 mb-1">Extra values for this video only - nothing is mapped or remembered for other scenes. Separate several with commas.</p>
+                    <div class="flex flex-wrap items-center gap-2 bg-gray-900 rounded px-3 py-2">
+                        <select x-model="extScene.suggest.ownField" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs">
+                            <template x-for="f in extScene.suggest.fields" :key="f">
+                                <option :value="f" x-text="extSceneFieldLabel(f)" :selected="f === extScene.suggest.ownField"></option>
+                            </template>
+                        </select>
+                        <input type="text" x-model="extScene.suggest.ownValue" :list="'extscene-vocab-' + extScene.suggest.ownField"
+                               @keydown.enter.prevent="extSceneAddOwn()" placeholder="e.g. threesome, mfm"
+                               class="flex-1 min-w-[8rem] bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200">
+                        <button @click="extSceneAddOwn()" :disabled="!(extScene.suggest.ownValue || '').trim()"
+                                class="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs disabled:opacity-40">Add</button>
+                    </div>
+                </div>
                 <div x-show="!extScene.suggest.loading && extScene.suggest.unmapped.length">
                     <h3 class="font-semibold mb-1">Unmapped tags</h3>
                     <p class="text-xs text-gray-500 mb-1" x-text="'Map a ' + extScene.suggest.sourceLabel + ' tag to one of your fields once, and later scenes suggest it automatically.'"></p>
