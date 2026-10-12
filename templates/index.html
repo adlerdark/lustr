@@ -585,7 +585,8 @@
                                        straight: false, source: '', sourceLabel: '', mapDraft: {}, showIgnored: false, current: {}, videoTypes: [],
                     movieCast: null, fullMovie: null, fullMoviePath: '',
                                        // your changes for this video only: Cast <-> Male Cast, and values you add yourself (no mapping)
-                                       castSwap: {}, extra: [], ownPath: '', ownField: 'tags', ownValue: '' },
+                                       castSwap: {}, extra: [], ownPath: '', ownField: 'tags', ownValue: '',
+                                       edits: {}, editing: null, editValue: '' },      // suggested values you corrected (this video only)
                             // ▶ Preview: the gallery's animated thumbnail, shown over the window without closing it
                             preview: { open: false, pinned: false, frame: 0, timer: null, failed: false, staticOnly: false },
                             // hover card on a candidate's thumbnail; your tag mappings to highlight its tags
@@ -3398,7 +3399,8 @@
                     Object.assign(sc, { mode: 'suggest', error: '', message: keepTicks ? sc.message : '' });
                     sg.loading = true;
                     if (sg.fullMoviePath !== sc.path) Object.assign(sg, { fullMovie: null, fullMoviePath: sc.path });   // your choice, per video
-                    if (sg.ownPath !== sc.path) Object.assign(sg, { castSwap: {}, extra: [], ownPath: sc.path, ownValue: '' });
+                    if (sg.ownPath !== sc.path) Object.assign(sg, { castSwap: {}, extra: [], edits: {}, ownPath: sc.path, ownValue: '' });
+                    sg.editing = null;
                     try {
                         const d = await (await fetch('/api/extdb/scene/suggest?path=' + encodeURIComponent(sc.path)
                                                      + (sg.fullMovie === null ? '' : '&full_movie=' + sg.fullMovie))).json();
@@ -3408,6 +3410,10 @@
                         items.forEach(i => {
                             const to = sg.castSwap[String(i.value).toLowerCase()];
                             if (to && ['cast', 'male_cast'].includes(i.field) && to !== i.field) this.extSceneCastMove(i, to, d.current || {});
+                        });
+                        items.forEach(i => {
+                            const e = sg.edits[i.field + '|' + String(i.value).toLowerCase()];
+                            if (e !== undefined) this.extSceneSetValue(i, e, d.current || {}, d.vocab || {});
                         });
                         sg.extra.forEach(e => {
                             const same = items.find(i => i.field === e.field && String(i.value).toLowerCase() === e.value.toLowerCase());
@@ -3574,6 +3580,57 @@
                     this.extSceneCastMove(it, to, sg.current);
                     sg.castSwap = { ...sg.castSwap, [String(it.value).toLowerCase()]: to };
                     if (!it.already_set) c[this.extSceneSuggestKey(it)] = true;      // switching it means you want it
+                    sg.checked = c;
+                },
+
+                // correct a suggested value for this video only (spelling, capitals, scene number...); mappings stay as they are
+                extSceneSetValue(it, v, current, vocab) {
+                    if (it.orig_value === undefined) { it.orig_value = it.value; it.base_reason = it.reason; }
+                    const lc = String(v).toLowerCase();
+                    it.value = v;
+                    it.edited = v !== it.orig_value;
+                    it.reason = it.base_reason + (it.edited ? ` · edited by you (was "${it.orig_value}")` : '');
+                    const cur = current[it.field] || [];
+                    if (it.field === 'title' || it.field === 'year') {
+                        it.already_set = cur[0] === v;
+                        it.change = !!cur[0] && cur[0] !== v;
+                    } else {
+                        it.already_set = cur.some(x => String(x).toLowerCase() === lc);
+                        if (vocab[it.field]) it.new_value = !vocab[it.field].some(x => String(x).toLowerCase() === lc);
+                    }
+                },
+
+                extSceneEditStart(it) {
+                    const sg = this.extScene.suggest;
+                    sg.editing = this.extSceneSuggestKey(it);
+                    sg.editValue = it.value;
+                    this.$nextTick(() => { const el = document.getElementById('extscene-edit-input'); if (el) { el.focus(); el.select(); } });
+                },
+
+                extSceneEditSave(it, reset = false) {
+                    const sg = this.extScene.suggest;
+                    const orig = it.orig_value === undefined ? it.value : it.orig_value;
+                    let v = reset ? orig : (sg.editValue || '').trim();
+                    sg.editing = null;
+                    if (!v) return;
+                    if (it.field === 'year' && !/^\d{4}$/.test(v)) { this.extScene.error = 'A year needs four digits.'; return; }
+                    if (!['title', 'year', 'site'].includes(it.field) && !reset)       // tag fields: your spelling, or your format
+                        v = (sg.vocab[it.field] || []).find(x => String(x).toLowerCase() === v.toLowerCase()) || this.extCfgFmt(v);
+                    if (v === it.value) return;
+                    const c = { ...sg.checked };
+                    delete c[this.extSceneSuggestKey(it)];
+                    const origKey = it.field + '|' + String(orig).toLowerCase();
+                    const edits = { ...sg.edits };
+                    if (v === orig) delete edits[origKey]; else edits[origKey] = v;
+                    sg.edits = edits;
+                    const twin = sg.items.find(i => i !== it && i.field === it.field && String(i.value).toLowerCase() === v.toLowerCase());
+                    if (twin) {                                    // it became a value that's already in the list: keep that one
+                        sg.items = sg.items.filter(i => i !== it);
+                        if (!twin.already_set) c[this.extSceneSuggestKey(twin)] = true;
+                    } else {
+                        this.extSceneSetValue(it, v, sg.current, sg.vocab);
+                        if (!it.already_set) c[this.extSceneSuggestKey(it)] = true;    // editing it means you want it
+                    }
                     sg.checked = c;
                 },
 
@@ -15566,7 +15623,25 @@ No metadata is changed.`)) return;
                                            :checked="it.already_set || extSceneSuggestIsChecked(it)" @change="extSceneSuggestToggle(it)">
                                     <div class="flex-1 min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
-                                            <span class="font-medium text-gray-100 break-all" x-text="it.value"></span>
+                                            <template x-if="extScene.suggest.editing !== extSceneSuggestKey(it)">
+                                                <span class="font-medium text-gray-100 break-all" x-text="it.value"></span>
+                                            </template>
+                                            <template x-if="extScene.suggest.editing === extSceneSuggestKey(it)">
+                                                <span class="flex flex-1 min-w-[12rem] items-center gap-1" @click.prevent.stop>
+                                                    <input id="extscene-edit-input" type="text" x-model="extScene.suggest.editValue"
+                                                           :list="extScene.suggest.vocab[it.field] ? 'extscene-vocab-' + it.field : null"
+                                                           @keydown.enter.prevent="extSceneEditSave(it)" @keydown.escape.prevent.stop="extScene.suggest.editing = null"
+                                                           class="flex-1 bg-gray-700 border border-blue-500 rounded px-2 py-0.5 text-sm text-gray-100">
+                                                    <button type="button" @click.prevent.stop="extSceneEditSave(it)" class="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 rounded text-xs">Save</button>
+                                                    <button type="button" @click.prevent.stop="extScene.suggest.editing = null" class="px-1 text-gray-400 hover:text-white text-xs">Cancel</button>
+                                                </span>
+                                            </template>
+                                            <button x-show="!['cast', 'male_cast'].includes(it.field) && extScene.suggest.editing !== extSceneSuggestKey(it)" type="button"
+                                                    @click.prevent.stop="extSceneEditStart(it)" class="text-gray-500 hover:text-white text-xs"
+                                                    title="Change this value for this video only (the mapping stays as it is)">&#9998;</button>
+                                            <button x-show="it.edited" type="button" @click.prevent.stop="extSceneEditSave(it, true)"
+                                                    class="text-xs text-gray-500 hover:text-white" :title="'Back to “' + it.orig_value + '”'">&#8634;</button>
+                                            <span x-show="it.edited" class="text-xs px-1.5 rounded bg-blue-800 text-blue-100">edited</span>
                                             <span x-show="it.new_cast" class="text-xs px-1.5 rounded bg-yellow-700 text-white"
                                                   title="Not in your cast yet - a new cast entry will be created">new cast entry</span>
                                             <span x-show="it.new_value && !it.new_cast && !['title', 'year'].includes(it.field)" class="text-xs px-1.5 rounded bg-yellow-700 text-white"
