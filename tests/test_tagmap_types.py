@@ -57,7 +57,7 @@ class TypeValueEndpointTests(unittest.TestCase):
         ext_db.ensure_schema()
         self.conn = db.get_connection()
         self.conn.execute("INSERT INTO ext_tag_map (ext_source, ext_tag, field, value, status) "
-                          "VALUES ('stashdb', 'creampie', 'tags', 'creampie', 'auto')")
+                          "VALUES ('any', 'creampie', 'tags', 'creampie', 'auto')")
         self.conn.commit()
 
     def row(self):
@@ -83,6 +83,40 @@ class TypeValueEndpointTests(unittest.TestCase):
         m = ext_db._tag_mapping(self.conn, 'stashdb', 'Creampie', {})
         self.assertEqual(ext_db.mapping_values(m, ['gay'])[0], ['breeding'])
         self.assertEqual(ext_db.mapping_values(m, ['straight'])[0], ['creampie'])
+
+
+class MergeSourcesTests(TypeValueEndpointTests):
+    """Mappings once kept per source (stashdb / tpdb) become one per tag."""
+    def test_merge(self):
+        c = self.conn
+        c.execute('DELETE FROM ext_tag_map')
+        rows = [
+            # tag, source, field, value, status, uses, updated, tick, tick_types, type_values
+            ('compilation', 'stashdb', 'theme', 'cumpilation', 'confirmed', 2, '2026-10-01', None, None, None),
+            ('compilation', 'tpdb', 'theme', 'compilation', 'auto', 1, '2026-10-05', None, None, None),
+            ('no condom', 'stashdb', 'feature', 'bareback', 'auto', 0, '2026-10-01', 'types', 'gay,bisexual,trans', None),
+            ('no condom', 'tpdb', 'feature', 'bareback', 'confirmed', 0, '2026-10-03', 'types', 'gay', '{"lesbian": "-"}'),
+            ('facial', 'stashdb', 'cumshot', 'facial', 'auto', 0, '2026-10-01', 'always', None, None),
+            ('only tpdb', 'tpdb', 'tags', 'only', 'ignored', 0, '2026-10-01', None, None, None),
+        ]
+        c.executemany('INSERT INTO ext_tag_map (ext_tag, ext_source, field, value, status, uses, updated_at, tick, tick_types, '
+                      'type_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', rows)
+        c.commit()
+        ext_db._merge_tag_maps(c)
+        got = {r[0]: r[1:] for r in c.execute('SELECT ext_tag, ext_source, value, status, uses, tick, tick_types, type_values '
+                                                 'FROM ext_tag_map')}
+        self.assertEqual(len(got), 4)
+        self.assertTrue(all(v[0] == 'any' for v in got.values()))
+        self.assertEqual(got['compilation'][1:4], ('cumpilation', 'confirmed', 3))      # confirmed beats a newer auto
+        self.assertEqual(got['no condom'][2:], ('confirmed', 0, 'types', 'gay', '{"lesbian": "-"}'))   # newest rule
+        self.assertEqual(got['facial'][4], 'always')
+        self.assertEqual(got['only tpdb'][2], 'ignored')
+        ext_db._merge_tag_maps(c)                                                       # second run: nothing to do
+        self.assertEqual(c.execute('SELECT COUNT(*) FROM ext_tag_map').fetchone()[0], 4)
+
+    def test_any_source_finds_it(self):
+        m = ext_db._tag_mapping(self.conn, 'tpdb', 'Creampie', {})
+        self.assertEqual(m['value'], 'creampie')
 
 
 if __name__ == '__main__':

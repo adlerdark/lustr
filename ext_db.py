@@ -299,6 +299,7 @@ def ensure_schema():
     for col in ('tick', 'tick_types', 'type_values'):
         if col not in have:
             conn.execute(f'ALTER TABLE ext_tag_map ADD COLUMN {col} TEXT')
+    _merge_tag_maps(conn)
     # Bulk scene matching: latest outcome per video (lets re-runs skip them)
     conn.execute('''
         CREATE TABLE IF NOT EXISTS video_ext_bulk_log (
@@ -3857,6 +3858,42 @@ def save_scene_tick(conn, changes):
     return s
 
 
+TAG_MAP_SOURCE = 'any'       # one tag mapping for every source: "Creampie" means the same on StashDB and ThePornDB
+
+
+def _merge_tag_maps(conn):
+    """Once: mappings kept per source (stashdb / tpdb) become one per tag. Where they differ, the field and
+    value come from the stronger status (confirmed > ignored > auto), then the newer one; the pre-tick rule
+    from the newest one that has a rule; per-orientation values are combined; uses are added up."""
+    rows = conn.execute('SELECT ext_source, ext_tag, field, value, status, uses, updated_at, tick, tick_types, type_values '
+                        'FROM ext_tag_map').fetchall()
+    if all(r[0] == TAG_MAP_SOURCE for r in rows):
+        return
+    rank = {'confirmed': 3, 'ignored': 2, 'auto': 1}
+    groups = {}
+    for r in rows:
+        groups.setdefault(r[1], []).append(r)
+    for tag, rs in groups.items():
+        rs.sort(key=lambda r: (rank.get(r[4], 0), r[6] or ''), reverse=True)
+        base = rs[0]
+        field, value = base[2], base[3]
+        if not field:                               # an ignored tag without a value: keep one from the others
+            other = next((r for r in rs if r[2]), None)
+            if other:
+                field, value = other[2], other[3]
+        ticked = sorted((r for r in rs if r[7]), key=lambda r: r[6] or '', reverse=True)
+        tick, tick_types = (ticked[0][7], ticked[0][8]) if ticked else (None, None)
+        tv = {}
+        for r in reversed(rs):                      # the stronger row's values win
+            tv.update(_type_values(r[9]))
+        conn.execute('DELETE FROM ext_tag_map WHERE ext_tag = ?', (tag,))
+        conn.execute('INSERT INTO ext_tag_map (ext_source, ext_tag, field, value, status, uses, updated_at, tick, tick_types, '
+                     'type_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                     (TAG_MAP_SOURCE, tag, field, value, base[4], sum(r[5] or 0 for r in rs),
+                      max((r[6] or '') for r in rs) or None, tick, tick_types, json.dumps(tv) if tv else None))
+    conn.commit()
+
+
 def _tick_types(value):
     return [t for t in ORIENTATION_TYPES if t in {x.strip().lower() for x in str(value or '').split(',')}]
 
@@ -3983,7 +4020,7 @@ def _tag_mapping(conn, source, name, vocab):
     becomes an 'auto' mapping; several fields -> 'ambiguous'; none -> 'unmapped'."""
     key = (name or '').strip().lower()
     row = conn.execute('SELECT field, value, status, tick, tick_types, type_values FROM ext_tag_map '
-                       'WHERE ext_source = ? AND ext_tag = ?', (source, key)).fetchone()
+                       'WHERE ext_source = ? AND ext_tag = ?', (TAG_MAP_SOURCE, key)).fetchone()
     if row:
         return {'status': row[2], 'field': row[0], 'value': row[1], 'choices': [], 'tick': row[3], 'tick_types': row[4],
                 'type_values': _type_values(row[5])}
@@ -3991,7 +4028,7 @@ def _tag_mapping(conn, source, name, vocab):
     hits = [(f, v) for f in vocab for v in [_vocab_lookup(vocab, f, want)] if v]
     if len(hits) == 1:
         conn.execute("INSERT OR IGNORE INTO ext_tag_map (ext_source, ext_tag, field, value, status) VALUES (?, ?, ?, ?, 'auto')",
-                     (source, key, hits[0][0], hits[0][1]))
+                     (TAG_MAP_SOURCE, key, hits[0][0], hits[0][1]))
         conn.commit()
         return {'status': 'auto', 'field': hits[0][0], 'value': hits[0][1], 'choices': [], 'tick': None, 'tick_types': None}
     return {'status': 'ambiguous' if hits else 'unmapped', 'field': None, 'value': want,
@@ -4226,7 +4263,7 @@ def scene_tagmap(body: TagMapBody, model=Depends(get_model)):
     try:
         ensure_schema()
         conn = _conn()
-        source = _source(body.source)
+        source = TAG_MAP_SOURCE                     # the same mapping for every source
         key = (body.tag or '').strip().lower()
         if not key:
             raise ExtDBError('No tag given')
@@ -4277,13 +4314,13 @@ def tagmap_status(body: TagStatusBody, model=Depends(get_model)):
             raise ExtDBError(f'Unknown status: {body.status}')
         conn = _conn()
         key = (body.tag or '').strip().lower()
-        row = conn.execute('SELECT field, value FROM ext_tag_map WHERE ext_source = ? AND ext_tag = ?', (body.source, key)).fetchone()
+        row = conn.execute('SELECT field, value FROM ext_tag_map WHERE ext_source = ? AND ext_tag = ?', (TAG_MAP_SOURCE, key)).fetchone()
         if not row:
             raise ExtDBError(f'No mapping for "{body.tag}"')
         if body.status != 'ignored' and not (row[0] and row[1]):
             raise ExtDBError(f'"{body.tag}" has no field and value yet - map it first')
         conn.execute('UPDATE ext_tag_map SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE ext_source = ? AND ext_tag = ?',
-                     (body.status, body.source, key))
+                     (body.status, TAG_MAP_SOURCE, key))
         conn.commit()
         return {'success': True, 'tag': key, 'status': body.status, 'field': row[0], 'value': row[1]}
     except Exception as e:
@@ -4312,7 +4349,7 @@ def tagmap_tick(body: TagTickBody, model=Depends(get_model)):
         key = (body.tag or '').strip().lower()
         n = conn.execute('UPDATE ext_tag_map SET tick = ?, tick_types = ?, updated_at = CURRENT_TIMESTAMP '
                          'WHERE ext_source = ? AND ext_tag = ?',
-                         (rule, ','.join(types) if rule == 'types' else None, body.source, key)).rowcount
+                         (rule, ','.join(types) if rule == 'types' else None, TAG_MAP_SOURCE, key)).rowcount
         conn.commit()
         if not n:
             raise ExtDBError(f'No mapping for "{body.tag}"')
@@ -4339,7 +4376,7 @@ def tagmap_type_value(body: TagTypeValueBody, model=Depends(get_model)):
         conn = _conn()
         key = (body.tag or '').strip().lower()
         row = conn.execute('SELECT field, status, type_values FROM ext_tag_map WHERE ext_source = ? AND ext_tag = ?',
-                           (body.source, key)).fetchone()
+                           (TAG_MAP_SOURCE, key)).fetchone()
         if not row or not row[0] or row[1] == 'ignored':
             raise ExtDBError(f'"{body.tag}" has no mapping to give another value')
         tv = _type_values(row[2])
@@ -4350,7 +4387,7 @@ def tagmap_type_value(body: TagTypeValueBody, model=Depends(get_model)):
         else:
             tv.pop(ty, None)
         conn.execute("UPDATE ext_tag_map SET type_values = ?, status = 'confirmed', updated_at = CURRENT_TIMESTAMP "
-                     'WHERE ext_source = ? AND ext_tag = ?', (json.dumps(tv) if tv else None, body.source, key))
+                     'WHERE ext_source = ? AND ext_tag = ?', (json.dumps(tv) if tv else None, TAG_MAP_SOURCE, key))
         conn.commit()
         return {'success': True, 'tag': key, 'type_values': tv}
     except Exception as e:
@@ -4388,7 +4425,7 @@ def scene_tagmap_used(body: TagUsedBody, model=Depends(get_model)):
         n = 0
         for t in body.tags or []:
             n += conn.execute('UPDATE ext_tag_map SET uses = COALESCE(uses, 0) + 1 WHERE ext_source = ? AND ext_tag = ?',
-                              (body.source, str(t).strip().lower())).rowcount
+                              (TAG_MAP_SOURCE, str(t).strip().lower())).rowcount
         conn.commit()
         return {'success': True, 'updated': n}
     except Exception as e:
@@ -4429,11 +4466,11 @@ def tagmap_list(model=Depends(get_model)):
                 continue
             for t in {(t.get('name') or '').strip() for t in tags if isinstance(t, dict)}:
                 if t:
-                    s = seen.setdefault((src, t.lower()), {'source': src, 'tag': t, 'videos': 0})
+                    s = seen.setdefault(t.lower(), {'source': TAG_MAP_SOURCE, 'tag': t, 'videos': 0})
                     s['videos'] += 1
-        mapped = {(r['source'], r['tag']) for r in rows}
-        for (src, key), s in seen.items():
-            s['mapped'] = (src, key) in mapped
+        mapped = {r['tag'] for r in rows}
+        for key, s in seen.items():
+            s['mapped'] = key in mapped
         return {'success': True, 'rows': rows, 'fields': fields,
                 'seen': sorted(seen.values(), key=lambda s: (-s['videos'], s['tag'].lower())),
                 'vocab': {f: sorted(vocab.get(f, {}), key=str.lower) for f in fields},
@@ -4451,7 +4488,7 @@ def tagmap_delete(body: TagDeleteBody, model=Depends(get_model)):
         ensure_schema()
         conn = _conn()
         cur = conn.execute('DELETE FROM ext_tag_map WHERE ext_source = ? AND ext_tag = ?',
-                           (body.source, (body.tag or '').strip().lower()))
+                           (TAG_MAP_SOURCE, (body.tag or '').strip().lower()))
         conn.commit()
         return {'success': True, 'removed': cur.rowcount > 0}
     except Exception as e:

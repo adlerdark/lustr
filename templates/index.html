@@ -3473,7 +3473,7 @@
                 },
 
                 extSceneTagInfo(r, tag) {
-                    return (this.extScene.tagMap || {})[(r.source || 'stashdb') + '|' + String(tag).toLowerCase()] || null;
+                    return (this.extScene.tagMap || {})['any|' + String(tag).toLowerCase()] || null;      // one mapping for every source
                 },
 
                 extScenePreviewShow(pin = false) {
@@ -13566,6 +13566,7 @@ No metadata is changed.`)) return;
                         <div x-show="extCfg.tab === 'tagmap'" class="space-y-3">
                             <p class="text-xs text-gray-400">
                                 How tags from StashDB / ThePornDB scenes become your own values when you use <b>Suggest metadata</b> (right-click a video → 🌐 Find scene).
+                                One mapping per tag, used for StashDB and ThePornDB alike.
                                 <span class="text-blue-300">Auto</span> = the tag's name matched one of your values;
                                 <span class="text-green-300">Confirmed</span> = set by you;
                                 <span class="text-gray-300">Ignored</span> = never suggested. Click a status to change it.
@@ -13580,10 +13581,6 @@ No metadata is changed.`)) return;
                                     <option value="ignored" x-text="'Ignored (' + extCfgCounts().ignored + ')'"></option>
                                     <option value="unmapped" x-text="'Unmapped tags in your linked scenes (' + extCfgCounts().unmapped + ')'"></option>
                                 </select>
-                                <select x-show="extCfg.sources.length > 1" x-model="extCfg.source" class="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs">
-                                    <option value="all">All sources</option>
-                                    <template x-for="s in extCfg.sources" :key="s.key"><option :value="s.key" x-text="s.label"></option></template>
-                                </select>
                                 <input type="text" x-model="extCfg.q" placeholder="Search tag or value…"
                                        class="flex-1 min-w-[10rem] bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs">
                                 <button @click="extCfg.showAdd = !extCfg.showAdd" class="px-2 py-1.5 rounded text-xs bg-gray-700 hover:bg-gray-600"
@@ -13592,9 +13589,6 @@ No metadata is changed.`)) return;
                             </div>
 
                             <div x-show="extCfg.showAdd" class="bg-gray-900 rounded p-3 flex flex-wrap gap-2 items-center text-xs">
-                                <select x-show="extCfg.sources.length > 1" x-model="extCfg.add.source" class="bg-gray-700 border border-gray-600 rounded px-2 py-1">
-                                    <template x-for="s in extCfg.sources" :key="s.key"><option :value="s.key" x-text="s.label"></option></template>
-                                </select>
                                 <input type="text" x-model="extCfg.add.tag" placeholder="External tag, e.g. Big Tits"
                                        @input="if (!extCfg.add.valueTouched) extCfg.add.value = extCfgFmt(extCfg.add.tag)"
                                        class="w-44 bg-gray-700 border border-gray-600 rounded px-2 py-1">
@@ -13617,7 +13611,6 @@ No metadata is changed.`)) return;
                                     <thead class="sticky top-0 z-10 bg-gray-900">
                                         <tr class="text-left text-gray-400 border-b border-gray-700">
                                             <th class="p-2 font-medium w-[15%]">External tag</th>
-                                            <th class="p-2 font-medium w-[8%]" x-show="extCfg.sources.length > 1">Source</th>
                                             <th class="p-2 font-medium w-[22%]" x-text="extCfg.filter === 'unmapped' ? 'Seen in' : 'Maps to'"></th>
                                             <th class="p-2 font-medium w-[9%]">Status</th>
                                             <th class="p-2 font-medium w-[20%]" title="When Suggest metadata pre-ticks this tag. Default follows Settings → External DB → Overview.">Pre-tick</th>
@@ -13630,7 +13623,6 @@ No metadata is changed.`)) return;
                                         <template x-for="r in extCfgFiltered()" :key="extCfgKey(r)">
                                             <tr class="border-b border-gray-800 hover:bg-gray-800/50">
                                                 <td class="p-2 text-gray-100" x-text="r.tag"></td>
-                                                <td class="p-2 text-gray-400" x-show="extCfg.sources.length > 1" x-text="extCfgSourceLabel(r.source)"></td>
                                                 <td class="p-2">
                                                     <div x-show="extCfg.editKey !== extCfgKey(r)">
                                                         <span x-show="r.status && r.status !== 'ignored'" class="font-mono text-gray-200" x-text="r.field + ': ' + r.value"></span>
