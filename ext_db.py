@@ -4180,7 +4180,20 @@ def build_scene_suggestions(conn, path, full_movie=None):
             'video_types': vtypes, 'tick_settings': tick, 'movie_cast': movie_cast,
             'current': current, 'cache_id': pv[0] if pv else None, 'filename': pv[1] if pv else None,
             'source': source, 'source_label': label, 'fields': fields,
-            'vocab': {f: sorted(vocab.get(f, {}), key=str.lower) for f in fields}}
+            'vocab': {f: sorted(vocab.get(f, {}), key=str.lower) for f in fields + ['site']}}
+
+
+@router.get('/scene/cast-names')
+def scene_cast_names(model=Depends(get_model)):
+    """Your performers for typing one in (Suggest metadata): names, alias lookup and genders."""
+    try:
+        conn = _conn()
+        aliases = {r[0] for r in _rows(conn, 'SELECT alias_name FROM cast_aliases')}
+        names = sorted({r[0] for r in _rows(conn, 'SELECT value FROM video_cast') if r[0] not in aliases}, key=str.lower)
+        return {'success': True, 'names': names, 'index': {k: v for k, v in _cast_index(conn).items() if k},
+                'genders': {r[0]: (r[1] or '').lower() for r in _rows(conn, 'SELECT cast_name, gender FROM cast_gender')}}
+    except Exception as e:
+        return _err(e)
 
 
 class TagMapBody(BaseModel):
