@@ -2293,6 +2293,7 @@
 
                     if (this.modals.browser) this.modals.browser = false;
                     else if (this.modals.parser) this.modals.parser = false;
+                    else if (this.modals.fileInfo && this.modals.metadata) this.modals.fileInfo = false;   // opened from Edit Metadata
                     else if (this.modals.metadata) this.closeMetadata();
                     else if (this.modals.columns) this.modals.columns = false;
                     else if (this.modals.library) this.closeLibraryModal();
@@ -3254,6 +3255,27 @@
 
                 isMaleCast(v, name) {
                     return this.maleCastOf(v).includes(name);
+                },
+
+                // the library a file is in: the one whose folder is the longest prefix of its path
+                libraryOfPath(path) {
+                    let best = '', len = -1;
+                    for (const [lib, folders] of Object.entries(this.allLibraries || {})) {
+                        for (const f of folders || []) {
+                            const pre = String(f).replace(/\/+$/, '') + '/';
+                            if (String(path || '').startsWith(pre) && pre.length > len) { best = lib; len = pre.length; }
+                        }
+                    }
+                    return best;
+                },
+
+                // Edit Metadata header: the file(s) being edited
+                metaFilesLine() {
+                    const ps = this.editPaths || [];
+                    if (!ps.length) return '';
+                    const libs = [...new Set(ps.map(p => this.libraryOfPath(p)).filter(Boolean))];
+                    if (ps.length === 1) return libs[0] || '';
+                    return ps.length + ' files' + (libs.length ? ' · ' + (libs.length === 1 ? libs[0] : 'libraries: ' + libs.join(', ')) : '');
                 },
 
                 orderedCast(v) {
@@ -7272,6 +7294,17 @@ No metadata is changed.`)) return;
                     this.fetchVideos('none');
                 },
                 
+                // File Info for one path (e.g. from Edit Metadata's header), on top of what's open
+                async openFileInfoFor(path) {
+                    try {
+                        const r = await fetch(`/api/video?path=${encodeURIComponent(path)}`);
+                        this.infoVideo = r.ok ? await r.json() : { path, filename: path.split('/').pop() };
+                    } catch (e) {
+                        this.infoVideo = { path, filename: path.split('/').pop() };
+                    }
+                    this.modals.fileInfo = true;
+                },
+
                 async openFileInfo() {
                     this.activeMenu = null;
                     this.editPaths = Array.from(this.selectedPaths);
@@ -12801,7 +12834,7 @@ No metadata is changed.`)) return;
             </div>
         </div>
 
-        <div x-show="modals.fileInfo" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4">
+        <div x-show="modals.fileInfo" x-cloak class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4">
             <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" @click.outside="modals.fileInfo = false">
                 <h3 class="text-xl font-bold mb-4" data-drag-handle style="cursor: move">Video Information</h3>
                 <div class="space-y-4 text-sm" x-if="infoVideo">
@@ -14120,8 +14153,15 @@ No metadata is changed.`)) return;
 
         <div x-show="modals.metadata" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4">
             <div x-init="$nextTick(() => { makeDraggable($el); metaSizeInit($el); })" class="bg-gray-800 rounded-lg flex flex-col max-h-[95vh] shadow-2xl"
-                 style="width: min(1344px, 95vw); max-width: 98vw; min-width: 420px; min-height: 260px; overflow: hidden;" @click.outside="if (!$el._downInside) closeMetadata()">
-                <div class="p-4 border-b border-gray-700 flex justify-between items-center gap-3 shrink-0" data-drag-handle style="cursor: move"><span class="font-bold flex-1">Edit Metadata</span><span class="text-xs text-gray-500">Ctrl+Enter to Save · drag the corner to resize</span>
+                 style="width: min(1344px, 95vw); max-width: 98vw; min-width: 420px; min-height: 260px; overflow: hidden;" @click.outside="if (!$el._downInside && !modals.fileInfo) closeMetadata()">
+                <div class="p-4 border-b border-gray-700 flex justify-between items-center gap-3 shrink-0" data-drag-handle style="cursor: move"><span class="flex-1 min-w-0"><span class="font-bold block">Edit Metadata</span>
+                    <span class="block text-xs text-gray-400 truncate" x-show="editPaths.length" @mousedown.stop>
+                        <template x-if="editPaths.length === 1">
+                            <a href="#" @click.prevent.stop="openFileInfoFor(editPaths[0])" class="text-blue-300 hover:text-blue-200 hover:underline"
+                               :title="editPaths[0] + ' - click for File Info'" x-text="editPaths[0].split('/').pop()"></a>
+                        </template>
+                        <span x-show="metaFilesLine()" x-text="(editPaths.length === 1 ? ' · ' : '') + metaFilesLine()"></span>
+                    </span></span><span class="text-xs text-gray-500">Ctrl+Enter to Save · drag the corner to resize</span>
                     <button @click.stop="metaSizeReset($el.closest('[data-drag-handle]').parentElement)" class="text-gray-500 hover:text-white text-sm" title="Reset the size">↺</button></div>
                 <div class="flex border-b border-gray-700 overflow-x-auto shrink-0"><template x-for="tab in ['General', 'Appearance', 'Attributes']" :key="tab"><button @click="metadataTab = tab" class="px-6 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap" :class="metadataTab === tab ? 'border-blue-500 text-white bg-gray-700' : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-700'" x-text="tab"></button></template></div>
                 <div class="p-6 overflow-y-auto space-y-4 scroller flex-1">
