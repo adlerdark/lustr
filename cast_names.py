@@ -1,0 +1,190 @@
+"""
+Performer names (cast values).
+
+* One performer, one spelling: names are compared by `norm` - capitals, dots, spaces,
+  apostrophes and accents don't count, so "A.J. Applegate", "AJ Applegate" and
+  "aj applegate" are the same performer. New values land on the spelling you already have.
+* Same-name performers: different people called "Jane Doe" are stored as "Jane Doe (1)"
+  (the main one), "Jane Doe (2)", ...
+
+No FastAPI here: used by database.py, ext_db.py, the parser, automation and routes.
+"""
+import json
+import re
+import sqlite3
+import unicodedata
+
+NOT_SAME_KEY = 'cast_not_same'       # metadata: spelling groups you said are different people
+_SUFFIX = re.compile(r'^(.*\S)\s*\((\d+)\)\s*$')
+
+
+def norm(name):
+    """'A.J. Applegate' -> 'ajapplegate' (same as ext_db.norm_name)."""
+    s = unicodedata.normalize('NFKD', name or '')
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r'[^a-z0-9]+', '', s.lower())
+
+
+def split_suffix(name):
+    """'Jane Doe (2)' -> ('Jane Doe', 2); 'Jane Doe' -> ('Jane Doe', None)."""
+    m = _SUFFIX.match(name or '')
+    return (m.group(1), int(m.group(2))) if m else ((name or '').strip(), None)
+
+
+def base_name(name):
+    return split_suffix(name)[0]
+
+
+def _rows(conn, sql, params=()):
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
+def _exists(conn, table):
+    return bool(_rows(conn, "SELECT 1 FROM sqlite_master WHERE name = ?", (table,)))
+
+
+def numbered(conn):
+    """norm(base name) -> ['Jane Doe (1)', 'Jane Doe (2)', ...], numbers in order."""
+    out = {}
+    for (v,) in _rows(conn, 'SELECT value FROM video_cast'):
+        b, n = split_suffix(v)
+        if n is not None:
+            out.setdefault(norm(b), []).append((n, v))
+    return {k: [v for _, v in sorted(vs)] for k, vs in out.items()}
+
+
+def find_existing(conn, value):
+    """The stored spelling for a cast name, or None. Exact first; then the same name written
+    differently (capitals, dots, accents); a bare name that only exists as numbered same-name
+    performers goes to the main one (1)."""
+    value = (value or '').strip()
+    if not value:
+        return None
+    row = conn.execute('SELECT value FROM video_cast WHERE value = ?', (value,)).fetchone()
+    if row:
+        return row[0]
+    key = norm(value)
+    if not key:
+        return None
+    hits = []
+    for vid, v in _rows(conn, 'SELECT id, value FROM video_cast'):
+        if norm(v) == key:
+            n = conn.execute('SELECT COUNT(*) FROM video_cast_junction WHERE cast_id = ?', (vid,)).fetchone()[0]
+            hits.append((n, v))
+    if hits:
+        return max(hits)[1]                               # several spellings left: the most used
+    nums = numbered(conn).get(key)
+    return nums[0] if nums else None
+
+
+def cast_value_id(conn, value):
+    """Get or create the video_cast row for a name, reusing the spelling you already have."""
+    value = (value or '').strip()
+    existing = find_existing(conn, value) or value
+    row = conn.execute('SELECT id FROM video_cast WHERE value = ?', (existing,)).fetchone()
+    return row[0] if row else conn.execute('INSERT INTO video_cast (value) VALUES (?)', (existing,)).lastrowid
+
+
+def canonical(conn, value):
+    """The spelling a new cast value should be stored as."""
+    return find_existing(conn, value) or (value or '').strip()
+
+
+# ---------------------------------------------------------------------------
+# Same performer, different spelling
+# ---------------------------------------------------------------------------
+def _not_same(conn):
+    try:
+        row = conn.execute('SELECT value FROM metadata WHERE key = ?', (NOT_SAME_KEY,)).fetchone()
+        return set(json.loads(row[0])) if row else set()
+    except Exception:
+        return set()
+
+
+def _group_key(values):
+    return '|'.join(sorted(values))
+
+
+def spelling_groups(conn):
+    """Cast values that are one name written differently. -> [{key, values: [{value, videos, alias_of}], keep}]"""
+    counts = {r[0]: r[1] for r in _rows(conn, 'SELECT vc.value, COUNT(j.video_id) FROM video_cast vc '
+                                              'LEFT JOIN video_cast_junction j ON j.cast_id = vc.id GROUP BY vc.id')}
+    alias_of = {r[0]: r[1] for r in _rows(conn, 'SELECT alias_name, primary_name FROM cast_aliases')}
+    groups = {}
+    for v in counts:
+        groups.setdefault(norm(v), []).append(v)
+    skip = _not_same(conn)
+    out = []
+    for key, vs in groups.items():
+        if len(vs) < 2 or not key or _group_key(vs) in skip:
+            continue
+        rows = sorted(({'value': v, 'videos': counts[v], 'alias_of': alias_of.get(v)} for v in vs),
+                      key=lambda r: (r['alias_of'] is not None, -r['videos'], r['value']))
+        out.append({'key': _group_key(vs), 'values': rows, 'keep': rows[0]['value']})
+    return sorted(out, key=lambda g: g['values'][0]['value'].lower())
+
+
+def mark_not_same(conn, values):
+    s = _not_same(conn)
+    s.add(_group_key(values))
+    conn.execute('INSERT INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
+                 'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP',
+                 (NOT_SAME_KEY, json.dumps(sorted(s), ensure_ascii=False)))
+
+
+def _rename_in_learned(conn, old, new):
+    """Parse Filenames' remembered corrections that point at a performer follow the rename."""
+    row = _rows(conn, "SELECT value FROM metadata WHERE key = 'parse_learned'")
+    if not row:
+        return
+    try:
+        d = json.loads(row[0][0])
+    except ValueError:
+        return
+    names = d.get('names') or {}
+    if old in names.values():
+        d['names'] = {k: (new if v == old else v) for k, v in names.items()}
+        conn.execute("UPDATE metadata SET value = ? WHERE key = 'parse_learned'", (json.dumps(d, ensure_ascii=False),))
+
+
+def merge_cast_values(conn, keep, others):
+    """`others` become `keep` everywhere: video links (no duplicates), Male Cast marks, profile,
+    aliases and remembered corrections. -> number of video links moved"""
+    import db_maintenance
+    keep_id = conn.execute('SELECT id FROM video_cast WHERE value = ?', (keep,)).fetchone()
+    keep_id = keep_id[0] if keep_id else conn.execute('INSERT INTO video_cast (value) VALUES (?)', (keep,)).lastrowid
+    has_role = _exists(conn, 'video_cast_role')
+    moved = 0
+    for other in others:
+        if other == keep:
+            continue
+        row = conn.execute('SELECT id FROM video_cast WHERE value = ?', (other,)).fetchone()
+        if row:
+            oid = row[0]
+            moved += conn.execute('INSERT OR IGNORE INTO video_cast_junction (video_id, cast_id) '
+                                  'SELECT j.video_id, ? FROM video_cast_junction j WHERE j.cast_id = ? AND NOT EXISTS '
+                                  '(SELECT 1 FROM video_cast_junction k WHERE k.video_id = j.video_id AND k.cast_id = ?)',
+                                  (keep_id, oid, keep_id)).rowcount
+            conn.execute('DELETE FROM video_cast_junction WHERE cast_id = ?', (oid,))
+            if has_role:
+                conn.execute('INSERT OR IGNORE INTO video_cast_role (video_id, cast_id, role) '
+                             'SELECT video_id, ?, role FROM video_cast_role WHERE cast_id = ?', (keep_id, oid))
+                conn.execute('DELETE FROM video_cast_role WHERE cast_id = ?', (oid,))
+            conn.execute('DELETE FROM video_cast WHERE id = ?', (oid,))
+        # aliases: other's aliases now point at keep; if other was someone's alias, keep is too
+        if _exists(conn, 'cast_aliases'):
+            for (p,) in _rows(conn, 'SELECT primary_name FROM cast_aliases WHERE alias_name = ?', (other,)):
+                if p != keep:
+                    conn.execute('INSERT OR IGNORE INTO cast_aliases (primary_name, alias_name) VALUES (?, ?)', (p, keep))
+            conn.execute('DELETE FROM cast_aliases WHERE alias_name = ?', (other,))
+            conn.execute('UPDATE OR IGNORE cast_aliases SET primary_name = ? WHERE primary_name = ?', (keep, other))
+            conn.execute('DELETE FROM cast_aliases WHERE primary_name = ?', (other,))
+            conn.execute('DELETE FROM cast_aliases WHERE primary_name = alias_name')
+        db_maintenance.merge_cast_profile(conn, keep, other)
+        if _exists(conn, 'cast_photos'):                  # keep has its own photo: other's isn't needed any more
+            conn.execute('DELETE FROM cast_photos WHERE cast_name = ?', (other,))
+        _rename_in_learned(conn, other, keep)
+    return moved

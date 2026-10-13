@@ -882,6 +882,7 @@
                          settings: { retention_days: 7, daily: true, auto_backups_keep: 5 },
                          deleted: { rows: [], total: 0, page: 1, per_page: 200, library: '', reason: '', q: '', libraries: {}, selected: {}, loading: false },
                          cast: { rows: [], selected: {}, loading: false },
+                         spell: { groups: [], keep: {}, loading: false },      // same performer, different spelling
                          backups: { rows: [], bytes: 0, selected: {}, keep: 3, loading: false },
                          tags: { changes: [], sites: [], counts: {}, selected: {}, keep: {}, loading: false, loaded: false } },
                 browserLayout: 'grid', // 'grid' or 'table'
@@ -7905,6 +7906,7 @@ No metadata is changed.`)) return;
                     this.maint.view = view;
                     if (view === 'deleted') await this.maintLoadDeleted(1);
                     if (view === 'cast') await this.maintLoadCast();
+                    if (view === 'spell') await this.maintLoadSpell();
                     if (view === 'backups') await this.maintLoadBackups();
                     if (view === 'tags') await this.maintLoadTags();
                 },
@@ -8025,6 +8027,43 @@ No metadata is changed.`)) return;
                         this.maint.message = `Deleted ${d.deleted} performer profile${d.deleted === 1 ? '' : 's'}.`;
                         await this.maintLoadCast();
                         this.maintLoad(true);
+                    } catch (e) { this.maint.error = e.message; }
+                },
+
+                // ----- same performer, different spelling ('A.J. Applegate' / 'Aj Applegate') -----
+                async maintLoadSpell() {
+                    const S = this.maint.spell;
+                    S.loading = true;
+                    try {
+                        const d = await (await fetch('/api/tools/maintenance/cast-spellings')).json();
+                        const keep = {};
+                        (d.groups || []).forEach(g => { keep[g.key] = g.keep; });
+                        Object.assign(S, { groups: d.groups || [], keep });
+                    } catch (e) { this.maint.error = e.message; } finally { S.loading = false; }
+                },
+
+                async maintMergeSpell(groups) {
+                    const S = this.maint.spell;
+                    if (!groups.length) return;
+                    const list = groups.map(g => S.keep[g.key] + '  ←  ' + g.values.map(v => v.value).filter(v => v !== S.keep[g.key]).join(', '));
+                    if (!confirm(`Merge ${groups.length} performer${groups.length === 1 ? '' : 's'}? Videos, Male Cast marks, profiles and aliases move to the kept spelling.\n\n`
+                                 + list.slice(0, 20).join('\n') + (list.length > 20 ? `\n… and ${list.length - 20} more` : '')
+                                 + '\n\nA backup of the database is made first.')) return;
+                    this.maint.busy = 'spell';
+                    try {
+                        const d = await this.maintPost('/api/tools/maintenance/cast-spellings/merge',
+                            { groups: groups.map(g => ({ keep: S.keep[g.key], values: g.values.map(v => v.value) })) });
+                        this.maint.message = `Merged ${d.merged} performer${d.merged === 1 ? '' : 's'} (${d.links} video link${d.links === 1 ? '' : 's'} moved)`
+                                             + (d.backup ? ` · backup: ${d.backup}` : '');
+                        await this.maintLoadSpell();
+                        this.fetchVideos('none');
+                    } catch (e) { this.maint.error = e.message; } finally { this.maint.busy = ''; }
+                },
+
+                async maintNotSameSpell(g) {
+                    try {
+                        await this.maintPost('/api/tools/maintenance/cast-spellings/not-same', { names: g.values.map(v => v.value) });
+                        this.maint.spell.groups = this.maint.spell.groups.filter(x => x.key !== g.key);
                     } catch (e) { this.maint.error = e.message; }
                 },
 
@@ -13335,7 +13374,7 @@ No metadata is changed.`)) return;
                         <!-- Database Maintenance (db_maintenance.py) -->
                         <div x-show="toolsActiveTab === 'cleanup'" class="space-y-3 text-sm">
                             <div class="flex flex-wrap gap-2 items-center">
-                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['tags', 'Tag cleanup'], ['backups', 'Backups']]" :key="k">
+                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['tags', 'Tag cleanup'], ['backups', 'Backups']]" :key="k">
                                     <button @click="maintShow(k)" class="px-3 py-1 rounded text-xs"
                                             :class="maint.view === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="label"></button>
                                 </template>
@@ -13494,6 +13533,36 @@ No metadata is changed.`)) return;
                                 <div class="flex justify-end">
                                     <button @click="maintDeleteCast(maintSelected('cast'))" :disabled="!maintSelected('cast').length" class="px-2 py-1 rounded text-xs bg-red-700 hover:bg-red-600 disabled:opacity-40"
                                             x-text="'Delete selected (' + maintSelected('cast').length + ')'"></button>
+                                </div>
+                            </div>
+
+                            <div x-show="maint.view === 'spell'" class="space-y-2">
+                                <p class="text-xs text-gray-400">Performers whose names differ only in capitals, dots, spaces, apostrophes or accents
+                                    (A.J. Applegate / Aj Applegate). Pick the spelling to keep and merge: their videos, Male Cast marks, profile and aliases
+                                    come together. New names already land on the spelling you have. <b>Not the same</b> keeps them apart for good.</p>
+                                <div class="bg-gray-900 rounded overflow-auto max-h-[45vh] border border-gray-700 divide-y divide-gray-800">
+                                    <template x-for="g in maint.spell.groups" :key="g.key">
+                                        <div class="p-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                                            <template x-for="v in g.values" :key="v.value">
+                                                <label class="flex items-center gap-1 cursor-pointer">
+                                                    <input type="radio" :name="'spell-' + g.key" :checked="maint.spell.keep[g.key] === v.value"
+                                                           @change="maint.spell.keep = { ...maint.spell.keep, [g.key]: v.value }">
+                                                    <span class="text-gray-200" x-text="v.value"></span>
+                                                    <span class="text-gray-500" x-text="'(' + v.videos + (v.alias_of ? ', alias of ' + v.alias_of : '') + ')'"></span>
+                                                </label>
+                                            </template>
+                                            <span class="flex-1"></span>
+                                            <button @click="maintMergeSpell([g])" :disabled="!!maint.busy" class="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-40">Merge</button>
+                                            <button @click="maintNotSameSpell(g)" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600">Not the same</button>
+                                        </div>
+                                    </template>
+                                    <p x-show="!maint.spell.loading && !maint.spell.groups.length" class="p-4 text-center text-gray-500">None - every performer has one spelling.</p>
+                                    <p x-show="maint.spell.loading" class="p-4 text-center text-gray-500">Loading…</p>
+                                </div>
+                                <div class="flex justify-end">
+                                    <button @click="maintMergeSpell(maint.spell.groups)" :disabled="!maint.spell.groups.length || !!maint.busy"
+                                            class="px-2 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40"
+                                            x-text="'Merge all (' + maint.spell.groups.length + ')'"></button>
                                 </div>
                             </div>
 

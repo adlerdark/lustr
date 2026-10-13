@@ -7,6 +7,8 @@ Provides better performance and indexing compared to JSON.
 import os
 import re
 import sqlite3
+
+import cast_names
 import json
 import threading
 from datetime import datetime, timedelta
@@ -682,19 +684,26 @@ class Database:
             cursor.execute(f'DELETE FROM {junction_table} WHERE video_id = ?', (video_id,))
             
             # Insert new entries
+            seen_ids = set()
             for value in values:
                 if not value:
                     continue
                 
-                # Get or create value ID
-                cursor.execute(f'SELECT id FROM {table_name} WHERE value = ?', (value,))
-                row = cursor.fetchone()
-                
-                if row:
-                    value_id = row['id']
+                # Get or create value ID (cast: the spelling you already have - 'AJ Applegate' -> 'A.J. Applegate')
+                if field_lower == 'cast':
+                    value_id = cast_names.cast_value_id(conn, value)
                 else:
-                    cursor.execute(f'INSERT INTO {table_name} (value) VALUES (?)', (value,))
-                    value_id = cursor.lastrowid
+                    cursor.execute(f'SELECT id FROM {table_name} WHERE value = ?', (value,))
+                    row = cursor.fetchone()
+                    
+                    if row:
+                        value_id = row['id']
+                    else:
+                        cursor.execute(f'INSERT INTO {table_name} (value) VALUES (?)', (value,))
+                        value_id = cursor.lastrowid
+                if value_id in seen_ids:          # two spellings of one performer
+                    continue
+                seen_ids.add(value_id)
                 
                 # Create junction entry
                 cursor.execute(
@@ -1983,9 +1992,12 @@ class Database:
                 
                 for value in values:
                     # Get or create value ID
-                    cursor.execute(f'INSERT OR IGNORE INTO video_{field_lower} (value) VALUES (?)', (value,))
-                    cursor.execute(f'SELECT id FROM video_{field_lower} WHERE value = ?', (value,))
-                    value_id = cursor.fetchone()[0]
+                    if field_lower == 'cast':
+                        value_id = cast_names.cast_value_id(conn, value)
+                    else:
+                        cursor.execute(f'INSERT OR IGNORE INTO video_{field_lower} (value) VALUES (?)', (value,))
+                        cursor.execute(f'SELECT id FROM video_{field_lower} WHERE value = ?', (value,))
+                        value_id = cursor.fetchone()[0]
                     
                     # Insert junction record
                     cursor.execute(f'''

@@ -36,6 +36,7 @@ import requests
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
+import cast_names
 from database import gender_from_external      # 'TRANSGENDER_FEMALE' -> 'trans_female', ...
 
 router = APIRouter(prefix="/api/extdb", tags=["extdb"])
@@ -4658,8 +4659,11 @@ def _add_list_value(conn, video_id, field, value):
     fk = _junction_fk(conn, field)
     if not fk or not value:
         return False
-    row = conn.execute(f'SELECT id FROM video_{field} WHERE value = ?', (value,)).fetchone()
-    vid_ = row[0] if row else conn.execute(f'INSERT INTO video_{field} (value) VALUES (?)', (value,)).lastrowid
+    if field == 'cast':                                   # the spelling you already have
+        vid_ = cast_names.cast_value_id(conn, value)
+    else:
+        row = conn.execute(f'SELECT id FROM video_{field} WHERE value = ?', (value,)).fetchone()
+        vid_ = row[0] if row else conn.execute(f'INSERT INTO video_{field} (value) VALUES (?)', (value,)).lastrowid
     if conn.execute(f'SELECT 1 FROM video_{field}_junction WHERE video_id = ? AND {fk} = ?', (video_id, vid_)).fetchone():
         return False
     conn.execute(f'INSERT INTO video_{field}_junction (video_id, {fk}) VALUES (?, ?)', (video_id, vid_))
@@ -5216,6 +5220,7 @@ def male_cast_change(conn, video_ids, add, remove):
     a gender that's already set is left alone and reported."""
     added = removed = missing = 0
     made_male, not_male = [], []
+    add = [cast_names.canonical(conn, str(n)) for n in add]           # 'AJ Applegate' -> 'A.J. Applegate'
     for n in add:
         prim = resolve_primary(conn, str(n))
         row = conn.execute('SELECT gender FROM cast_gender WHERE cast_name = ?', (prim,)).fetchone()
@@ -5225,15 +5230,15 @@ def male_cast_change(conn, video_ids, add, remove):
         elif (row[0] or '').lower() != 'male':
             not_male.append({'name': prim, 'gender': row[0]})
     for vid in video_ids:
-        members = {v.lower(): cid for cid, v in _junction_values_one(conn, vid)}
+        members = {cast_names.norm(v): cid for cid, v in _junction_values_one(conn, vid)}
         for n in add:
-            cid = members.get(str(n).lower())
+            cid = members.get(cast_names.norm(str(n)))
             if cid is None:
                 missing += 1
                 continue
             added += conn.execute('INSERT OR IGNORE INTO video_cast_role (video_id, cast_id) VALUES (?, ?)', (vid, cid)).rowcount
         for n in remove:
-            cid = members.get(str(n).lower())
+            cid = members.get(cast_names.norm(str(n)))
             if cid is not None:
                 removed += conn.execute('DELETE FROM video_cast_role WHERE video_id = ? AND cast_id = ?', (vid, cid)).rowcount
     conn.commit()

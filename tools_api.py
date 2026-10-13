@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from config import DATA_FILE, LIST_FIELDS
 import db_maintenance as dm
+import cast_names
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -338,6 +339,47 @@ def maintenance_orphan_cast_delete(body: NamesBody):
     allowed = {p['name'] for p in dm.orphan_cast_profiles(conn)}       # never someone who has videos
     names = [n for n in body.names if n in allowed]
     return {'success': True, 'deleted': len(names), 'rows': dm.delete_cast_profiles(conn, names)}
+
+
+class SpellingMergeBody(BaseModel):
+    groups: List[Dict]          # [{keep: 'A.J. Applegate', values: ['A.J. Applegate', 'Aj Applegate']}]
+
+
+@router.get("/maintenance/cast-spellings")
+def maintenance_cast_spellings():
+    """Performers that are one name written differently (capitals, dots, accents)."""
+    return {'groups': cast_names.spelling_groups(_conn())}
+
+
+@router.post("/maintenance/cast-spellings/merge")
+def maintenance_cast_spellings_merge(body: SpellingMergeBody):
+    conn = _conn()
+    current = {g['key']: {v['value'] for v in g['values']} for g in cast_names.spelling_groups(conn)}
+    todo = []
+    for g in body.groups or []:
+        values = set(g.get('values') or [])
+        keep = g.get('keep')
+        if keep in values and values in current.values():        # only groups that are still the same name
+            todo.append((keep, sorted(values - {keep})))
+    if not todo:
+        return {'success': True, 'merged': 0, 'links': 0}
+    backup = dm.make_backup(conn)
+    links = sum(cast_names.merge_cast_values(conn, keep, others) for keep, others in todo)
+    conn.commit()
+    try:
+        import ext_db
+        ext_db._male_invalidate()
+    except Exception:
+        pass
+    return {'success': True, 'merged': len(todo), 'links': links, 'backup': backup}
+
+
+@router.post("/maintenance/cast-spellings/not-same")
+def maintenance_cast_spellings_not_same(body: NamesBody):
+    conn = _conn()
+    cast_names.mark_not_same(conn, body.names)
+    conn.commit()
+    return {'success': True}
 
 
 class AutomationBody(BaseModel):
