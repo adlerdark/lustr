@@ -8381,6 +8381,9 @@ No metadata is changed.`)) return;
                     // Collect all metadata from selected files
                     const mergedData = {};
                     const listFieldsLower = this.editFields.map(f => f.toLowerCase());
+                    const isFav = v => v && (v.favorite === true || v.favorite === 1 || v.favorite === '1' || v.favorite === 'true');
+                    const picked = paths.map(p => this.videos.find(v => v.path === p)).filter(Boolean);
+                    const anyFav = picked.some(isFav);       // one is a favourite -> all become favourites
                     
                     // Get data for each selected file
                     for (const path of paths) {
@@ -8428,9 +8431,22 @@ No metadata is changed.`)) return;
                                 add_to_lists: addTo
                             })
                         });
+                        let favs = 0;
+                        if (anyFav) {
+                            const toggle = async path => {
+                                const r = await fetch('/api/toggle_fav', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                         body: JSON.stringify({ path }) });
+                                return r.ok ? !!(await r.json()).favorite : null;
+                            };
+                            for (const v of picked.filter(v => !isFav(v))) {
+                                let on = await toggle(v.path);
+                                if (on === false) on = await toggle(v.path);     // two files of one video: it was already switched on
+                                if (on) favs++;
+                            }
+                        }
                         
                         const messageBox = document.getElementById('messageBox');
-                        messageBox.textContent = `Merged metadata across ${paths.length} videos`;
+                        messageBox.textContent = `Merged metadata across ${paths.length} videos` + (favs ? ` · ${favs} marked favourite` : '');
                         messageBox.classList.remove('hidden');
                         setTimeout(() => messageBox.classList.add('hidden'), 3000);
                         
