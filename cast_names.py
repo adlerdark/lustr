@@ -188,3 +188,99 @@ def merge_cast_values(conn, keep, others):
             conn.execute('DELETE FROM cast_photos WHERE cast_name = ?', (other,))
         _rename_in_learned(conn, other, keep)
     return moved
+
+
+# ---------------------------------------------------------------------------
+# Same-name performers: 'Jane Doe (1)' (the main one), 'Jane Doe (2)', ...
+# ---------------------------------------------------------------------------
+PROFILE_PARTS = {                     # what can move to the other performer when splitting
+    'photo': [('cast_photos', 'cast_name')],
+    'ext_link': [('cast_ext_link', 'cast_name'), ('cast_ext_bulk_log', 'cast_name')],
+    'attributes': [('cast_attributes', 'cast_name')],
+    'aliases': [('cast_aliases', 'primary_name')],
+    'gender': [('cast_gender', 'cast_name')],
+    'category': [('cast_category', 'cast_name')],
+}
+_NAME_TABLES = [t for parts in PROFILE_PARTS.values() for t in parts] + [('favorite_cast', 'name')]
+
+
+def siblings(conn, name):
+    """Every performer sharing this name: ['Jane Doe (1)', 'Jane Doe (2)'] (or [] when there's only one)."""
+    return numbered(conn).get(norm(base_name(name)), [])
+
+
+def rename_cast_value(conn, old, new):
+    """`old` is called `new` everywhere (videos, profile, aliases, favourites, remembered corrections).
+    If `new` already exists the two are merged."""
+    if old == new:
+        return
+    if conn.execute('SELECT 1 FROM video_cast WHERE value = ?', (new,)).fetchone():
+        merge_cast_values(conn, new, [old])
+        return
+    conn.execute('UPDATE video_cast SET value = ? WHERE value = ?', (new, old))
+    for table, col in _NAME_TABLES:
+        if _exists(conn, table):
+            conn.execute(f'UPDATE OR IGNORE {table} SET {col} = ? WHERE {col} = ?', (new, old))
+            conn.execute(f'DELETE FROM {table} WHERE {col} = ?', (old,))
+    if _exists(conn, 'cast_aliases'):
+        conn.execute('UPDATE OR IGNORE cast_aliases SET alias_name = ? WHERE alias_name = ?', (new, old))
+    _rename_in_learned(conn, old, new)
+
+
+def split_performer(conn, name, video_ids, move=None):
+    """Some of `name`'s videos belong to a different person with the same name. They move to a new
+    'Name (n)'; a plain 'Name' becomes 'Name (1)' first. `move`: profile parts (PROFILE_PARTS keys)
+    that go with them. -> {'kept': 'Jane Doe (1)', 'new': 'Jane Doe (2)', 'videos': n}"""
+    base, n = split_suffix(name)
+    row = conn.execute('SELECT id FROM video_cast WHERE value = ?', (name,)).fetchone()
+    if not row:
+        raise ValueError(f'No performer called "{name}"')
+    if n is None:
+        taken = siblings(conn, name)
+        if taken:                               # 'Jane Doe' next to 'Jane Doe (1)': can't happen through the UI
+            raise ValueError(f'"{name}" already has numbered namesakes - merge or rename it first')
+        rename_cast_value(conn, name, f'{base} (1)')
+        name = f'{base} (1)'
+    old_id = conn.execute('SELECT id FROM video_cast WHERE value = ?', (name,)).fetchone()[0]
+    nums = [split_suffix(v)[1] for v in siblings(conn, name)]
+    new = f'{base} ({max(nums + [1]) + 1})'
+    new_id = conn.execute('INSERT INTO video_cast (value) VALUES (?)', (new,)).lastrowid
+    moved = 0
+    for vid in video_ids or []:
+        moved += conn.execute('UPDATE video_cast_junction SET cast_id = ? WHERE cast_id = ? AND video_id = ?',
+                              (new_id, old_id, vid)).rowcount
+        if _exists(conn, 'video_cast_role'):
+            conn.execute('UPDATE video_cast_role SET cast_id = ? WHERE cast_id = ? AND video_id = ?', (new_id, old_id, vid))
+    for part in move or []:
+        for table, col in PROFILE_PARTS.get(part, []):
+            if _exists(conn, table):
+                conn.execute(f'UPDATE {table} SET {col} = ? WHERE {col} = ?', (new, name))
+    return {'kept': name, 'new': new, 'videos': moved}
+
+
+def make_main(conn, name):
+    """'Jane Doe (3)' becomes the main 'Jane Doe (1)'; the old (1) takes number 3."""
+    base, n = split_suffix(name)
+    if n is None or n == 1:
+        return name
+    main = f'{base} (1)'
+    if not conn.execute('SELECT 1 FROM video_cast WHERE value = ?', (main,)).fetchone():
+        rename_cast_value(conn, name, main)
+        return main
+    temp = f'{base} (#swap#)'
+    rename_cast_value(conn, main, temp)
+    rename_cast_value(conn, name, main)
+    rename_cast_value(conn, temp, name)
+    return main
+
+
+def expand_search_names(conn, names):
+    """cast:"Jane Doe" means every Jane Doe: bare names get their numbered namesakes added."""
+    nums = None
+    out = []
+    for n in names:
+        out.append(n)
+        if split_suffix(n)[1] is None:
+            nums = numbered(conn) if nums is None else nums
+            out += [v for v in nums.get(norm(n), []) if v not in out]
+    return out

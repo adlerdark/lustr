@@ -533,6 +533,9 @@
                 authMode: 'login', 
                 folderAdding: false,           // Add Folders: scanning the new folder (keeps going if the window is closed)
                 folderAddingLib: '',           // ...into this library (header indicator)
+                castSame: [],                  // the open bio's same-name performers [{name, videos, has_photo, top_site}]
+                castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
+                castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 loginUsername: '',
                 loginPassword: '',
                 loginError: '',
@@ -749,6 +752,7 @@
                     hideZeroLength: 'hide', // 'button' or 'prevnext'
                     lockScreenInfo: false,  // new player: title + thumbnail in the Media Session (lock screen)
                     folderSort: 'added',    // library folder lists: 'added' (order added) or 'name' (A-Z)
+                    showCastNumbers: false, // same-name performers: 'Jane Doe (2)' shown with its number in library views
                     thumbnailQuality: 75, // WebP quality 0-100
                     thumbnailFrames: 8, // Number of preview frames
                     lengthSliderMode: false, // Use slider instead of buttons for length filter
@@ -2879,6 +2883,88 @@
                     this.openCastBio(castName);
                 },
                 
+                // ----- same-name performers: 'Jane Doe (1)' (main), 'Jane Doe (2)', ... -----
+                async castSameOf(name) {
+                    try {
+                        const d = await (await fetch(`/api/cast/${encodeURIComponent(name)}/same-name`)).json();
+                        return d.performers || [];
+                    } catch (e) { return []; }
+                },
+                async castSameLoad(name) {
+                    this.castSame = [];
+                    const rows = await this.castSameOf(name);
+                    if (this.castBioData && this.castBioData.name === name) this.castSame = rows;
+                },
+                castNumber(name) { const m = /\((\d+)\)\s*$/.exec(name || ''); return m ? +m[1] : null; },
+
+                // which one? -> the chosen name, or null if you cancel. One performer with that name: no question.
+                async castPickOne(name, choices = null) {
+                    const rows = choices ? await this.castSameOf(choices[0]) : await this.castSameOf(name);
+                    if (rows.length < 2) return name;
+                    return new Promise(resolve => {
+                        Object.assign(this.castPicker, { open: true, typed: name, choices: rows, resolve });
+                    });
+                },
+                castPickerDone(name) {
+                    const P = this.castPicker;
+                    const r = P.resolve;
+                    Object.assign(P, { open: false, resolve: null });
+                    if (r) r(name);
+                },
+
+                // Edit Metadata: a typed cast name that several performers share -> ask which one
+                async castResolveTyped() {
+                    for (const field of ['cast', 'male_cast']) {
+                        if (!(field in this.editData)) continue;
+                        const before = new Set((this.commonOriginalListValues[field] || []).map(s => s.toLowerCase()));
+                        const list = String(this.editData[field] || '').split(',').map(s => s.trim()).filter(Boolean);
+                        let changed = false;
+                        for (let i = 0; i < list.length; i++) {
+                            if (before.has(list[i].toLowerCase()) || this.castNumber(list[i]) !== null) continue;
+                            const pick = await this.castPickOne(list[i]);
+                            if (pick === null) return false;
+                            if (pick !== list[i]) { list[i] = pick; changed = true; }
+                        }
+                        if (changed) this.editData[field] = list.join(', ');
+                    }
+                    return true;
+                },
+
+                castSplitOpen() {
+                    Object.assign(this.castSplit, { open: true, picked: {}, move: {}, busy: false, error: '' });
+                },
+                async castSplitDo() {
+                    const S = this.castSplit, name = this.castBioData?.name;
+                    const paths = Object.keys(S.picked).filter(p => S.picked[p]);
+                    if (!paths.length) { S.error = 'Tick the videos that belong to the other performer.'; return; }
+                    S.busy = true;
+                    S.error = '';
+                    try {
+                        const r = await (await fetch(`/api/cast/${encodeURIComponent(name)}/split`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ paths, move: Object.keys(S.move).filter(k => S.move[k]) })
+                        })).json();
+                        if (!r.success) throw new Error(r.error || 'Could not split');
+                        S.open = false;
+                        alert(`${r.videos} video${r.videos === 1 ? '' : 's'} moved to "${r.new}". This one is now "${r.kept}".`
+                              + `\n\nOpen "${r.new}" from its videos to give it a photo or StashDB link.`);
+                        await this.loadMaleCast();
+                        await this.loadCastBio(r.kept);
+                        this.fetchVideos('none');
+                    } catch (e) { S.error = e.message; } finally { S.busy = false; }
+                },
+                async castMakeMain() {
+                    const name = this.castBioData?.name;
+                    if (!confirm(`Make "${name}" the main one (number 1)? The current number 1 takes its number.`)) return;
+                    try {
+                        const r = await (await fetch(`/api/cast/${encodeURIComponent(name)}/make-main`, { method: 'POST' })).json();
+                        if (!r.success) throw new Error(r.error || 'failed');
+                        await this.loadMaleCast();
+                        await this.loadCastBio(r.name);
+                        this.fetchVideos('none');
+                    } catch (e) { alert('Could not change it: ' + e.message); }
+                },
+
                 async loadCastBio(castName) {
                     try {
                         this.castBioFilterLibrary = null;
@@ -2898,6 +2984,7 @@
                         this.castBioData = data;
                         this.currentCastMember = castName;
                         this.castBioMode = true;
+                        this.castSameLoad(castName);
                         this.extDbLoadLink(castName);   // local DB only - no external call
                     } catch (e) {
                         console.error('Failed to load cast bio:', e);
@@ -3447,7 +3534,7 @@
                         });
                         items.forEach(i => {
                             const e = sg.edits[i.field + '|' + String(i.value).toLowerCase()];
-                            if (e !== undefined) this.extSceneSetValue(i, e, d.current || {}, d.vocab || {});
+                            if (e !== undefined) { this.extSceneSetValue(i, e, d.current || {}, d.vocab || {}); if (i.choices) i.picked = true; }
                         });
                         sg.extra.forEach(e => {
                             const same = items.find(i => i.field === e.field && String(i.value).toLowerCase() === e.value.toLowerCase());
@@ -3694,6 +3781,24 @@
                     }
                 },
 
+                // same-name performers: pick which 'Jane Doe' this scene's performer is (this video only)
+                async extScenePickSame(it) {
+                    const sg = this.extScene.suggest;
+                    const pick = await this.castPickOne(it.value, it.choices);
+                    if (!pick) return;
+                    const ci = await this.extSceneLoadCastIdx();
+                    const c = { ...sg.checked };
+                    delete c[this.extSceneSuggestKey(it)];
+                    const orig = it.orig_value === undefined ? it.value : it.orig_value;
+                    sg.edits = { ...sg.edits, [it.field + '|' + String(orig).toLowerCase()]: pick };
+                    this.extSceneSetValue(it, pick, sg.current, sg.vocab);
+                    it.picked = true;
+                    it.gender = (ci.genders || {})[pick] || null;
+                    it.gender_default = it.gender || it.ext_gender || it.gender_default;
+                    if (!it.already_set) c[this.extSceneSuggestKey(it)] = true;
+                    sg.checked = c;
+                },
+
                 // a performer's gender (their bio setting - not the Cast / Male Cast split)
                 extSceneGender(it) {
                     const p = this.extScene.suggest.genderPick[String(it.value).toLowerCase()];
@@ -3783,10 +3888,15 @@
                     for (const part of (text || '').split(',')) {
                         if (!part.trim()) continue;
                         const known = (sg.vocab[field] || []).find(v => String(v).toLowerCase() === part.trim().toLowerCase());
-                        const value = isCast ? (ci.index[this.castNorm(part)] || part.trim().replace(/\s+/g, ' '))
+                        let value = isCast ? (ci.index[this.castNorm(part)] || part.trim().replace(/\s+/g, ' '))
                                     : field === 'site' ? (known || part.trim())
                                     : (known || this.extCfgFmt(part));
                         if (!value) continue;
+                        if (isCast && this.castNumber(value) !== null && this.castNumber(part) === null) {   // several performers with this name
+                            const pick = await this.castPickOne(part.trim());
+                            if (pick === null) continue;
+                            value = pick;
+                        }
                         let it = sg.items.find(i => i.field === field && String(i.value).toLowerCase() === value.toLowerCase());
                         if (!it) {
                             it = this.extSceneOwnItem(field, value, sg.current, sg.vocab);
@@ -6019,6 +6129,7 @@ No metadata is changed.`)) return;
                     const key = col.toLowerCase().replace(' ', '_');
                     const altKey = col.toLowerCase();
                     const value = video[key] || video[altKey] || '';
+                    if (key === 'cast' && Array.isArray(value)) return value.map(c => this.castLabel(c)).join(', ');
                     return Array.isArray(value) ? value.join(', ') : value;
                 },
                 getDisplayValue(video, col) {
@@ -6044,6 +6155,7 @@ No metadata is changed.`)) return;
                     const key = col.toLowerCase().replace(' ', '_');
                     const altKey = col.toLowerCase();
                     const value = video[key] || video[altKey] || '';
+                    if (key === 'cast' && Array.isArray(value)) return value.map(c => this.castLabel(c)).join(', ');
                     return Array.isArray(value) ? value.join(', ') : value;
                 },
                 
@@ -7535,6 +7647,7 @@ No metadata is changed.`)) return;
                 },
 
                 async saveMetadata() {
+                    if (!(await this.castResolveTyped())) return;          // 'which Jane Doe?' - cancelled
                     const updates = {};
                     const addTo = {};
                     const removeFrom = {};
@@ -11503,7 +11616,7 @@ No metadata is changed.`)) return;
                                         </div>
                                         <div class="p-2">
                                             <h3 class="font-bold text-sm truncate" :title="video.title || video.filename" x-text="video.title || video.filename"></h3>
-                                            <p class="text-xs text-gray-400 mt-0.5 truncate" x-text="orderedCast(video).join(', ')"></p>
+                                            <p class="text-xs text-gray-400 mt-0.5 truncate" x-text="orderedCast(video).map(c => castLabel(c)).join(', ')"></p>
                                         </div>
                                     </div>
                                 </template>
@@ -11573,7 +11686,7 @@ No metadata is changed.`)) return;
                                         <template x-for="(member, idx) in orderedCast(video)" :key="idx">
                                             <span>
                                                 <a @click.stop="searchCastMember(member)" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
-                                                   x-text="member"></a><span x-show="idx < (video.cast || []).length - 1">, </span>
+                                                   x-text="castLabel(member)"></a><span x-show="idx < (video.cast || []).length - 1">, </span>
                                             </span>
                                         </template>
                                     </p>
@@ -11641,7 +11754,7 @@ No metadata is changed.`)) return;
                                             <a @click.stop="searchCastMember(member)" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
                                                :title="isMaleCast(video, member) ? 'Male cast' : ''">
                                                 <span x-show="favoriteCast.includes(member)" class="text-yellow-400">⭐</span>
-                                                <span x-text="member"></span>
+                                                <span x-text="castLabel(member)"></span>
                                             </a><span x-show="idx < video.cast.length - 1">, </span>
                                         </span>
                                     </template>
@@ -11874,7 +11987,7 @@ No metadata is changed.`)) return;
                                                 <a @click.stop="searchCastMember(member)" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
                                                :title="isMaleCast(video, member) ? 'Male cast' : ''">
                                                     <span x-show="favoriteCast.includes(member)" class="text-yellow-400">⭐</span>
-                                                    <span x-text="member"></span>
+                                                    <span x-text="castLabel(member)"></span>
                                                 </a><span x-show="idx < video.cast.length - 1">, </span>
                                             </span>
                                         </template>
@@ -11987,6 +12100,17 @@ No metadata is changed.`)) return;
                                     <!-- Name and Star -->
                                     <div class="flex items-center gap-2 sm:gap-3 justify-center sm:justify-start flex-wrap">
                                         <h1 class="text-2xl sm:text-4xl font-bold" x-text="castBioData?.name"></h1>
+                                        <button @click="castSplitOpen()" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+                                                title="Some of these videos are a different person with the same name">Split off videos…</button>
+                                        <button x-show="castNumber(castBioData?.name) > 1" @click="castMakeMain()" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+                                                title="Make this the main one (number 1)">Make this the main one</button>
+                                        <div x-show="castSame.length > 1" class="w-full text-xs text-gray-400">
+                                            <span>Same name as: </span>
+                                            <template x-for="s in castSame.filter(s => s.name !== castBioData?.name)" :key="s.name">
+                                                <a href="#" @click.prevent="loadCastBio(s.name)" class="mr-2 text-blue-300 hover:underline"
+                                                   x-text="s.name + ' (' + s.videos + ' video' + (s.videos === 1 ? '' : 's') + (s.top_site ? ', ' + s.top_site : '') + ')'"></a>
+                                            </template>
+                                        </div>
                                         
                                         <!-- Favorite Toggle Star -->
                                         <button 
@@ -13150,6 +13274,11 @@ No metadata is changed.`)) return;
                         </div>
 
                         <div class="flex items-center justify-between bg-gray-900 p-3 rounded">
+                            <div><span class="block text-sm font-medium">Same-name performers: show their number</span><span class="block text-xs text-gray-500">Different people with one name are stored as Jane Doe (1), Jane Doe (2). Show the number on video cards, list rows and in the player too (bios, File Info and pickers always show it)</span></div>
+                            <button @click="toggleSetting('showCastNumbers')" class="w-10 h-5 rounded-full transition-colors relative flex-shrink-0" :class="appSettings.showCastNumbers ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.showCastNumbers ? 'translate-x-5' : ''"></div></button>
+                        </div>
+
+                        <div class="flex items-center justify-between bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Length Filter: Slider Mode</span><span class="block text-xs text-gray-500">Use adjustable slider instead of buttons</span></div>
                             <button @click="toggleSetting('lengthSliderMode')" class="w-10 h-5 rounded-full transition-colors relative" :class="appSettings.lengthSliderMode ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.lengthSliderMode ? 'translate-x-5' : ''"></div></button>
                         </div>
@@ -14079,6 +14208,64 @@ No metadata is changed.`)) return;
             </div>
         </div>
 
+        <!-- Which one? (same-name performers) -->
+        <div x-show="castPicker.open" x-cloak class="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-2xl p-5 shadow-2xl" @click.outside="castPickerDone(null)">
+                <h2 class="text-lg font-bold mb-1" x-text="'Which ' + castPicker.typed + '?'"></h2>
+                <p class="text-xs text-gray-400 mb-3">Several performers have this name.</p>
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <template x-for="c in castPicker.choices" :key="c.name">
+                        <button @click="castPickerDone(c.name)" class="bg-gray-900 hover:bg-gray-700 rounded p-2 text-left border border-gray-700 hover:border-blue-500">
+                            <div class="aspect-[3/4] bg-gray-700 rounded mb-2 overflow-hidden flex items-center justify-center text-gray-500 text-3xl">
+                                <img x-show="c.has_photo" :src="'/api/cast/photo/' + encodeURIComponent(c.name)" class="w-full h-full object-cover">
+                                <span x-show="!c.has_photo">?</span>
+                            </div>
+                            <div class="text-sm font-medium text-gray-100" x-text="c.name"></div>
+                            <div class="text-xs text-gray-400" x-text="c.videos + ' video' + (c.videos === 1 ? '' : 's') + (c.top_site ? ' · ' + c.top_site : '')"></div>
+                        </button>
+                    </template>
+                </div>
+                <div class="flex justify-end mt-4"><button @click="castPickerDone(null)" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel</button></div>
+            </div>
+        </div>
+
+        <!-- Split off videos (same name, different person) -->
+        <div x-show="castSplit.open" x-cloak class="fixed inset-0 z-[150] bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-3xl p-5 shadow-2xl flex flex-col max-h-[90vh]" @click.outside="castSplit.open = false">
+                <h2 class="text-lg font-bold mb-1" x-text="'Split off videos of ' + (castBioData?.name || '')"></h2>
+                <p class="text-xs text-gray-400 mb-3">Tick the videos that are a <b>different person</b> with the same name. They move to a new performer
+                    <span x-text="(castBioData?.name || '').replace(/\s*\(\d+\)\s*$/, '') + ' (' + (Math.max(1, ...castSame.map(s => castNumber(s.name) || 1)) + 1) + ')'"></span>;
+                    <span x-show="castNumber(castBioData?.name) === null" x-text="'this one becomes ' + (castBioData?.name || '') + ' (1).'"></span></p>
+                <div class="flex-1 overflow-y-auto bg-gray-900 rounded border border-gray-700 divide-y divide-gray-800">
+                    <template x-for="m in (castBioData?.exact_matches || [])" :key="m.path">
+                        <label class="flex items-center gap-3 p-2 cursor-pointer hover:bg-gray-800">
+                            <input type="checkbox" class="rounded" :checked="!!castSplit.picked[m.path]"
+                                   @change="castSplit.picked = { ...castSplit.picked, [m.path]: $event.target.checked }">
+                            <img :src="getThumb({ ...(m.data || {}), path: m.path })" class="w-24 aspect-video object-cover rounded bg-gray-700" loading="lazy">
+                            <div class="min-w-0">
+                                <div class="text-sm text-gray-100 truncate" x-text="(m.data && m.data.title) || m.path.split('/').pop()"></div>
+                                <div class="text-xs text-gray-500 truncate" x-text="[libraryOfPath(m.path), m.data && m.data.year, ((m.data && m.data.site) || []).join(', ')].filter(Boolean).join(' · ')"></div>
+                            </div>
+                        </label>
+                    </template>
+                </div>
+                <div class="mt-3 text-xs text-gray-300 flex flex-wrap gap-x-4 gap-y-1 items-center">
+                    <span class="text-gray-400">Also move to the new performer:</span>
+                    <template x-for="part in [['photo', 'Photo'], ['ext_link', 'StashDB / ThePornDB link'], ['attributes', 'Attributes'], ['aliases', 'Aliases'], ['gender', 'Gender'], ['category', 'Category']]" :key="part[0]">
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" class="rounded" :checked="!!castSplit.move[part[0]]"
+                               @change="castSplit.move = { ...castSplit.move, [part[0]]: $event.target.checked }"><span x-text="part[1]"></span></label>
+                    </template>
+                </div>
+                <p x-show="castSplit.error" class="text-xs text-red-400 mt-2" x-text="castSplit.error"></p>
+                <div class="flex justify-end gap-2 mt-4">
+                    <button @click="castSplit.open = false" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel</button>
+                    <button @click="castSplitDo()" :disabled="castSplit.busy || !Object.values(castSplit.picked).some(Boolean)"
+                            class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40"
+                            x-text="castSplit.busy ? 'Splitting…' : 'Split off ' + Object.values(castSplit.picked).filter(Boolean).length + ' video(s)'"></button>
+                </div>
+            </div>
+        </div>
+
         <!-- Browser Modal -->
         <div x-show="modals.browser" x-cloak @click.self="if (folderAdding) modals.browser = false" class="fixed inset-0 z-[2000] bg-black/90 flex items-center justify-center p-4">
             <div class="bg-gray-800 rounded-lg w-[95%] max-w-2xl flex flex-col max-h-[80vh] relative">
@@ -14378,6 +14565,10 @@ No metadata is changed.`)) return;
                                                    class="bg-gray-800 border border-gray-600 rounded px-1 py-0 text-xs w-44">
                                             <button x-show="parserChanged(p)" @click.prevent.stop="p.field = p.orig_field; p.value = p.orig_value"
                                                     class="text-purple-300 hover:text-white" :title="'Changed from ' + parserFieldLabel(p.orig_field) + ': ' + p.orig_value + ' - remembered when applied. Click to undo.'">✎</button>
+                                            <button x-show="p.choices && p.choices.length > 1" type="button"
+                                                    @click.prevent.stop="(async () => { const c = await castPickOne(p.value, p.choices); if (c) { p.value = c; p.orig_value = c; p.on = true; p.picked = true; } })()"
+                                                    class="px-1 rounded" :class="p.picked ? 'bg-gray-700 text-gray-300' : 'bg-yellow-700 text-white'"
+                                                    title="Several performers have this name - pick which one" x-text="p.picked ? 'change' : 'which one?'"></button>
                                             <span x-show="!p.known" class="text-yellow-400" title="Not in your library yet">new</span>
                                             <span x-show="p.source === 'library default'" class="text-gray-500" title="The library's default site">(library default)</span>
                                         </label>
@@ -14973,7 +15164,7 @@ No metadata is changed.`)) return;
                             <template x-for="(castMember, index) in orderedCast(activeVideo).slice(0, 5)" :key="castMember">
                                 <button @click="closeVideo(); $nextTick(() => loadCastBio(castMember))"
                                         class="text-xs bg-indigo-600 hover:bg-indigo-700 px-2 py-0.5 rounded whitespace-nowrap shrink-0 transition-colors"
-                                        x-text="castMember"></button>
+                                        x-text="castLabel(castMember)"></button>
                             </template>
                             <span x-show="activeVideo.cast.length > 5"
                                   class="text-xs text-gray-400 shrink-0"
@@ -15984,6 +16175,8 @@ No metadata is changed.`)) return;
                                             <span x-show="it.change" class="text-xs px-1.5 rounded bg-orange-700 text-white"
                                                   title="Replaces the value you have now">change</span>
                                             <span x-show="it.already_set" class="text-xs text-gray-400">already set</span>
+                                            <button x-show="it.choices && it.choices.length > 1 && !it.picked" type="button" @click.prevent.stop="extScenePickSame(it)"
+                                                    class="text-xs px-1.5 rounded bg-yellow-700 text-white hover:bg-yellow-600" title="Several performers have this name - pick which one">which one?</button>
                                             <button x-show="it.field === 'cast' || it.field === 'male_cast'" type="button" @click.prevent.stop="extSceneSwapCast(it)"
                                                     class="ml-auto text-xs px-1.5 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white"
                                                     title="Wrong cast type? Switch it for this video" x-text="it.field === 'cast' ? '⇄ Male Cast' : '⇄ Cast'"></button>

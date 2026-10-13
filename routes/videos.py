@@ -138,6 +138,16 @@ def set_watch_history(watch_history):
     _watch_history = watch_history
 
 
+def _cast_match_sql(names):
+    """SQL (on vc.value) matching these lowercase names, plus their numbered same-name performers."""
+    conds, params = [], []
+    for n in names:
+        conds.append("(LOWER(vc.value) = ? OR LOWER(vc.value) LIKE ? ESCAPE '\\')")
+        esc = n.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        params += [n, esc + ' (%)']
+    return ' OR '.join(conds) or '0', params
+
+
 def _unwrap_values(values):
     """
     Unwrap field filter values, extracting the string from ('EXACT', str) tuples.
@@ -312,16 +322,17 @@ def _get_videos_sql_fast(
         if not isinstance(cast_values, list):
             cast_values = [cast_values]
         
-        cast_placeholders = ','.join(['?' for _ in cast_values])
+        # 'Jane Doe' also finds the same-name performers 'Jane Doe (1)', 'Jane Doe (2)', ...
+        cast_names_sql, cast_params = _cast_match_sql(_unwrap_values(cast_values))
         conditions.append(f"""
             v.video_id IN (
                 SELECT vcj.video_id 
                 FROM video_cast_junction vcj
                 JOIN video_cast vc ON vcj.cast_id = vc.id
-                WHERE LOWER(vc.value) IN ({cast_placeholders})
+                WHERE {cast_names_sql}
             )
         """)
-        params.extend(_unwrap_values(cast_values))
+        params.extend(cast_params)
     
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.video_id')
@@ -1012,16 +1023,17 @@ def _get_available_filters_uncached(
         if not isinstance(cast_values, list):
             cast_values = [cast_values]
         
-        cast_placeholders = ','.join(['?' for _ in cast_values])
+        # 'Jane Doe' also finds the same-name performers 'Jane Doe (1)', 'Jane Doe (2)', ...
+        cast_names_sql, cast_params = _cast_match_sql(_unwrap_values(cast_values))
         base_conditions.append(f"""
             v.video_id IN (
                 SELECT vcj.video_id 
                 FROM video_cast_junction vcj
                 JOIN video_cast vc ON vcj.cast_id = vc.id
-                WHERE LOWER(vc.value) IN ({cast_placeholders})
+                WHERE {cast_names_sql}
             )
         """)
-        base_params.extend(_unwrap_values(cast_values))
+        base_params.extend(cast_params)
     
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, base_conditions, base_params, video_id_col='v.video_id')

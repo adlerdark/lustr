@@ -1484,3 +1484,86 @@ def resolve_cast_name(name: str, model = Depends(get_model)):
         if row:
             return {"name": name, "primary": row['primary_name'], "is_alias": True}
     return {"name": name, "primary": name, "is_alias": False}
+
+# ---------------------------------------------------------------------------
+# Same-name performers: 'Jane Doe (1)' (main), 'Jane Doe (2)', ...
+# ---------------------------------------------------------------------------
+class SplitRequest(_BaseModel):
+    video_ids: list = []
+    paths: list = []             # or file paths (the bio lists files)
+    move: list = []              # profile parts for the new performer: photo, ext_link, attributes, aliases, gender, category
+
+
+def _same_name_rows(conn, name):
+    import cast_names
+    out = []
+    for n in cast_names.siblings(conn, name):
+        cnt = conn.execute('SELECT COUNT(*) FROM video_cast_junction j JOIN video_cast vc ON vc.id = j.cast_id '
+                           'WHERE vc.value = ?', (n,)).fetchone()[0]
+        photo = conn.execute('SELECT 1 FROM cast_photos WHERE cast_name = ? AND thumbnail_data IS NOT NULL', (n,)).fetchone()
+        site = conn.execute('SELECT vs.value, COUNT(*) c FROM video_cast_junction j JOIN video_cast vc ON vc.id = j.cast_id '
+                            'JOIN video_site_junction sj ON sj.video_id = j.video_id JOIN video_site vs ON vs.id = sj.site_id '
+                            'WHERE vc.value = ? GROUP BY vs.value ORDER BY c DESC LIMIT 1', (n,)).fetchone()
+        out.append({'name': n, 'videos': cnt, 'has_photo': bool(photo), 'top_site': site[0] if site else None})
+    return out
+
+
+@router.get("/{cast_name}/same-name")
+def same_name(cast_name: str, request: Request, model = Depends(get_model)):
+    """Performers sharing this name ('Jane Doe' -> Jane Doe (1), (2), ...), for the bio and the 'which one?' chooser."""
+    check_auth(request)
+    if not USE_SQLITE:
+        return {"performers": []}
+    with model.db.get_connection() as conn:
+        return {"performers": _same_name_rows(conn, urllib.parse.unquote(cast_name))}
+
+
+@router.post("/{cast_name}/split")
+def split_performer(cast_name: str, body: SplitRequest, request: Request, model = Depends(get_model)):
+    """These videos belong to a different person with the same name: they become 'Name (n)'."""
+    check_auth(request)
+    import cast_names
+    import db_maintenance
+    name = urllib.parse.unquote(cast_name)
+    conn = model.db.get_connection()
+    ids = list(body.video_ids or [])
+    for p in body.paths or []:
+        row = conn.execute('SELECT video_id FROM file_versions WHERE path = ?', (p,)).fetchone()
+        if row and row[0] not in ids:
+            ids.append(row[0])
+    if not ids:
+        return {"success": False, "error": "Tick the videos that belong to the other performer"}
+    body.video_ids = ids
+    try:
+        backup = db_maintenance.make_backup(conn)
+        r = cast_names.split_performer(conn, name, body.video_ids, body.move)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "error": str(e)}
+    _male_cast_changed()
+    return {"success": True, "backup": backup, **r}
+
+
+@router.post("/{cast_name}/make-main")
+def make_main(cast_name: str, request: Request, model = Depends(get_model)):
+    """This one becomes 'Name (1)'."""
+    check_auth(request)
+    import cast_names
+    conn = model.db.get_connection()
+    try:
+        main = cast_names.make_main(conn, urllib.parse.unquote(cast_name))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "error": str(e)}
+    _male_cast_changed()
+    return {"success": True, "name": main}
+
+
+def _male_cast_changed():
+    try:
+        import ext_db
+        ext_db._male_invalidate()
+    except Exception:
+        pass

@@ -14,6 +14,7 @@ import re
 import unicodedata
 from datetime import datetime
 
+import cast_names
 import ext_db
 from ext_db import norm_name, _JUNK_TOKENS, _RES_RE, _valid_date, _HYPHEN_APOS, _title_is_noise
 
@@ -99,8 +100,10 @@ class ParseContext:
             genders = {r[0]: (r[1] or '').lower() for r in conn.execute('SELECT cast_name, gender FROM cast_gender')}
         except Exception:
             genders = {}
-        return cls(ext_db._cast_index(conn), keys, {k: g['display'] for k, g in groups.items()}, lib_default, genders,
-                   get_learned(conn))
+        ctx = cls(ext_db._cast_index(conn), keys, {k: g['display'] for k, g in groups.items()}, lib_default, genders,
+                  get_learned(conn))
+        ctx.same_names = cast_names.numbered(conn)          # 'janedoe' -> ['Jane Doe (1)', 'Jane Doe (2)']
+        return ctx
 
     def site_of(self, text):
         """A known site key for this text (a name, 'Name.com', an abbreviation, 'Example Studios'), else None."""
@@ -631,6 +634,7 @@ def proposals_for(conn, ctx, row, parsed=None, model=None):
     straight = None
     sites = ext_db._video_field_values(conn, vid, 'site')
     have = {norm_name(ctx.cast_idx.get(norm_name(c), c)) for c in cast}
+    same = getattr(ctx, 'same_names', {})
     out = []
     if not sites:
         if p.get('site'):
@@ -645,6 +649,14 @@ def proposals_for(conn, ctx, row, parsed=None, model=None):
         if norm_name(primary) in have:
             continue
         have.add(norm_name(primary))
+        # several performers with this name: you pick which one (not ticked until you do)
+        choices = same.get(norm_name(cast_names.base_name(primary))) or []
+        if len(choices) > 1:
+            if any(norm_name(c) in have for c in choices):
+                continue                                # the video already has one of them
+            out.append({'field': 'cast', 'value': primary, 'known': True, 'ticked': False, 'source': 'same name',
+                        'choices': choices})
+            continue
         field = 'cast'
         if ctx.genders.get(primary) == 'male':
             if straight is None:

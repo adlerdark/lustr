@@ -419,8 +419,12 @@ class SearchParser:
                 
                 # Special fuzzy matching for cast field
                 if field_name == 'cast':
+                    import cast_names
+                    plain = cast_names.split_suffix(str(required_value))[1] is None
                     for field_value in field_data:
-                        if SearchParser.fuzzy_name_match(required_value, field_value, exact_match=exact_match):
+                        # 'Jane Doe' also matches the same-name performers 'Jane Doe (1)', 'Jane Doe (2)'
+                        fv = cast_names.base_name(field_value) if plain else field_value
+                        if SearchParser.fuzzy_name_match(required_value, fv, exact_match=exact_match):
                             match_found = True
                             break
                 else:

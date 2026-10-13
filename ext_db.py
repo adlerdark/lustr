@@ -3078,6 +3078,9 @@ def _cast_index(conn):
         idx.setdefault(norm_name(r[0]), r[0])
     for r in _rows(conn, 'SELECT alias_name, primary_name FROM cast_aliases'):
         idx.setdefault(norm_name(r[0]), r[1])
+    # same-name performers: 'Jane Doe' finds the main 'Jane Doe (1)' (callers offer the others via cast_names.siblings)
+    for key, names in cast_names.numbered(conn).items():
+        idx.setdefault(key, names[0])
     return idx
 
 
@@ -4166,6 +4169,11 @@ def build_scene_suggestions(conn, path, full_movie=None):
             else:
                 reason = f'{ext_label} · name match (not linked)'
                 pre = tick['cast_name']
+            sibs = cast_names.siblings(conn, local) if how != 'linked' else []
+            if len(sibs) > 1:                       # same-name performers: you pick which one
+                reason += ' · several performers have this name - pick one'
+                pre = False
+                gx['choices'] = sibs
             if is_man:
                 if in_cast and local.lower() not in marked:
                     reason = f'{ext_label} · already in Cast, mark as Male Cast'
