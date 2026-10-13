@@ -534,6 +534,8 @@
                 folderAdding: false,           // Add Folders: scanning the new folder (keeps going if the window is closed)
                 folderAddingLib: '',           // ...into this library (header indicator)
                 castSame: [],                  // the open bio's same-name performers [{name, videos, has_photo, top_site}]
+                photoCrop: { open: false, name: '', src: '', natW: 0, natH: 0, box: { x: 0, y: 0, w: 1, h: 1 }, aspect: 2 / 3,
+                             cropped: false, busy: false, error: '', drag: null },          // crop a cast photo
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 loginUsername: '',
@@ -5247,6 +5249,71 @@ No metadata is changed.`)) return;
                     }
                 },
 
+                // ----- crop a cast photo (the server keeps the original, so re-cropping starts from the whole picture) -----
+                photoCropOpen(name) {
+                    Object.assign(this.photoCrop, { open: true, name, natW: 0, natH: 0, busy: false, error: '', drag: null, cropped: false,
+                                                    src: `/api/cast/photo/${encodeURIComponent(name)}?original=true&t=${Date.now()}` });
+                },
+                photoCropLoaded(img) {
+                    const C = this.photoCrop;
+                    C.natW = img.naturalWidth;
+                    C.natH = img.naturalHeight;
+                    this.photoCropFit();
+                },
+                photoCropFit() {                          // the largest box of the chosen shape, centred
+                    const C = this.photoCrop, W = C.natW || 1, H = C.natH || 1, r = C.aspect;
+                    let w = 1, h = 1;
+                    if (r) { if (W / H > r) { w = r * H / W; } else { h = W / (r * H); } }
+                    C.box = { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+                },
+                photoCropSetAspect(r) { this.photoCrop.aspect = r; this.photoCropFit(); },
+                photoCropStart(e, mode) {                 // mode: 'move' or a corner 'nw' / 'ne' / 'sw' / 'se'
+                    const C = this.photoCrop;
+                    const rect = e.currentTarget.closest('[data-crop-area]').getBoundingClientRect();
+                    C.drag = { mode, rect, px: e.clientX, py: e.clientY, box: { ...C.box } };
+                    const move = ev => this.photoCropMove(ev);
+                    const up = () => { C.drag = null; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+                    window.addEventListener('pointermove', move);
+                    window.addEventListener('pointerup', up);
+                },
+                photoCropMove(e) {
+                    const C = this.photoCrop, d = C.drag;
+                    if (!d) return;
+                    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+                    const b0 = d.box, W = C.natW || 1, H = C.natH || 1, r = C.aspect, min = 0.05;
+                    if (d.mode === 'move') {
+                        const dx = (e.clientX - d.px) / d.rect.width, dy = (e.clientY - d.py) / d.rect.height;
+                        C.box = { ...b0, x: clamp(b0.x + dx, 0, 1 - b0.w), y: clamp(b0.y + dy, 0, 1 - b0.h) };
+                        return;
+                    }
+                    // the opposite corner stays put
+                    const ax = d.mode.includes('w') ? b0.x + b0.w : b0.x, ay = d.mode.includes('n') ? b0.y + b0.h : b0.y;
+                    const sx = d.mode.includes('w') ? -1 : 1, sy = d.mode.includes('n') ? -1 : 1;
+                    const px = clamp((e.clientX - d.rect.left) / d.rect.width, 0, 1), py = clamp((e.clientY - d.rect.top) / d.rect.height, 0, 1);
+                    const maxW = sx < 0 ? ax : 1 - ax, maxH = sy < 0 ? ay : 1 - ay;
+                    let w = clamp(Math.abs(px - ax), min, maxW), h = clamp(Math.abs(py - ay), min, maxH);
+                    if (r) {                                   // keep the shape: width decides, within the room there is
+                        w = Math.min(w, maxH * r * H / W);
+                        h = w * W / (r * H);
+                    }
+                    C.box = { x: sx < 0 ? ax - w : ax, y: sy < 0 ? ay - h : ay, w, h };
+                },
+                async photoCropSave(reset = false) {
+                    const C = this.photoCrop;
+                    C.busy = true;
+                    C.error = '';
+                    try {
+                        const r = await (await fetch(`/api/cast/photo/${encodeURIComponent(C.name)}/crop`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(reset ? { reset: true } : C.box)
+                        })).json();
+                        if (!r.success) throw new Error(r.error || 'Could not crop the photo');
+                        this.castPhotoTimestamp = Date.now();
+                        if (reset) { C.cropped = false; this.photoCropOpen(C.name); return; }
+                        C.open = false;
+                    } catch (e) { C.error = e.message; } finally { C.busy = false; }
+                },
+
                 async handleCastPhotoUpload(event) {
                     const file = event.target.files[0];
                     if (!file) return;
@@ -5273,6 +5340,8 @@ No metadata is changed.`)) return;
                             }
                             
                             this.modals.castPhoto = false;
+                            event.target.value = '';
+                            this.photoCropOpen(this.castBioData.name);          // crop it (Cancel keeps it whole)
                         } else {
                             alert('Failed to upload photo: ' + (data.error || 'Unknown error'));
                         }
@@ -5309,6 +5378,7 @@ No metadata is changed.`)) return;
                             }
                             
                             this.modals.castPhoto = false;
+                            this.photoCropOpen(this.castBioData.name);          // crop it (Cancel keeps it whole)
                         } else {
                             alert('Failed to set photo: ' + (data.error || 'Unknown error'));
                         }
@@ -12079,7 +12149,10 @@ No metadata is changed.`)) return;
                             <!-- Main header content: Photo + Name/Appearance -->
                             <div class="flex flex-col sm:flex-row gap-4 sm:gap-6">
                                 <!-- Cast Photo (smaller on mobile) -->
-                                <div class="relative flex-shrink-0 mx-auto sm:mx-0">
+                                <div class="relative flex-shrink-0 mx-auto sm:mx-0 group">
+                                    <button x-show="castBioData?.has_photo" @click.stop="photoCropOpen(castBioData.name)"
+                                            class="absolute bottom-2 right-2 z-10 px-2 py-1 rounded text-xs bg-black/70 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
+                                            title="Crop the photo">✂ Crop</button>
                                     <template x-if="castBioData?.has_photo">
                                         <img 
                                             class="cast-photo-img w-40 h-60 sm:w-54 sm:h-81 rounded-lg object-cover border-2 border-gray-600 shadow-lg cursor-pointer hover:opacity-90 transition"
@@ -14205,6 +14278,43 @@ No metadata is changed.`)) return;
                     </button>
                 </div>
 
+            </div>
+        </div>
+
+        <!-- Crop a cast photo -->
+        <div x-show="photoCrop.open" x-cloak class="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-3xl p-4 shadow-2xl flex flex-col max-h-[95vh]">
+                <div class="flex flex-wrap items-center gap-2 mb-3">
+                    <h2 class="font-bold flex-1" x-text="'Crop photo · ' + photoCrop.name"></h2>
+                    <template x-for="a in [[2 / 3, 'Portrait 2:3'], [1, 'Square'], [0, 'Free']]" :key="a[1]">
+                        <button @click="photoCropSetAspect(a[0])" class="px-2 py-1 rounded text-xs"
+                                :class="photoCrop.aspect === a[0] ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="a[1]"></button>
+                    </template>
+                </div>
+                <div class="flex-1 min-h-0 flex items-center justify-center bg-gray-900 rounded p-2 select-none">
+                    <div class="relative inline-block overflow-hidden touch-none" data-crop-area>
+                        <img :src="photoCrop.src" @load="photoCropLoaded($el)" draggable="false" class="block max-w-full max-h-[70vh]" alt="">
+                        <div x-show="photoCrop.natW" class="absolute border-2 border-white cursor-move"
+                             :style="{ boxShadow: '0 0 0 9999px rgba(0,0,0,.6)', left: photoCrop.box.x * 100 + '%', top: photoCrop.box.y * 100 + '%',
+                                       width: photoCrop.box.w * 100 + '%', height: photoCrop.box.h * 100 + '%' }"
+                             @pointerdown.prevent="photoCropStart($event, 'move')">
+                            <template x-for="c in ['nw', 'ne', 'sw', 'se']" :key="c">
+                                <div class="absolute w-4 h-4 bg-white rounded-sm" @pointerdown.prevent.stop="photoCropStart($event, c)"
+                                     :class="{ nw: '-left-2 -top-2 cursor-nwse-resize', ne: '-right-2 -top-2 cursor-nesw-resize',
+                                               sw: '-left-2 -bottom-2 cursor-nesw-resize', se: '-right-2 -bottom-2 cursor-nwse-resize' }[c]"></div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-400 mt-2">Drag the box to move it, its corners to resize it. The whole photo is kept, so you can crop again later.</p>
+                <p x-show="photoCrop.error" class="text-xs text-red-400 mt-1" x-text="photoCrop.error"></p>
+                <div class="flex flex-wrap justify-end gap-2 mt-3">
+                    <button @click="photoCropSave(true)" :disabled="photoCrop.busy" class="mr-auto px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40"
+                            title="Undo every crop: back to the photo as it was added">Reset to original</button>
+                    <button @click="photoCrop.open = false" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel</button>
+                    <button @click="photoCropSave()" :disabled="photoCrop.busy || !photoCrop.natW"
+                            class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40" x-text="photoCrop.busy ? 'Saving…' : 'Save crop'"></button>
+                </div>
             </div>
         </div>
 
@@ -17380,6 +17490,9 @@ No metadata is changed.`)) return;
                 <p class="text-xs text-gray-400">Image will be downloaded and stored locally</p>
             </div>
             
+            <button x-show="castBioData?.has_photo" @click="modals.castPhoto = false; photoCropOpen(castBioData.name)"
+                    class="w-full mt-4 bg-gray-700 hover:bg-gray-600 py-2 rounded transition">Crop Current Photo</button>
+
             <!-- Delete Button (if photo exists) -->
             <button 
                 x-show="castBioData?.has_photo"

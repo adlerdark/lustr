@@ -1183,18 +1183,39 @@ async def set_cast_photo_url(cast_name: str, url: str = Form(...), model = Depen
         return {"success": False, "error": str(e)}
 
 
+class PhotoCropRequest(BaseModel):
+    x: float = 0
+    y: float = 0
+    w: float = 1
+    h: float = 1
+    reset: bool = False
+
+
+@router.post("/photo/{cast_name}/crop")
+def crop_cast_photo(cast_name: str, body: PhotoCropRequest, request: Request, model = Depends(get_model)):
+    """Crop the photo (fractions of the original); reset=true puts the original back."""
+    check_auth(request)
+    if not USE_SQLITE:
+        return {"success": False, "error": "SQLite only"}
+    try:
+        r = model.db.crop_cast_photo(urllib.parse.unquote(cast_name), body.dict(), body.reset)
+        return {"success": True, **r}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/photo/{cast_name}")
-def get_cast_photo_route(cast_name: str, thumbnail: bool = False, model = Depends(get_model)):
-    """Get cast photo with browser caching."""
+def get_cast_photo_route(cast_name: str, thumbnail: bool = False, original: bool = False, model = Depends(get_model)):
+    """Get cast photo with browser caching (original=true: the uncropped photo, for re-cropping)."""
     cast_name = urllib.parse.unquote(cast_name)
     
     if USE_SQLITE:
-        photo = model.db.get_cast_photo(cast_name, thumbnail)
+        photo = model.db.get_cast_photo(cast_name, thumbnail, original)
         if photo:
             # Add cache headers for browser caching (1 year)
             headers = {
                 'Cache-Control': 'public, max-age=31536000, immutable',
-                'ETag': f'"{cast_name}-{thumbnail}"'
+                'ETag': f'"{cast_name}-{thumbnail}-{original}"'
             }
             return Response(
                 content=photo['data'], 

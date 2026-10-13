@@ -30,6 +30,20 @@ def gender_from_external(raw):
     return {'FEMALE': 'female', 'MALE': 'male'}.get(g)
 
 
+def _image_mime(data):
+    """'image/jpeg', 'image/png', ... from the file's first bytes."""
+    head = bytes(data[:12]) if data else b''
+    if head.startswith(b'\xff\xd8'):
+        return 'image/jpeg'
+    if head.startswith(b'\x89PNG'):
+        return 'image/png'
+    if head[:4] == b'RIFF' and head[8:12] == b'WEBP':
+        return 'image/webp'
+    if head[:3] == b'GIF':
+        return 'image/gif'
+    return None
+
+
 class Database:
     def __init__(self, db_path=None):
         if db_path is None:
@@ -168,6 +182,9 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # the uncropped photo, kept after a crop so it can be re-cropped (NULL = photo_data is the original)
+            if 'original_data' not in {r[1] for r in cursor.execute('PRAGMA table_info(cast_photos)').fetchall()}:
+                cursor.execute('ALTER TABLE cast_photos ADD COLUMN original_data BLOB')
 
             # ============================================
             # JUNCTION TABLES FOR LIST FIELDS
@@ -1560,18 +1577,55 @@ class Database:
             print(f"Error saving cast photo: {e}")
             return False
 
-    def get_cast_photo(self, cast_name, thumbnail=False):
-        """Get cast photo or thumbnail."""
+    def get_cast_photo(self, cast_name, thumbnail=False, original=False):
+        """Get cast photo or thumbnail (original=True: the uncropped photo, if it was cropped)."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        field = 'thumbnail_data' if thumbnail else 'photo_data'
+        field = 'thumbnail_data' if thumbnail else ('COALESCE(original_data, photo_data)' if original else 'photo_data')
         cursor.execute(f'''
-            SELECT {field}, photo_mime_type FROM cast_photos WHERE cast_name = ?
+            SELECT {field}, photo_mime_type, original_data IS NOT NULL FROM cast_photos WHERE cast_name = ?
         ''', (cast_name,))
         row = cursor.fetchone()
         if row and row[0]:
-            return {'data': row[0], 'mime_type': row[1]}
+            mime = row[1]
+            if original and row[2]:
+                mime = _image_mime(row[0]) or mime
+            return {'data': row[0], 'mime_type': mime, 'cropped': bool(row[2])}
         return None
+
+    def crop_cast_photo(self, cast_name, box=None, reset=False):
+        """Crop the photo to box {x, y, w, h} (fractions 0-1 of the original); the original is kept,
+        so cropping again starts from the whole picture. reset=True puts the original back."""
+        from PIL import Image, ImageOps
+        import io
+        conn = self.get_connection()
+        row = conn.execute('SELECT photo_data, original_data, photo_mime_type, source_type, source_url FROM cast_photos '
+                           'WHERE cast_name = ?', (cast_name,)).fetchone()
+        if not row or not row[0]:
+            raise ValueError('No photo to crop')
+        original = row[1] or row[0]
+        if reset:
+            photo, keep_original, mime = original, None, _image_mime(original) or row[2]
+        else:
+            img = ImageOps.exif_transpose(Image.open(io.BytesIO(original)))
+            W, H = img.size
+            x, y, w, h = (max(0.0, min(1.0, float((box or {}).get(k, d)))) for k, d in (('x', 0), ('y', 0), ('w', 1), ('h', 1)))
+            l, t = int(round(x * W)), int(round(y * H))
+            r, b = min(W, l + max(1, int(round(w * W)))), min(H, t + max(1, int(round(h * H))))
+            img = img.crop((l, t, r, b))
+            if img.mode not in ('RGB', 'L'):
+                bg = Image.new('RGB', img.size, (255, 255, 255))
+                rgba = img.convert('RGBA')
+                bg.paste(rgba, mask=rgba.split()[-1])
+                img = bg
+            out = io.BytesIO()
+            img.convert('RGB').save(out, format='JPEG', quality=90)
+            photo, keep_original, mime = out.getvalue(), original, 'image/jpeg'
+        if not self.save_cast_photo(cast_name, photo, mime, row[3] or 'upload', row[4]):
+            raise ValueError('Could not save the photo')
+        conn.execute('UPDATE cast_photos SET original_data = ? WHERE cast_name = ?', (keep_original, cast_name))
+        conn.commit()
+        return {'cropped': keep_original is not None}
 
     def delete_cast_photo(self, cast_name):
         """Delete cast photo."""
