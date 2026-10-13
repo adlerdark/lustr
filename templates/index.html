@@ -3257,6 +3257,14 @@
                     return this.maleCastOf(v).includes(name);
                 },
 
+                // a cast name as shown: same-name performers are stored as 'Jane Doe (2)'; in library views ('view')
+                // the number is hidden unless Settings says to show it. Bio, File Info and pickers ('full') always show it.
+                castLabel(name, where = 'view') {
+                    const s = String(name || '');
+                    if (where !== 'view' || this.appSettings.showCastNumbers) return s;
+                    return s.replace(/\s*\(\d+\)\s*$/, '');
+                },
+
                 // the library a file is in: the one whose folder is the longest prefix of its path
                 libraryOfPath(path) {
                     let best = '', len = -1;
@@ -14772,7 +14780,14 @@ No metadata is changed.`)) return;
     <!-- NEW PLAYER (np) - roadmap #8. video.js; separate from the classic VIDEO PLAYER below. -->
     <div x-show="np.open" x-cloak class="fixed inset-0 z-[100] bg-black flex flex-col">
         <div class="flex flex-wrap items-center gap-2 gap-y-1 px-3 sm:px-4 py-2 bg-gray-900 text-sm border-b border-gray-800">
-            <span class="font-semibold truncate flex-1 min-w-[50%] sm:min-w-0 text-gray-100" :title="np.video?.path" x-text="npTitle()"></span>
+            <span class="flex-1 min-w-[50%] sm:min-w-0 truncate" :title="np.video?.path + (orderedCast(np.video).length ? '\n' + orderedCast(np.video).join(', ') : '')">
+                <span class="font-semibold text-gray-100" x-text="npTitle()"></span>
+                <template x-for="(c, i) in orderedCast(np.video)" :key="'npc' + c">
+                    <span><span class="text-gray-500" x-text="i === 0 ? ' · ' : ', '"></span><a href="#" @click.prevent="npClose(); searchCastMember(c)"
+                          class="hover:underline" :class="isMaleCast(np.video, c) ? 'text-gray-400' : 'text-gray-300'" x-text="castLabel(c, 'view')"></a></span>
+                </template>
+                <span x-show="libraryOfPath(np.video?.path)" class="text-gray-500 text-xs" x-text="' · ' + libraryOfPath(np.video?.path)"></span>
+            </span>
             <span x-show="np.loopA !== null" class="text-xs px-2 py-0.5 rounded bg-purple-800 text-white" title="A-B loop - press L again"
                   x-text="np.loopB === null ? 'Loop from ' + formatTime(np.loopA) + ' - press L at the end' : 'Loop ' + formatTime(np.loopA) + ' - ' + formatTime(np.loopB)"></span>
             <select x-show="np.touch && np.data" :value="np.srcIdx" @change="npChoose(+$event.target.value)" title="Quality"
