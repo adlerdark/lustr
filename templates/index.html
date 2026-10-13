@@ -8380,10 +8380,12 @@ No metadata is changed.`)) return;
                     
                     // Collect all metadata from selected files
                     const mergedData = {};
-                    const listFieldsLower = this.editFields.map(f => f.toLowerCase());
+                    const listFieldsLower = this.editFields.map(f => f.toLowerCase()).filter(f => f !== 'male_cast');   // Male Cast: see below
                     const isFav = v => v && (v.favorite === true || v.favorite === 1 || v.favorite === '1' || v.favorite === 'true');
                     const picked = paths.map(p => this.videos.find(v => v.path === p)).filter(Boolean);
                     const anyFav = picked.some(isFav);       // one is a favourite -> all become favourites
+                    // Male Cast stays Male Cast: anyone who is Male Cast on one of the videos is Male Cast on all of them
+                    const maleNames = [...new Set(picked.flatMap(v => this.maleCastOf(v)))];
                     
                     // Get data for each selected file
                     for (const path of paths) {
@@ -8431,6 +8433,7 @@ No metadata is changed.`)) return;
                                 add_to_lists: addTo
                             })
                         });
+                        if (maleNames.length) await this.saveMaleCastMarks(paths, { add: maleNames, remove: [] });
                         let favs = 0;
                         if (anyFav) {
                             const toggle = async path => {
