@@ -103,7 +103,8 @@ def build_cmd(src, out, o, info):
     """The ffmpeg command for one clip."""
     dur = o['end'] - o['start']
     cmd = ['nice', '-n', str(NICE), 'ffmpeg', '-hide_banner', '-v', 'error', '-nostdin', '-y',
-           '-ss', f"{o['start']:.3f}", '-i', src, '-t', f'{dur:.3f}', '-map_metadata', '-1',
+           # -t before -i: the input itself stops there (the GIF palette needs the end of its input)
+           '-ss', f"{o['start']:.3f}", '-t', f'{dur:.3f}', '-i', src, '-map_metadata', '-1',
            '-progress', 'pipe:1', '-nostats']
     vf = video_filters(o, info)
     high = o['quality'] == 'high'

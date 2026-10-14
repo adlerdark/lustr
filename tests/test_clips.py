@@ -50,6 +50,13 @@ class MathTests(unittest.TestCase):
         self.assertEqual(clips.output_size(1920, 1080, 'vertical', 480), (480, 852))
         self.assertEqual(clips.frame_size({'width': 1920, 'height': 1080, 'rotation': 90}), (1080, 1920))
 
+    def test_input_stops_at_clip_end(self):
+        # the GIF palette waits for the end of its input: -t must cut the input, not the output
+        o = clips.clean_options({'format': 'gif', 'start': 600, 'end': 606}, {'duration': 3000})
+        cmd = clips.build_cmd('/x.mp4', '/y.gif', o, {'width': 1280, 'height': 720})
+        self.assertLess(cmd.index('-t'), cmd.index('-i'))
+        self.assertEqual(cmd[cmd.index('-t') + 1], '6.000')
+
     def test_options(self):
         info = {'duration': 100, 'audio': True}
         o = clips.clean_options({'format': 'gif', 'start': 10, 'end': 16, 'audio': True}, info)
