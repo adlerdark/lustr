@@ -31,6 +31,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Captions (faster-whisper): speech models download on first use into the data volume,
+# so they survive image rebuilds.
+ENV HF_HOME=/app/data/models
+
 COPY . .
 
 # Everything you keep (database, thumbnails, users, settings) lives here: mount a volume.

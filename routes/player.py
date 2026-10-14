@@ -159,6 +159,11 @@ def streams(path: str = Query(...), model=Depends(get_model)):
         if not d['sprite']['ready'] and s['sprites_on_open']:
             sprites.worker.enqueue(path, d['cache_id'], front=True)
             d['sprite']['queued'] = True
+        try:
+            import routes.captions
+            d['captions'] = routes.captions.player_info(conn, path, d['cache_id'])
+        except Exception as e:
+            d['captions'] = {'tracks': [], 'queued': False, 'whisper': False, 'error': str(e)}
         return {'success': True, **d}
     except Exception as e:
         return _err(e)

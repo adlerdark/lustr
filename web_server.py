@@ -70,6 +70,7 @@ from ext_db import router as ext_db_router
 from tools_api import router as tools_router
 # New player (roadmap #8) - separate from the classic streaming routes
 from routes.player import router as player_router
+from routes.captions import router as captions_router
 # Home / Recommended rows (roadmap #9)
 from routes.home import router as home_router
 from routes.collections import router as collections_router
@@ -265,6 +266,9 @@ def inject_dependencies():
     import routes.player
     routes.player.set_model(model)
     routes.player.start_background()
+    import routes.captions                  # closed captions: worker + night window
+    routes.captions.set_model(model)
+    routes.captions.start_background()
 
     import routes.home
     routes.home.set_model(model)
@@ -329,6 +333,7 @@ def register_routes():
     app.include_router(playlists_router)
     app.include_router(direct_play_router) #added this with direct_play
     app.include_router(player_router)
+    app.include_router(captions_router)
     app.include_router(home_router)
     app.include_router(collections_router)
 

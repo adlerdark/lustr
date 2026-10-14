@@ -534,6 +534,8 @@
                 folderAdding: false,           // Add Folders: scanning the new folder (keeps going if the window is closed)
                 folderAddingLib: '',           // ...into this library (header indicator)
                 castSame: [],                  // the open bio's same-name performers [{name, videos, has_photo, top_site}]
+                activeCaptions: [],            // classic player: caption tracks of the open video
+                cc: { loaded: false, settings: null, models: [], whisper: false, status: null, busy: false, msg: '', libsText: '' },
                 photoCrop: { open: false, name: '', src: '', natW: 0, natH: 0, box: { x: 0, y: 0, w: 1, h: 1 }, aspect: 2 / 3,
                              cropped: false, busy: false, error: '', drag: null },          // crop a cast photo
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
@@ -9446,6 +9448,9 @@ No metadata is changed.`)) return;
                     if (sane(start)) this.npChip(`Resumed at ${this.formatTime(start)}`, 0, 'restart');
                     else { start = 0; this.npOfferResume(video.path, sane); }
                     this.npLoad(idx, start, true);
+                    this.npCaptions();
+                    np.ccStatus = null;
+                    if (d.captions && d.captions.queued && !(d.captions.tracks || []).length) this.npCCPoll();
                     this.npSprites(d.sprite);
                     this.npLoadMarkers();
                     this.npLoadContext();
@@ -10174,6 +10179,7 @@ No metadata is changed.`)) return;
                     clearInterval(np.timer);
                     np.timer = null;
                     clearTimeout(np.chipTimer);
+                    clearTimeout(np.ccTimer);
                     if (p) { try { p.dispose(); } catch (e) { /* already gone */ } }
                     window.lustrNP.player = null;
                     this.npWake(false);
@@ -10198,12 +10204,121 @@ No metadata is changed.`)) return;
                 },
 
                 // Settings -> Player
+                // ----- closed captions (captions.py) -----
+                ccTrackAttrs(t) { return { kind: 'subtitles', src: t.src, srclang: t.lang, label: t.label }; },
+
+                // new player: (re)add the caption tracks; your last on/off choice is remembered per browser
+                npCaptions() {
+                    const p = this.npPlayer(), cc = this.np.data && this.np.data.captions;
+                    if (!p || !cc) return;
+                    const remote = p.remoteTextTracks();
+                    for (let i = remote.length - 1; i >= 0; i--) p.removeRemoteTextTrack(remote[i]);
+                    let want = null;
+                    try { want = localStorage.getItem('npCC'); } catch (e) { /* none */ }
+                    (cc.tracks || []).forEach((t, i) => {
+                        const el = p.addRemoteTextTrack(this.ccTrackAttrs(t), true);
+                        if (el && el.track && want && (want === t.lang || (want === 'on' && i === 0))) el.track.mode = 'showing';
+                    });
+                    if (!p._ccWatch) {
+                        p._ccWatch = true;
+                        p.textTracks().addEventListener('change', () => {
+                            const tt = p.textTracks();
+                            let on = '';
+                            for (let i = 0; i < tt.length; i++) if (tt[i].kind === 'subtitles' && tt[i].mode === 'showing') on = tt[i].language || 'on';
+                            try { localStorage.setItem('npCC', on); } catch (e) { /* ignore */ }
+                        });
+                    }
+                },
+
+                // new player: make captions for the open video (jumps the queue), then show them when ready
+                async npCCMake() {
+                    const np = this.np;
+                    if (!np.data) return;
+                    try {
+                        const d = await this.extDbPostAny('/api/captions/generate', { paths: [np.video.path], front: true });
+                        if (!d.whisper && !d.queued) { this.npChip('Captions need Whisper - rebuild the lustr image'); return; }
+                        np.data.captions = { ...(np.data.captions || {}), queued: true };
+                        this.npCCPoll();
+                    } catch (e) { this.npChip('Could not start captions: ' + e.message); }
+                },
+                npCCPoll() {
+                    const np = this.np, path = np.video && np.video.path;
+                    clearTimeout(np.ccTimer);
+                    np.ccTimer = setTimeout(async () => {
+                        if (!np.open || !np.video || np.video.path !== path) return;
+                        try {
+                            const d = await (await fetch('/api/captions/status?path=' + encodeURIComponent(path))).json();
+                            np.ccStatus = d.status;
+                            if ((d.tracks || []).length) {
+                                np.data.captions = { ...(np.data.captions || {}), tracks: d.tracks, queued: false };
+                                try { localStorage.setItem('npCC', d.tracks[0].lang); } catch (e) { /* ignore */ }
+                                this.npCaptions();
+                                this.npChip('Captions ready');
+                                return;
+                            }
+                            const last = d.status && d.status.last_done;
+                            if (last && last.cache_id === np.data.cache_id && !last.ok && d.status.current_cache_id !== np.data.cache_id) {
+                                np.data.captions = { ...(np.data.captions || {}), queued: false };
+                                this.npChip('Captions failed: ' + (d.status.last_error || 'unknown error'));
+                                return;
+                            }
+                        } catch (e) { /* try again */ }
+                        this.npCCPoll();
+                    }, 3000);
+                },
+                npCCLabel() {
+                    const np = this.np, st = np.ccStatus;
+                    if (st && st.current_cache_id === np.data?.cache_id) return 'CC ' + Math.round(100 * (st.progress || 0)) + '%';
+                    return np.data?.captions?.queued ? 'CC queued…' : 'CC: make captions';
+                },
+
+                // right-click / library: queue captions
+                async ccGenerate(paths, library = null, force = false) {
+                    this.activeMenu = null;
+                    try {
+                        const d = await this.extDbPostAny('/api/captions/generate', library ? { library, force } : { paths, force });
+                        let msg = d.queued ? `Captions queued for ${d.queued} video${d.queued === 1 ? '' : 's'} - they're made in the background`
+                                           : 'Those videos already have captions';
+                        if (!d.whisper) msg += "\n\nWhisper isn't installed in this image yet, so only subtitles that come with the files are found. Rebuild the image for automatic captions.";
+                        alert(msg);
+                    } catch (e) { alert('Could not queue captions: ' + e.message); }
+                },
+                async ccRemove(paths) {
+                    this.activeMenu = null;
+                    if (!confirm(`Remove the captions of ${paths.length} video${paths.length === 1 ? '' : 's'}?`)) return;
+                    try {
+                        const d = await this.extDbPostAny('/api/captions/remove', { paths });
+                        alert(`Removed ${d.removed} caption track${d.removed === 1 ? '' : 's'}.`);
+                    } catch (e) { alert('Could not remove captions: ' + e.message); }
+                },
+                async ccSettingsLoad() {
+                    try {
+                        const d = await (await fetch('/api/captions/settings')).json();
+                        if (d.success) Object.assign(this.cc, { loaded: true, settings: d.settings, models: d.models || [], whisper: d.whisper,
+                                                                status: d.status, libsText: (d.settings.night.libraries || []).join(', ') });
+                    } catch (e) { /* shown as not loaded */ }
+                },
+                async ccSet(changes) {
+                    this.cc.busy = true;
+                    try {
+                        const d = await this.extDbPostAny('/api/captions/settings', { changes });
+                        Object.assign(this.cc, { settings: d.settings, models: d.models || this.cc.models });
+                    } catch (e) { alert('Could not save: ' + e.message); } finally { this.cc.busy = false; }
+                },
+                async ccStatusLoad() {
+                    try { this.cc.status = (await (await fetch('/api/captions/status')).json()).status; } catch (e) { /* ignore */ }
+                },
+                async ccStop() {
+                    try { this.cc.status = (await this.extDbPostAny('/api/captions/stop', {})).status; } catch (e) { /* ignore */ }
+                },
+
                 async npSettingsLoad() {
                     try {
                         const d = await (await fetch('/api/player/settings')).json();
                         if (d.success) Object.assign(this.npSettings, { loaded: true, settings: d.settings, hw: d.hw, resolutions: d.resolutions || [] });
                     } catch (e) { /* shown as not loaded */ }
                     this.npSprStatus();
+                    this.ccSettingsLoad();
                 },
 
                 async npSettingSet(key, value) {
@@ -10240,6 +10355,9 @@ No metadata is changed.`)) return;
                     }
                     
                     this.activeVideo = video;
+                    this.activeCaptions = [];
+                    fetch('/api/captions?path=' + encodeURIComponent(video.path)).then(r => r.json())
+                        .then(d => { if (this.activeVideo === video) this.activeCaptions = d.tracks || []; }).catch(() => {});
                     // Reset player state completely
                     this.playerCurrentTime = 0;
                     this.playerBuffered = 0;
@@ -12482,6 +12600,10 @@ No metadata is changed.`)) return;
                     title="Match all selected videos to scenes; strong matches are linked automatically, the rest go to a review list"
                     x-text="'🌐 Match scenes (' + selectedPaths.size + ')…'"></button>
             <button @click="openParser" class="w-full text-left px-4 py-2 hover:bg-blue-600">Parse Filenames</button>
+            <button @click="ccGenerate(Array.from(selectedPaths))" class="w-full text-left px-4 py-2 hover:bg-blue-600"
+                    title="Use subtitles that come with the file, or make them on this server with Whisper (in the background)"
+                    x-text="selectedPaths.size > 1 ? 'Generate Captions (' + selectedPaths.size + ')' : 'Generate Captions'"></button>
+            <button @click="ccRemove(Array.from(selectedPaths))" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400">Remove Captions</button>
             <!-- Thumbnail generation: three states based on thumbnailStatusCache -->
             <!-- State 1: NONE of the selected have thumbnails -> simple generate -->
             <button @click="generateThumbs"
@@ -13073,6 +13195,10 @@ No metadata is changed.`)) return;
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">
+                    <button @click="ccGenerate([], manageLibTarget)" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm text-left flex flex-col">
+                        <span class="font-bold">Generate Captions</span>
+                        <span class="text-xs text-gray-400">Every video without captions (in the background)</span>
+                    </button>
                     <button @click="scanLib(manageLibTarget)" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm text-left flex flex-col">
                         <span class="font-bold">Rescan Library</span>
                         <span class="text-xs text-gray-400">Find new files</span>
@@ -13479,6 +13605,74 @@ No metadata is changed.`)) return;
                                     + (npSettings.spr.current ? ` - now: ${npSettings.spr.current}` : '') : ''"></p>
                             </div>
                             <p x-show="npSettings.spr && npSettings.spr.last_error" class="text-xs text-yellow-500" x-text="'Last problem: ' + (npSettings.spr?.last_error || '')"></p>
+                        </div>
+
+                        <!-- Captions (captions.py) -->
+                        <div class="bg-gray-900 p-4 rounded border border-gray-700 space-y-3 text-sm">
+                            <div class="flex items-center gap-2">
+                                <h3 class="font-semibold flex-1">Captions</h3>
+                                <button @click="ccSettingsLoad(); ccStatusLoad()" class="px-2 py-0.5 rounded text-xs bg-gray-700 hover:bg-gray-600" title="Refresh">⟳</button>
+                            </div>
+                            <p class="text-xs text-gray-400">Subtitles that come with a file (inside it, or a .srt / .vtt next to it) are used as they are.
+                                Otherwise captions are made on this server with Whisper - nothing leaves it. They're made in the background at low priority:
+                                from the player (<b>CC: make captions</b>), right-click → Generate Captions, a library's settings, or the night window below.</p>
+                            <p x-show="cc.loaded && !cc.whisper" class="text-xs text-yellow-400">Whisper isn't installed in this image yet: only existing subtitles are found.
+                                Rebuild the image (docker build) to make captions automatically.</p>
+                            <template x-if="cc.settings">
+                                <div class="space-y-3">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="text-gray-300 w-28">Model</span>
+                                        <select :value="cc.settings.model" @change="ccSet({ model: $event.target.value })" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs">
+                                            <template x-for="m in cc.models" :key="m.name">
+                                                <option :value="m.name" :selected="cc.settings.model === m.name"
+                                                        x-text="m.name + ({ tiny: ' - fastest, rough', base: ' - fast', small: ' - balanced', medium: ' - slower, better', 'large-v3-turbo': ' - slowest, best' }[m.name] || '') + (m.downloaded ? '' : ' (downloads on first use)')"></option>
+                                            </template>
+                                        </select>
+                                        <span x-show="cc.status && cc.status.speed" class="text-xs text-gray-500"
+                                              x-text="cc.status && cc.status.speed ? `last run: ${cc.status.speed.model} at ${cc.status.speed.x_realtime}x real time` : ''"></span>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="text-gray-300 w-28">Language</span>
+                                        <input type="text" :value="cc.settings.language" @change="ccSet({ language: $event.target.value })" placeholder="auto"
+                                               class="w-20 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs">
+                                        <span class="text-xs text-gray-500">auto = detect per video, or a code like en, de, fr</span>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="text-gray-300 w-28">CPU cores</span>
+                                        <input type="number" min="1" max="16" :value="cc.settings.cpu_threads" @change="ccSet({ cpu_threads: +$event.target.value })"
+                                               class="w-20 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs">
+                                        <span class="text-xs text-gray-500">fewer = slower captions, more room for playback</span>
+                                    </div>
+                                    <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="rounded" :checked="cc.settings.use_existing"
+                                           @change="ccSet({ use_existing: $event.target.checked })"> Use subtitles that come with the file (instead of making new ones)</label>
+                                    <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="rounded" :checked="cc.settings.auto_on_play"
+                                           @change="ccSet({ auto_on_play: $event.target.checked })"> Make captions when I play a video that has none</label>
+                                    <div class="border-t border-gray-700 pt-3 space-y-2">
+                                        <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="rounded" :checked="cc.settings.night.enabled"
+                                               @change="ccSet({ night: { enabled: $event.target.checked } })"> Night window: work through these libraries a little at a time</label>
+                                        <div class="flex flex-wrap items-center gap-2 text-xs">
+                                            <span class="text-gray-400">from</span>
+                                            <select :value="cc.settings.night.start" @change="ccSet({ night: { start: +$event.target.value } })" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5">
+                                                <template x-for="h in 24" :key="'s' + h"><option :value="h - 1" :selected="cc.settings.night.start === h - 1" x-text="String(h - 1).padStart(2, '0') + ':00'"></option></template>
+                                            </select>
+                                            <span class="text-gray-400">to</span>
+                                            <select :value="cc.settings.night.end" @change="ccSet({ night: { end: +$event.target.value } })" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5">
+                                                <template x-for="h in 24" :key="'e' + h"><option :value="h - 1" :selected="cc.settings.night.end === h - 1" x-text="String(h - 1).padStart(2, '0') + ':00'"></option></template>
+                                            </select>
+                                        </div>
+                                        <input type="text" x-model="cc.libsText" @change="ccSet({ night: { libraries: cc.libsText.split(',').map(s => s.trim()).filter(Boolean) } })"
+                                               placeholder="Libraries or groups, comma-separated" list="ccLibNames"
+                                               class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs">
+                                        <datalist id="ccLibNames"><template x-for="l in Object.keys(allLibraries || {}).concat(Object.keys(libraryGroups || {}))" :key="l"><option :value="l"></option></template></datalist>
+                                    </div>
+                                    <div x-show="cc.status" class="border-t border-gray-700 pt-3 text-xs text-gray-400 flex flex-wrap items-center gap-2">
+                                        <span class="flex-1" x-text="cc.status ? (cc.status.current ? `Now: ${cc.status.current} (${Math.round(100 * (cc.status.progress || 0))}%)` : 'Idle')
+                                              + ` · queued: ${cc.status.queued}` + (cc.status.bulk_total ? ` · ${cc.status.bulk_done} of ${cc.status.bulk_total} done` : '') : ''"></span>
+                                        <button x-show="cc.status && (cc.status.queued || cc.status.current)" @click="ccStop()" class="px-2 py-0.5 rounded bg-red-800 hover:bg-red-700 text-white">Stop</button>
+                                    </div>
+                                    <p x-show="cc.status && cc.status.last_error" class="text-xs text-yellow-500" x-text="'Last problem: ' + (cc.status?.last_error || '')"></p>
+                                </div>
+                            </template>
                         </div>
                     </div>
 
@@ -15201,6 +15395,10 @@ No metadata is changed.`)) return;
             <button x-show="np.stripReady && np.tall" @click="npToggleStrip()" class="hidden sm:inline-block px-2 py-1 rounded text-xs"
                     :class="np.strip ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'" title="Preview strip under the player">Strip</button>
             <button @click="npToClassic()" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200" title="Open this video in the classic player">Classic<span class="hidden sm:inline"> player</span></button>
+            <button x-show="np.data && !(np.data.captions?.tracks || []).length && (np.data.captions?.whisper || np.data.captions?.queued)"
+                    @click="npCCMake()" :disabled="np.data?.captions?.queued"
+                    class="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 disabled:opacity-70"
+                    title="Make captions for this video on this server (Whisper) - the CC menu appears when they're ready" x-text="npCCLabel()"></button>
             <button @click="npClose()" class="px-2 py-1 rounded text-gray-300 hover:text-white hover:bg-gray-700" title="Close (Esc)">✕</button>
         </div>
         <div x-show="np.error || np.msg" class="px-4 py-1.5 text-xs flex items-center gap-2" :class="np.error ? 'bg-red-900/80 text-red-100' : 'bg-blue-900/70 text-blue-100'">
@@ -15399,7 +15597,7 @@ No metadata is changed.`)) return;
                     <video x-ref="player"
                            :style="videoFitMode === 'cover' ? 'width: auto; height: 100%; max-width: 100%;' : ''"
                            :class="videoFitMode === 'contain' ? 'max-w-full max-h-full object-contain' : ''"
-                           autoplay></video>
+                           autoplay><template x-for="t in activeCaptions" :key="t.src"><track kind="subtitles" :src="t.src" :srclang="t.lang" :label="t.label"></template></video>
                     <!-- Skip Feedback Overlays -->
                     <div x-show="false" x-ref="skipLeftFeedback"
                          class="absolute left-4 top-1/2 -translate-y-1/2 text-white text-6xl opacity-0 pointer-events-none transition-opacity">⏪</div>
