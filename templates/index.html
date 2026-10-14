@@ -537,6 +537,11 @@
                 activeCaptions: [],            // classic player: caption tracks of the open video
                 ccIds: new Set(), ccIdsAt: 0,  // video_ids that have captions (CC badge)
                 infoCaptions: [],              // File Info: the open video's caption tracks
+                infoClips: [],                 // File Info: clips made from the open video
+                clipMk: { open: false, path: '', video: null, title: '', start: 0, end: 10, dur: 0, format: 'webm', size: 720, fps: 0,
+                          shape: 'original', cx: 0.5, cy: 0.5, audio: true, quality: 'standard', busy: false, error: '', thumb: '', w: 0, h: 0 },
+                clipsWin: { open: false, rows: [], total: 0, page: 1, loading: false, status: null, timer: null,
+                            format: '', q: '', cast: '', library: '', video_id: '', label: '', sort: 'newest', hover: null },
                 cc: { loaded: false, settings: null, models: [], whisper: false, status: null, busy: false, msg: '', libsText: '' },
                 photoCrop: { open: false, name: '', src: '', natW: 0, natH: 0, box: { x: 0, y: 0, w: 1, h: 1 }, aspect: 2 / 3,
                              cropped: false, busy: false, error: '', drag: null },          // crop a cast photo
@@ -7500,6 +7505,7 @@ No metadata is changed.`)) return;
                         this.infoVideo = { path, filename: path.split('/').pop() };
                     }
                     this.infoCaptionsLoad(path);
+                    this.infoClipsLoad();
                     this.modals.fileInfo = true;
                 },
 
@@ -7536,6 +7542,7 @@ No metadata is changed.`)) return;
                     }
                     
                     this.infoCaptionsLoad(video.path);
+                    this.infoClipsLoad();
                     this.modals.fileInfo = true;
                 },
                 async setPrimaryVersion(videoId, path) {
@@ -10210,6 +10217,126 @@ No metadata is changed.`)) return;
                 },
 
                 // Settings -> Player
+                // ----- clips: GIFs and short videos (clips.py) -----
+                clipFmtTime(s) {
+                    s = Math.max(0, +s || 0);
+                    const m = Math.floor(s / 60), r = (s - m * 60).toFixed(1);
+                    return `${m}:${r.padStart(4, '0')}`;
+                },
+                // open the clip maker on the new player's video: the A-B loop if set, else 10 s from now
+                clipOpen() {
+                    const np = this.np, p = this.npPlayer();
+                    if (!np.data || !np.video) return;
+                    const now = p ? p.currentTime() : 0, dur = np.data.duration || 0;
+                    let start = now, end = Math.min(dur || now + 10, now + 10);
+                    if (np.loopA !== null && np.loopB !== null) { start = np.loopA; end = np.loopB; }
+                    const v = np.video, t0 = Math.floor(start);
+                    Object.assign(this.clipMk, {
+                        open: true, path: v.path, video: v, dur, start: +start.toFixed(2), end: +end.toFixed(2),
+                        title: `${v.title || (v.path || '').split('/').pop().replace(/\.[^.]+$/, '')} @ ${Math.floor(t0 / 60)}:${String(t0 % 60).padStart(2, '0')}`,
+                        w: np.data.width || 0, h: np.data.height || 0, busy: false, error: '',
+                        thumb: np.data.cache_id ? `/cache/${np.data.cache_id}/thumb_0.webp` : ''
+                    });
+                    if (p && !p.paused()) p.pause();
+                },
+                clipSetFormat(f) {
+                    const C = this.clipMk;
+                    C.format = f;
+                    if (f === 'gif') { C.size = 480; C.fps = 15; C.audio = false; }
+                    else { if (C.fps === 15 || C.fps === 20) C.fps = 0; if (C.size === 480) C.size = 720; }
+                },
+                clipNudge(which, d) {
+                    const C = this.clipMk, max = C.dur || 1e9;
+                    C[which] = +Math.max(0, Math.min(max, (+C[which] || 0) + d)).toFixed(2);
+                },
+                clipToNow(which) {
+                    const p = this.npPlayer();
+                    if (p) this.clipMk[which] = +p.currentTime().toFixed(2);
+                },
+                clipPreview() {
+                    const p = this.npPlayer(), C = this.clipMk, np = this.np;
+                    if (!p) return;
+                    np.loopA = C.start;
+                    np.loopB = C.end;                      // the player's A-B loop plays it round and round
+                    p.currentTime(C.start);
+                    const r = p.play(); if (r && r.catch) r.catch(() => {});
+                },
+                clipWarn() {
+                    const C = this.clipMk, len = C.end - C.start;
+                    if (len <= 0) return 'The end is before the start.';
+                    if (len > 60) return 'Clips can be at most 60 seconds.';
+                    if (C.format === 'gif' && (len > 15 || C.size > 640)) {
+                        const mb = Math.round(len * (C.fps || 15) * (C.size || 480) * (C.size || 480) * 1.6 / 8 / 1e6 * 0.6);
+                        return `A GIF this long or large gets big (roughly ${mb} MB) - WebM looks the same at a fraction of the size.`;
+                    }
+                    return '';
+                },
+                async clipMake() {
+                    const C = this.clipMk;
+                    C.busy = true;
+                    C.error = '';
+                    try {
+                        await this.extDbPostAny('/api/clips', { path: C.path, start: C.start, end: C.end, format: C.format, shape: C.shape,
+                                                                 size: C.size, fps: C.fps, cx: C.cx, cy: C.cy, audio: C.audio,
+                                                                 quality: C.quality, title: C.title });
+                        C.open = false;
+                        this.npChip('Clip queued - it appears under Clips when ready');
+                    } catch (e) { C.error = e.message; } finally { C.busy = false; }
+                },
+
+                // the Clips window (sidebar)
+                clipsOpen(filter = {}) {
+                    Object.assign(this.clipsWin, { open: true, page: 1, format: '', q: '', cast: '', library: '', video_id: '', label: '' }, filter);
+                    this.clipsLoad();
+                },
+                async clipsLoad() {
+                    const W = this.clipsWin;
+                    W.loading = true;
+                    try {
+                        const qs = new URLSearchParams({ page: W.page, sort: W.sort });
+                        for (const k of ['format', 'q', 'cast', 'library', 'video_id']) if (W[k]) qs.set(k, W[k]);
+                        const d = await (await fetch('/api/clips?' + qs)).json();
+                        if (d.success) Object.assign(W, { rows: d.clips, total: d.total, status: d.status });
+                    } catch (e) { /* keep */ } finally { W.loading = false; }
+                    clearTimeout(W.timer);
+                    const busy = W.rows.some(c => c.status === 'queued' || c.status === 'working');
+                    if (W.open && busy) W.timer = setTimeout(() => this.clipsLoad(), 3000);
+                },
+                clipsClose() { clearTimeout(this.clipsWin.timer); this.clipsWin.open = false; },
+                clipSizeLabel(b) { return !b ? '' : b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; },
+                clipLink(c) { return window.location.origin + c.src.split('?')[0]; },
+                async clipCopy(c) {
+                    try { await navigator.clipboard.writeText(this.clipLink(c)); alert('Link copied (it needs you to be logged in to lustr).'); }
+                    catch (e) { prompt('Copy the link:', this.clipLink(c)); }
+                },
+                async clipRename(c) {
+                    const t = prompt('Clip title:', c.title);
+                    if (t === null) return;
+                    try { await this.extDbPostAny('/api/clips/' + c.id, { title: t }); c.title = t; } catch (e) { alert(e.message); }
+                },
+                async clipDelete(c) {
+                    if (!confirm(`Delete the clip "${c.title}"?`)) return;
+                    try {
+                        await fetch('/api/clips/' + c.id, { method: 'DELETE' });
+                        this.clipsLoad();
+                        if (this.infoVideo) this.infoClipsLoad();
+                    } catch (e) { alert(e.message); }
+                },
+                clipSource(c) {
+                    this.clipsClose();
+                    this.modals.fileInfo = false;
+                    this.openPlayer({ path: c.source_path, title: c.video_title, video_id: c.video_id, cast: c.cast }, c.start);
+                },
+                async infoClipsLoad() {
+                    this.infoClips = [];
+                    const path = this.infoVideo && this.infoVideo.path;
+                    if (!path) return;
+                    try {
+                        const d = await (await fetch('/api/clips?path=' + encodeURIComponent(path))).json();
+                        if (this.infoVideo && this.infoVideo.path === path) this.infoClips = d.clips || [];
+                    } catch (e) { /* none */ }
+                },
+
                 // ----- closed captions (captions.py) -----
                 ccTrackAttrs(t) { return { kind: 'subtitles', src: t.src, srclang: t.lang, label: t.label }; },
                 hasCC(v) { return !!(v && v.video_id && this.ccIds.has(v.video_id)); },
@@ -11581,6 +11708,7 @@ No metadata is changed.`)) return;
             <!-- Footer (Fixed) -->
             <div class="p-3 border-t border-gray-700 space-y-2 shrink-0 bg-gray-800 z-20">
                 <button @click="openLibraryModal()" class="w-full bg-gray-700 hover:bg-gray-600 py-1 rounded text-xs">Manage Libraries</button>
+                <button @click="clipsOpen()" class="w-full mt-1 bg-gray-700 hover:bg-gray-600 py-1 rounded text-xs" title="GIFs and short videos you made">🎞 Clips</button>
             </div>
         </aside>
 
@@ -12345,6 +12473,8 @@ No metadata is changed.`)) return;
                                     <!-- Name and Star -->
                                     <div class="flex items-center gap-2 sm:gap-3 justify-center sm:justify-start flex-wrap">
                                         <h1 class="text-2xl sm:text-4xl font-bold" x-text="castBioData?.name"></h1>
+                                        <button @click="clipsOpen({ cast: castBioData?.name, label: castBioData?.name })" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+                                                title="GIFs and short videos made from this performer's videos">🎞 Clips</button>
                                         <button @click="castSplitOpen()" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
                                                 title="Some of these videos are a different person with the same name">Split off videos…</button>
                                         <button x-show="castNumber(castBioData?.name) > 1" @click="castMakeMain()" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
@@ -13281,6 +13411,18 @@ No metadata is changed.`)) return;
                             </div>
                         </div>
                         <div class="mt-3">
+                            <div x-show="infoClips.length" class="mb-3">
+                                <span class="text-gray-400 block text-xs uppercase">Clips</span>
+                                <div class="flex flex-wrap gap-2 mt-1">
+                                    <template x-for="c in infoClips.slice(0, 8)" :key="c.id">
+                                        <button @click="modals.fileInfo = false; clipsOpen({ video_id: c.video_id, label: infoVideo.title || infoVideo.filename || 'this video' })"
+                                                class="w-24 text-left" :title="c.title">
+                                            <img x-show="c.poster" :src="c.poster" class="w-24 h-14 object-cover rounded bg-gray-700">
+                                            <span class="block text-[10px] text-gray-400 truncate" x-text="c.format.toUpperCase() + ' · ' + c.duration + ' s'"></span>
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
                             <span class="text-gray-400 block text-xs uppercase">Captions</span>
                             <div class="flex flex-wrap items-center gap-1 mt-1 text-xs">
                                 <template x-for="t in infoCaptions" :key="t.file">
@@ -14543,6 +14685,146 @@ No metadata is changed.`)) return;
             </div>
         </div>
 
+        <!-- Clip maker (from the new player) -->
+        <div x-show="clipMk.open" x-cloak class="fixed inset-0 z-[150] bg-black/70 flex items-end sm:items-center justify-center p-2 sm:p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-xl p-4 shadow-2xl text-sm space-y-3 max-h-[95vh] overflow-y-auto" @click.outside="clipMk.open = false">
+                <div class="flex items-center gap-2">
+                    <h2 class="font-bold flex-1">✂ Make a clip</h2>
+                    <button @click="clipMk.open = false" class="text-gray-400 hover:text-white text-xl">✕</button>
+                </div>
+                <input type="text" x-model="clipMk.title" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1" placeholder="Title">
+                <template x-for="which in ['start', 'end']" :key="which">
+                    <div class="flex flex-wrap items-center gap-1">
+                        <span class="w-12 text-gray-400" x-text="which === 'start' ? 'Start' : 'End'"></span>
+                        <button @click="clipNudge(which, -1)" class="px-1.5 rounded bg-gray-700 hover:bg-gray-600">-1s</button>
+                        <button @click="clipNudge(which, -0.1)" class="px-1.5 rounded bg-gray-700 hover:bg-gray-600">-.1</button>
+                        <span class="w-16 text-center font-mono" x-text="clipFmtTime(clipMk[which])"></span>
+                        <button @click="clipNudge(which, 0.1)" class="px-1.5 rounded bg-gray-700 hover:bg-gray-600">+.1</button>
+                        <button @click="clipNudge(which, 1)" class="px-1.5 rounded bg-gray-700 hover:bg-gray-600">+1s</button>
+                        <button @click="clipToNow(which)" class="px-1.5 rounded bg-gray-700 hover:bg-gray-600" title="Use the player's current time">now</button>
+                    </div>
+                </template>
+                <div class="flex items-center gap-2 text-xs text-gray-400">
+                    <span x-text="'Length: ' + Math.max(0, clipMk.end - clipMk.start).toFixed(1) + ' s'"></span>
+                    <button @click="clipPreview()" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200" title="Loop this part in the player">▶ Preview</button>
+                </div>
+                <div class="flex flex-wrap gap-1">
+                    <template x-for="f in [['webm', 'WebM'], ['mp4', 'MP4'], ['gif', 'GIF']]" :key="f[0]">
+                        <button @click="clipSetFormat(f[0])" class="px-3 py-1 rounded" :class="clipMk.format === f[0] ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="f[1]"></button>
+                    </template>
+                    <span class="text-xs text-gray-500 self-center ml-1" x-text="{ webm: 'small & sharp, like RedGIFs', mp4: 'plays everywhere', gif: 'no sound, big files - keep it short' }[clipMk.format]"></span>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                    <label class="flex flex-col gap-1"><span class="text-gray-400">Size (short side)</span>
+                        <select x-model.number="clipMk.size" class="bg-gray-900 border border-gray-700 rounded px-1 py-1">
+                            <template x-for="s in [240, 360, 480, 720, 1080, 0]" :key="s"><option :value="s" :selected="clipMk.size === s" x-text="s ? s + 'p' : 'Original'"></option></template>
+                        </select></label>
+                    <label class="flex flex-col gap-1"><span class="text-gray-400">Frame rate</span>
+                        <select x-model.number="clipMk.fps" class="bg-gray-900 border border-gray-700 rounded px-1 py-1">
+                            <template x-for="f in (clipMk.format === 'gif' ? [10, 15, 20, 24] : [0, 24, 30])" :key="f"><option :value="f" :selected="clipMk.fps === f" x-text="f ? f + ' fps' : 'Original'"></option></template>
+                        </select></label>
+                    <label class="flex flex-col gap-1"><span class="text-gray-400">Shape</span>
+                        <select x-model="clipMk.shape" class="bg-gray-900 border border-gray-700 rounded px-1 py-1">
+                            <option value="original">Original</option><option value="square">Square 1:1</option><option value="vertical">Vertical 9:16</option>
+                        </select></label>
+                    <label class="flex flex-col gap-1"><span class="text-gray-400">Quality</span>
+                        <select x-model="clipMk.quality" class="bg-gray-900 border border-gray-700 rounded px-1 py-1">
+                            <option value="standard">Standard</option><option value="high">High (bigger)</option>
+                        </select></label>
+                </div>
+                <div x-show="clipMk.shape !== 'original'" class="space-y-1">
+                    <div class="relative w-full bg-gray-900 rounded overflow-hidden" :style="`aspect-ratio: ${clipMk.w || 16} / ${clipMk.h || 9}`">
+                        <img x-show="clipMk.thumb" :src="clipMk.thumb" class="absolute inset-0 w-full h-full object-cover opacity-60">
+                        <div class="absolute border-2 border-white"
+                             :style="(() => { const W = clipMk.w || 16, H = clipMk.h || 9, a = clipMk.shape === 'square' ? 1 : 9 / 16;
+                                              let w = 1, h = 1; if (W / H > a) w = a * H / W; else h = W / (a * H);
+                                              return { left: ((1 - w) * clipMk.cx * 100) + '%', top: ((1 - h) * clipMk.cy * 100) + '%', width: (w * 100) + '%', height: (h * 100) + '%' }; })()"></div>
+                    </div>
+                    <label class="flex items-center gap-2 text-xs text-gray-400">Position
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="clipMk.cx" x-show="(clipMk.w / (clipMk.h || 1)) > (clipMk.shape === 'square' ? 1 : 9 / 16)" class="flex-1">
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="clipMk.cy" x-show="(clipMk.w / (clipMk.h || 1)) <= (clipMk.shape === 'square' ? 1 : 9 / 16)" class="flex-1">
+                    </label>
+                </div>
+                <label x-show="clipMk.format !== 'gif'" class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="rounded" x-model="clipMk.audio"> Sound</label>
+                <p x-show="clipWarn()" class="text-xs text-yellow-400" x-text="clipWarn()"></p>
+                <p x-show="clipMk.error" class="text-xs text-red-400" x-text="clipMk.error"></p>
+                <div class="flex justify-end gap-2">
+                    <button @click="clipMk.open = false" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600">Cancel</button>
+                    <button @click="clipMake()" :disabled="clipMk.busy || (clipMk.end - clipMk.start) <= 0 || (clipMk.end - clipMk.start) > 60"
+                            class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-40" x-text="clipMk.busy ? 'Queuing…' : 'Make clip'"></button>
+                </div>
+                <p class="text-[11px] text-gray-500">Clips are made in the background and kept in lustr - open them from 🎞 Clips in the sidebar.</p>
+            </div>
+        </div>
+
+        <!-- Clips window (sidebar 🎞 Clips) -->
+        <div x-show="clipsWin.open" x-cloak class="fixed inset-0 z-[95] bg-black/80 flex items-center justify-center p-2 sm:p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-6xl h-[92vh] p-4 shadow-2xl flex flex-col" @click.outside="clipsClose()">
+                <div class="flex flex-wrap items-center gap-2 mb-3 text-sm">
+                    <h2 class="font-bold text-lg mr-2">🎞 Clips</h2>
+                    <span x-show="clipsWin.label" class="px-2 py-0.5 rounded bg-blue-900 text-blue-100 text-xs flex items-center gap-1">
+                        <span x-text="clipsWin.label"></span>
+                        <button @click="Object.assign(clipsWin, { cast: '', video_id: '', label: '', page: 1 }); clipsLoad()" class="hover:text-white">✕</button>
+                    </span>
+                    <select x-model="clipsWin.format" @change="clipsWin.page = 1; clipsLoad()" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs">
+                        <option value="">All formats</option><option value="webm">WebM</option><option value="mp4">MP4</option><option value="gif">GIF</option>
+                    </select>
+                    <input type="text" x-model="clipsWin.library" @change="clipsWin.page = 1; clipsLoad()" list="clipLibNames" placeholder="Library"
+                           class="w-36 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs">
+                    <input type="text" x-model="clipsWin.q" @input.debounce.400ms="clipsWin.page = 1; clipsLoad()" placeholder="Search titles…"
+                           class="flex-1 min-w-[8rem] bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs">
+                    <datalist id="clipLibNames"><template x-for="l in Object.keys(allLibraries || {}).concat(Object.keys(libraryGroups || {}))" :key="l"><option :value="l"></option></template></datalist>
+                    <select x-model="clipsWin.sort" @change="clipsLoad()" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs">
+                        <option value="newest">Newest</option><option value="oldest">Oldest</option>
+                    </select>
+                    <button @click="clipsClose()" class="text-gray-400 hover:text-white text-xl ml-auto">✕</button>
+                </div>
+                <p x-show="clipsWin.status && clipsWin.status.current" class="text-xs text-gray-400 mb-2"
+                   x-text="clipsWin.status ? `Making a clip… ${Math.round(100 * (clipsWin.status.progress || 0))}%` + (clipsWin.status.queued.length ? ` · ${clipsWin.status.queued.length} waiting` : '') : ''"></p>
+                <div class="flex-1 overflow-y-auto">
+                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                        <template x-for="c in clipsWin.rows" :key="c.id">
+                            <div class="bg-gray-900 rounded overflow-hidden border border-gray-700 flex flex-col">
+                                <div class="relative aspect-video bg-black" @mouseenter="clipsWin.hover = c.id" @mouseleave="clipsWin.hover = null">
+                                    <template x-if="c.status === 'done' && clipsWin.hover === c.id && c.format !== 'gif'">
+                                        <video :src="c.src" autoplay muted loop playsinline class="absolute inset-0 w-full h-full object-contain"></video>
+                                    </template>
+                                    <img x-show="c.status === 'done' && !(clipsWin.hover === c.id && c.format !== 'gif')"
+                                         :src="clipsWin.hover === c.id && c.format === 'gif' ? c.src : c.poster" class="absolute inset-0 w-full h-full object-contain" loading="lazy">
+                                    <div x-show="c.status !== 'done'" class="absolute inset-0 flex items-center justify-center text-xs"
+                                         :class="c.status === 'error' ? 'text-red-400' : 'text-gray-400'"
+                                         x-text="c.status === 'error' ? 'Failed: ' + (c.error || '') : (c.status === 'working' ? 'Making… ' + Math.round(100 * ((clipsWin.status && clipsWin.status.current === c.id && clipsWin.status.progress) || 0)) + '%' : 'Waiting…')"></div>
+                                    <div class="absolute top-1 left-1 flex gap-1 text-[10px] font-bold">
+                                        <span class="bg-black/70 text-white px-1 rounded" x-text="c.format.toUpperCase()"></span>
+                                        <span class="bg-black/70 text-white px-1 rounded" x-text="c.duration + 's'"></span>
+                                        <span x-show="c.size_bytes" class="bg-black/70 text-white px-1 rounded" x-text="clipSizeLabel(c.size_bytes)"></span>
+                                    </div>
+                                </div>
+                                <div class="p-2 text-xs flex-1 flex flex-col gap-1">
+                                    <div class="font-medium text-gray-100 truncate" :title="c.title" x-text="c.title"></div>
+                                    <div class="text-gray-400 truncate" x-text="(c.cast || []).map(n => castLabel(n)).join(', ') || c.video_title || ''"></div>
+                                    <div class="flex flex-wrap gap-1 mt-auto pt-1">
+                                        <a x-show="c.status === 'done'" :href="'/api/clips/' + c.id + '/download'" class="px-1.5 py-0.5 rounded bg-blue-700 hover:bg-blue-600 text-white" title="Download">⬇</a>
+                                        <button x-show="c.status === 'done'" @click="clipCopy(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600" title="Copy link">🔗</button>
+                                        <button @click="clipSource(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600" title="Play the video from here">▶ source</button>
+                                        <button @click="clipRename(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600" title="Rename">✎</button>
+                                        <button @click="clipDelete(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-red-700 ml-auto" title="Delete">🗑</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <p x-show="!clipsWin.loading && !clipsWin.rows.length" class="text-center text-gray-500 py-12">
+                        No clips yet. In the new player, press <b>✂ Clip</b> (tip: set an A-B loop with <b>L</b> first to pick the part).</p>
+                </div>
+                <div x-show="clipsWin.total > 60" class="flex justify-center gap-2 mt-2 text-xs">
+                    <button @click="clipsWin.page--; clipsLoad()" :disabled="clipsWin.page <= 1" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-40">◀</button>
+                    <span class="self-center text-gray-400" x-text="`Page ${clipsWin.page} of ${Math.ceil(clipsWin.total / 60)}`"></span>
+                    <button @click="clipsWin.page++; clipsLoad()" :disabled="clipsWin.page * 60 >= clipsWin.total" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-40">▶</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Crop a cast photo -->
         <div x-show="photoCrop.open" x-cloak class="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4">
             <div class="bg-gray-800 rounded-lg w-full max-w-3xl p-4 shadow-2xl flex flex-col max-h-[95vh]">
@@ -15448,6 +15730,9 @@ No metadata is changed.`)) return;
                     @click="npCCMake()" :disabled="np.data?.captions?.queued"
                     class="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 disabled:opacity-70"
                     title="Make captions for this video on this server (Whisper) - the CC menu appears when they're ready" x-text="npCCLabel()"></button>
+            <button x-show="np.data" @click="clipOpen()" class="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700"
+                    :title="np.loopA !== null && np.loopB !== null ? 'Make a GIF / short video of the A-B loop' : 'Make a GIF / short video from here (set an A-B loop with L to pick the part)'"
+                    x-text="np.loopA !== null && np.loopB !== null ? '✂ Clip the loop' : '✂ Clip'"></button>
             <button @click="npClose()" class="px-2 py-1 rounded text-gray-300 hover:text-white hover:bg-gray-700" title="Close (Esc)">✕</button>
         </div>
         <div x-show="np.error || np.msg" class="px-4 py-1.5 text-xs flex items-center gap-2" :class="np.error ? 'bg-red-900/80 text-red-100' : 'bg-blue-900/70 text-blue-100'">

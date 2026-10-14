@@ -71,6 +71,7 @@ from tools_api import router as tools_router
 # New player (roadmap #8) - separate from the classic streaming routes
 from routes.player import router as player_router
 from routes.captions import router as captions_router
+from routes.clips import router as clips_router
 # Home / Recommended rows (roadmap #9)
 from routes.home import router as home_router
 from routes.collections import router as collections_router
@@ -125,6 +126,11 @@ watch_history_instance = WatchHistory(WATCH_HISTORY_DIR)
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
+
+# Clips (clips.py): made GIFs / short videos
+import clips as _clips
+os.makedirs(_clips.CLIPS_DIR, exist_ok=True)
+app.mount("/clips", StaticFiles(directory=_clips.CLIPS_DIR), name="clips")
 
 # Static assets (themes, etc.)
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
@@ -190,7 +196,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     
     # Static files require auth
-    if path.startswith("/cache/") or path.startswith("/files/"):
+    if path.startswith("/cache/") or path.startswith("/files/") or path.startswith("/clips/"):
         username = check_auth(request, check_inactivity=True)
         if not username:
             return Response(status_code=401, content="Unauthorized")
@@ -269,6 +275,9 @@ def inject_dependencies():
     import routes.captions                  # closed captions: worker + night window
     routes.captions.set_model(model)
     routes.captions.start_background()
+    import routes.clips                     # clips: table + worker
+    routes.clips.set_model(model)
+    routes.clips.start_background()
 
     import routes.home
     routes.home.set_model(model)
@@ -334,6 +343,7 @@ def register_routes():
     app.include_router(direct_play_router) #added this with direct_play
     app.include_router(player_router)
     app.include_router(captions_router)
+    app.include_router(clips_router)
     app.include_router(home_router)
     app.include_router(collections_router)
 
