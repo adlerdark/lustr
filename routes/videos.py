@@ -62,6 +62,29 @@ def _pop_scene_filter(field_filters):
     return str(v).strip().lower() or None
 
 
+def _pop_captions_filter(field_filters):
+    """captions:yes / captions:no (or cc:) -> True / False / None, removed from the parsed filters."""
+    val = None
+    for key in ('captions', 'cc'):
+        vals = field_filters.pop(key, None)
+        for group in field_filters.get('__or_groups__') or []:
+            group.pop(key, None)
+        if vals:
+            v = vals[0] if isinstance(vals, list) else vals
+            v = str(v[1] if isinstance(v, tuple) else v).strip().lower()
+            val = v not in ('no', 'none', 'false', '0', 'off', 'n')
+    if field_filters.get('__or_groups__') is not None:
+        field_filters['__or_groups__'] = [g for g in field_filters['__or_groups__'] if g]
+    return val
+
+
+def _captions_sql(has, col='v.video_id'):
+    """-> SQL condition (the list of captioned videos is kept by routes/captions.py)."""
+    _model.db.get_connection().execute('CREATE TABLE IF NOT EXISTS video_captions (video_id TEXT PRIMARY KEY, langs TEXT, '
+                                       'sources TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    return f"{col} {'IN' if has else 'NOT IN'} (SELECT video_id FROM video_captions)"
+
+
 def _add_scene_condition(kind, conditions, params, col='v.video_id'):
     if not kind or not _scene_filter_sql:
         return
@@ -267,6 +290,7 @@ def _get_videos_sql_fast(
     
     base_query, field_filters, library_filters = SearchParser.parse_query(query)
     scene_kind = _pop_scene_filter(field_filters)
+    cc_filter = _pop_captions_filter(field_filters)
     tag_fields = [f.lower() for f in LIST_FIELDS if f.lower() not in ['site', 'cast']]
     
     conn = model.db.get_connection()
@@ -337,6 +361,8 @@ def _get_videos_sql_fast(
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.video_id')
     _add_scene_condition(scene_kind, conditions, params)
+    if cc_filter is not None:
+        conditions.append(_captions_sql(cc_filter))
 
     if 'path' in field_filters:
         conditions.append("fv.path LIKE ?")
@@ -597,6 +623,11 @@ def get_videos(
     base_query, field_filters, library_filters = SearchParser.parse_query(query)
     scene_paths = scene_negate = None
     scene_kind = _pop_scene_filter(field_filters)
+    cc_filter = _pop_captions_filter(field_filters)
+    cc_paths = None
+    if cc_filter is not None:
+        cond = _captions_sql(True, 'fv.video_id')
+        cc_paths = {r[0] for r in model.db.get_connection().execute(f'SELECT fv.path FROM file_versions fv WHERE {cond}')}
     if scene_kind and _scene_filter_paths:
         try:
             scene_paths, scene_negate = _scene_filter_paths(scene_kind)
@@ -817,6 +848,7 @@ def get_videos(
 
         # Query Filters
         if scene_paths is not None and (path in scene_paths) == scene_negate: continue
+        if cc_paths is not None and (path in cc_paths) != cc_filter: continue
         if field_filters:
             if 'path' in field_filters and not SearchParser.matches_path(path, field_filters['path']): continue
             other_filters = {k: v for k, v in field_filters.items() if k not in ('path', '__or_groups__')}
@@ -966,6 +998,7 @@ def _get_available_filters_uncached(
     # Parse filters
     base_query, field_filters, library_filters = SearchParser.parse_query(query)
     scene_kind = _pop_scene_filter(field_filters)
+    cc_filter = _pop_captions_filter(field_filters)
     is_cast_search_all = (library == "All Videos" and 'cast' in field_filters and not library_filters)
     
     required_tags = set(t.strip().lower() for t in tags.split(',') if t.strip()) if tags else set()
@@ -1038,6 +1071,8 @@ def _get_available_filters_uncached(
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, base_conditions, base_params, video_id_col='v.video_id')
     _add_scene_condition(scene_kind, base_conditions, base_params)
+    if cc_filter is not None:
+        base_conditions.append(_captions_sql(cc_filter))
 
     if 'path' in field_filters:
         base_conditions.append("fv.path LIKE ?")

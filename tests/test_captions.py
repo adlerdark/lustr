@@ -123,5 +123,49 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(captions.save_settings(c, {'model': 'huge'})['model'], 'large-v3-turbo')     # unknown ignored
 
 
+class IndexTests(unittest.TestCase):
+    """Which videos have captions: the CC badge and captions:yes / captions:no."""
+    def setUp(self):
+        import types
+        import routes.captions as rc
+        import routes.videos as rv
+        self.rc, self.rv = rc, rv
+        self.db = database.Database(os.path.join(tempfile.mkdtemp(dir=_DATA), 'library.db'))
+        rc._model = rv._model = types.SimpleNamespace(db=self.db)
+        c = self.db.get_connection()
+        for vid in ('v1', 'v2'):
+            c.execute("INSERT INTO videos (video_id, filename_base, library) VALUES (?, ?, 'Lib')", (vid, vid))
+            c.execute('INSERT INTO file_versions (path, video_id, filename) VALUES (?, ?, ?)', (f'/m/{vid}.mp4', vid, f'{vid}.mp4'))
+        c.commit()
+        from media_handler import MediaHandler
+        self.cid = MediaHandler._get_cache_key('/m/v1.mp4', 'v1', None)
+        captions.remove(self.cid)
+        os.makedirs(captions.folder(self.cid), exist_ok=True)
+        captions.write_vtt([(0, 1, 'hi')], os.path.join(captions.folder(self.cid), 'captions.en.whisper.vtt'))
+        captions._add_track(self.cid, 'captions.en.whisper.vtt', 'en', 'whisper', 'small')
+
+    def ids(self):
+        return sorted(r[0] for r in self.db.get_connection().execute('SELECT video_id FROM video_captions'))
+
+    def test_sync_all_and_one(self):
+        self.assertEqual(self.rc.sync_all(), 1)
+        self.assertEqual(self.ids(), ['v1'])
+        captions.remove(self.cid)
+        self.rc.sync_one('/m/v1.mp4')
+        self.assertEqual(self.ids(), [])
+
+    def test_filter(self):
+        self.rc.sync_all()
+        from search_parser import SearchParser
+        for q, want in (('captions:yes', ['v1']), ('cc:no', ['v2']), ('captions:none', ['v2'])):
+            _, ff, _ = SearchParser.parse_query(q)
+            has = self.rv._pop_captions_filter(ff)
+            self.assertNotIn('captions', ff)
+            self.assertNotIn('cc', ff)
+            got = sorted(r[0] for r in self.db.get_connection().execute(
+                f'SELECT v.video_id FROM videos v WHERE {self.rv._captions_sql(has)}'))
+            self.assertEqual(got, want, q)
+
+
 if __name__ == '__main__':
     unittest.main()

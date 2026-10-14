@@ -535,6 +535,8 @@
                 folderAddingLib: '',           // ...into this library (header indicator)
                 castSame: [],                  // the open bio's same-name performers [{name, videos, has_photo, top_site}]
                 activeCaptions: [],            // classic player: caption tracks of the open video
+                ccIds: new Set(), ccIdsAt: 0,  // video_ids that have captions (CC badge)
+                infoCaptions: [],              // File Info: the open video's caption tracks
                 cc: { loaded: false, settings: null, models: [], whisper: false, status: null, busy: false, msg: '', libsText: '' },
                 photoCrop: { open: false, name: '', src: '', natW: 0, natH: 0, box: { x: 0, y: 0, w: 1, h: 1 }, aspect: 2 / 3,
                              cropped: false, busy: false, error: '', drag: null },          // crop a cast photo
@@ -2437,7 +2439,7 @@
                             .catch(e => console.error('Failed to load favorite cast:', e));
 
                         const dynamicCols = this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1)); 
-                        const baseCols = ["Fav", "Versions", "Filename", "Title", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path"];
+                        const baseCols = ["Fav", "CC", "Versions", "Filename", "Title", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path"];
                         this.availableColumns = [...new Set([...baseCols, ...dynamicCols])];
 
                         // --- STARTUP FIX: Check for hidden 'All Videos' ---
@@ -2486,6 +2488,7 @@
                 },
 
                 async fetchVideos(mode = 'reset') {
+                    this.ccIndexLoad();
                     this.isSearching = true;
                     const startTime = performance.now();
                     console.log('=== fetchVideos START ===');
@@ -6210,6 +6213,7 @@ No metadata is changed.`)) return;
                         return col === 'Title' ? video.title : '-';
                     }
                     
+                    if (col === 'CC') return this.hasCC(video) ? 'CC' : '';
                     // Favorite column
                     if (col === 'Fav') {
                         return video.favorite ? '★' : '';
@@ -7495,6 +7499,7 @@ No metadata is changed.`)) return;
                     } catch (e) {
                         this.infoVideo = { path, filename: path.split('/').pop() };
                     }
+                    this.infoCaptionsLoad(path);
                     this.modals.fileInfo = true;
                 },
 
@@ -7530,6 +7535,7 @@ No metadata is changed.`)) return;
                         this.infoVideo = video; // Fallback to basic data
                     }
                     
+                    this.infoCaptionsLoad(video.path);
                     this.modals.fileInfo = true;
                 },
                 async setPrimaryVersion(videoId, path) {
@@ -10206,6 +10212,30 @@ No metadata is changed.`)) return;
                 // Settings -> Player
                 // ----- closed captions (captions.py) -----
                 ccTrackAttrs(t) { return { kind: 'subtitles', src: t.src, srclang: t.lang, label: t.label }; },
+                hasCC(v) { return !!(v && v.video_id && this.ccIds.has(v.video_id)); },
+                async ccIndexLoad(force = false) {
+                    if (!force && Date.now() - this.ccIdsAt < 30000) return;
+                    this.ccIdsAt = Date.now();
+                    try {
+                        const d = await (await fetch('/api/captions/index')).json();
+                        if (d.success) this.ccIds = new Set(d.video_ids || []);
+                    } catch (e) { /* no badges */ }
+                },
+                async infoCaptionsLoad(path) {
+                    this.infoCaptions = [];
+                    try {
+                        const d = await (await fetch('/api/captions?path=' + encodeURIComponent(path))).json();
+                        if (this.infoVideo && this.infoVideo.path === path) this.infoCaptions = d.tracks || [];
+                    } catch (e) { /* none */ }
+                },
+                async infoCaptionRemove(t) {
+                    if (!confirm(`Remove the ${t.label} captions?`)) return;
+                    try {
+                        await this.extDbPostAny('/api/captions/remove', { paths: [this.infoVideo.path], file: t.file });
+                        await this.infoCaptionsLoad(this.infoVideo.path);
+                        this.ccIndexLoad(true);
+                    } catch (e) { alert('Could not remove: ' + e.message); }
+                },
 
                 // new player: (re)add the caption tracks; your last on/off choice is remembered per browser
                 npCaptions() {
@@ -10254,6 +10284,7 @@ No metadata is changed.`)) return;
                                 try { localStorage.setItem('npCC', d.tracks[0].lang); } catch (e) { /* ignore */ }
                                 this.npCaptions();
                                 this.npChip('Captions ready');
+                                this.ccIndexLoad(true);
                                 return;
                             }
                             const last = d.status && d.status.last_done;
@@ -10288,6 +10319,7 @@ No metadata is changed.`)) return;
                     if (!confirm(`Remove the captions of ${paths.length} video${paths.length === 1 ? '' : 's'}?`)) return;
                     try {
                         const d = await this.extDbPostAny('/api/captions/remove', { paths });
+                        this.ccIndexLoad(true);
                         alert(`Removed ${d.removed} caption track${d.removed === 1 ? '' : 's'}.`);
                     } catch (e) { alert('Could not remove captions: ' + e.message); }
                 },
@@ -11885,6 +11917,7 @@ No metadata is changed.`)) return;
                                     <div class="absolute top-1 right-1 pointer-events-none">
                                         <span x-show="video.favorite" class="text-yellow-400 text-xl shadow-sm">&#9733;</span>
                                     </div>
+                                    <div x-show="hasCC(video)" class="absolute bottom-2 left-1 bg-black/70 text-white text-[10px] font-bold px-1 rounded pointer-events-none" title="Has captions">CC</div>
                                     <div x-show="video.length" class="absolute bottom-2 right-1 bg-black/60 text-white text-[10px] px-1 rounded pointer-events-none" x-text="video.length"></div>
                                 </div>
                                 <div class="p-2">
@@ -11940,6 +11973,7 @@ No metadata is changed.`)) return;
                                 <div class="absolute top-1 right-1 pointer-events-none">
                                     <span x-show="video.favorite" class="text-yellow-400 text-xl shadow-sm">&#9733;</span>
                                 </div>
+                                <div x-show="hasCC(video)" class="absolute bottom-2 left-1 bg-black/70 text-white text-[10px] font-bold px-1 rounded pointer-events-none" title="Has captions">CC</div>
                                 
                                 <!-- Version badge -->
                                 <div x-show="video.versions && video.versions.length > 1" 
@@ -12164,6 +12198,7 @@ No metadata is changed.`)) return;
                                     <div class="absolute top-1 right-1 pointer-events-none">
                                         <span x-show="video.favorite" class="text-yellow-400 text-xl shadow-sm">★</span>
                                     </div>
+                                    <div x-show="hasCC(video)" class="absolute bottom-2 left-1 bg-black/70 text-white text-[10px] font-bold px-1 rounded pointer-events-none" title="Has captions">CC</div>
                                     
                                     <!-- Version badge -->
                                     <div x-show="video.versions && video.versions.length > 1" 
@@ -13243,6 +13278,20 @@ No metadata is changed.`)) return;
                                         <span x-text="member"></span>
                                     </span>
                                 </template>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span class="text-gray-400 block text-xs uppercase">Captions</span>
+                            <div class="flex flex-wrap items-center gap-1 mt-1 text-xs">
+                                <template x-for="t in infoCaptions" :key="t.file">
+                                    <span class="bg-gray-700 px-2 py-1 rounded flex items-center gap-1">
+                                        <span x-text="t.label + (t.model ? ' · ' + t.model : '')"></span>
+                                        <button @click="infoCaptionRemove(t)" class="text-gray-400 hover:text-red-400" title="Remove these captions">✕</button>
+                                    </span>
+                                </template>
+                                <span x-show="!infoCaptions.length" class="text-gray-500">None</span>
+                                <button x-show="!infoCaptions.length && infoVideo?.path" @click="ccGenerate([infoVideo.path])"
+                                        class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">Generate captions</button>
                             </div>
                         </div>
                     </div>

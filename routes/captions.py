@@ -3,6 +3,7 @@
 Closed captions (captions.py): tracks for a video, making them (one video, a selection, a library),
 the queue, settings. Settings live in the metadata table under 'captions'.
 """
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -48,10 +49,65 @@ def files_without_captions(libraries):
     return out
 
 
+# ---------------------------------------------------------------------------
+# which videos have captions (video_captions): for the CC badge and captions:yes / captions:no
+# ---------------------------------------------------------------------------
+def ensure_table(conn):
+    conn.execute('CREATE TABLE IF NOT EXISTS video_captions (video_id TEXT PRIMARY KEY, langs TEXT, sources TEXT, '
+                 'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+
+
+def sync_one(path, cache_id=None, conn=None):
+    """Record (or forget) one video's captions."""
+    conn = conn or _conn()
+    ensure_table(conn)
+    row = conn.execute('SELECT video_id, cache_id FROM file_versions WHERE path = ?', (path,)).fetchone()
+    if not row:
+        return
+    cid = cache_id or MediaHandler._get_cache_key(path, row[0], row[1])
+    tr = captions.tracks(cid)
+    if tr:
+        conn.execute('INSERT INTO video_captions (video_id, langs, sources, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) '
+                     'ON CONFLICT(video_id) DO UPDATE SET langs = excluded.langs, sources = excluded.sources, '
+                     'updated_at = CURRENT_TIMESTAMP',
+                     (row[0], ','.join(sorted({t['lang'] for t in tr})), ','.join(sorted({t['source'] or '' for t in tr}))))
+    else:
+        conn.execute('DELETE FROM video_captions WHERE video_id = ?', (row[0],))
+    conn.commit()
+
+
+def sync_all(conn=None):
+    """Rebuild the list from the caption files in the cache. -> videos with captions"""
+    conn = conn or _conn()
+    ensure_table(conn)
+    found = {}
+    for path, vid, cid in conn.execute('SELECT path, video_id, cache_id FROM file_versions WHERE deleted_at IS NULL').fetchall():
+        key = MediaHandler._get_cache_key(path, vid, cid)
+        if vid not in found and os.path.exists(os.path.join(captions.folder(key), captions.INDEX)):
+            tr = captions.tracks(key)
+            if tr:
+                found[vid] = (','.join(sorted({t['lang'] for t in tr})), ','.join(sorted({t['source'] or '' for t in tr})))
+    conn.execute('DELETE FROM video_captions')
+    conn.executemany('INSERT INTO video_captions (video_id, langs, sources) VALUES (?, ?, ?)',
+                     [(v, l, s) for v, (l, s) in found.items()])
+    conn.commit()
+    return len(found)
+
+
 def start_background():
-    """At server start: the worker reads the settings; the night window feeds it libraries."""
+    """At server start: the worker reads the settings and keeps the list current; the night window
+    feeds it libraries; the 'has captions' list is rebuilt once in the background."""
+    import threading
     captions.worker.settings_fn = lambda: captions.get_settings(_conn())
+    captions.worker.on_change = lambda path, cid: sync_one(path, cid)
     captions.start_night_scheduler(lambda: captions.get_settings(_conn()), files_without_captions)
+
+    def fill():
+        try:
+            print(f'[captions] {sync_all()} videos have captions')
+        except Exception as e:
+            print(f'[captions] could not list captioned videos: {e}')
+    threading.Thread(target=fill, name='captions-index', daemon=True).start()
 
 
 def player_info(conn, path, cache_id):
@@ -129,8 +185,30 @@ class RemoveBody(BaseModel):
 def remove(body: RemoveBody, model=Depends(get_model)):
     try:
         conn = _conn()
-        n = sum(captions.remove(cache_id_of(conn, p), body.file) for p in body.paths or [])
+        n = 0
+        for p in body.paths or []:
+            n += captions.remove(cache_id_of(conn, p), body.file)
+            sync_one(p, conn=conn)
         return {'success': True, 'removed': n}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/index')
+def index(model=Depends(get_model)):
+    """video_ids that have captions (the CC badge)."""
+    try:
+        conn = _conn()
+        ensure_table(conn)
+        return {'success': True, 'video_ids': [r[0] for r in conn.execute('SELECT video_id FROM video_captions')]}
+    except Exception as e:
+        return _err(e)
+
+
+@router.post('/index/rebuild')
+def index_rebuild(model=Depends(get_model)):
+    try:
+        return {'success': True, 'videos': sync_all()}
     except Exception as e:
         return _err(e)
 

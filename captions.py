@@ -416,6 +416,7 @@ class Worker:
     """One background thread; a video opened in the player jumps the queue."""
     def __init__(self, settings_fn=None):
         self.settings_fn = settings_fn            # () -> settings dict
+        self.on_change = None                     # (path, cache_id) after each video: keeps the 'has captions' list current
         self.lock = threading.Lock()
         self.wake = threading.Event()
         self.queue = deque()                      # (path, cache_id, force, bulk)
@@ -510,6 +511,11 @@ class Worker:
                     self.state['last_error'] = f'{os.path.basename(path)}: stopped'
                 except Exception as e:
                     self.state['last_error'] = f'{os.path.basename(path)}: {e}'
+                if self.on_change:
+                    try:
+                        self.on_change(path, cid)
+                    except Exception as e:
+                        print(f'[captions] index update: {e}')
                 with self.lock:
                     self.queued.discard(cid)
                     self.state.update(last_done={'cache_id': cid, 'ok': ok}, current_cache_id=None)
