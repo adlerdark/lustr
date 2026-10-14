@@ -70,6 +70,16 @@ def _scan_library(req, model):
     
     model.save()
     
+    # Chapters in the new files -> markers (background)
+    if USE_SQLITE and new:
+        try:
+            import chapters
+            import routes.player
+            routes.player.ensure_markers(model.db.get_connection())
+            chapters.import_paths_background(lambda: model.db.get_connection(), list(new))
+        except Exception as e:
+            print(f"[chapters] after scan: {e}")
+
     # Generate thumbnails for new files
     for path in new:
         MediaHandler.generate_thumbnails(path)

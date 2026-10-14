@@ -538,6 +538,7 @@
                 ccIds: new Set(), ccIdsAt: 0,  // video_ids that have captions (CC badge)
                 infoCaptions: [],              // File Info: the open video's caption tracks
                 infoClips: [],                 // File Info: clips made from the open video
+                chapterJob: null, chapterJobTimer: null,   // Settings: import chapters from all videos
                 clipMk: { open: false, path: '', video: null, title: '', start: 0, end: 10, dur: 0, format: 'webm', size: 720, fps: 0,
                           shape: 'original', cx: 0.5, cy: 0.5, audio: true, quality: 'standard', busy: false, error: '', thumb: '', w: 0, h: 0 },
                 clipsWin: { open: false, rows: [], total: 0, page: 1, loading: false, status: null, timer: null,
@@ -9461,6 +9462,7 @@ No metadata is changed.`)) return;
                     if (sane(start)) this.npChip(`Resumed at ${this.formatTime(start)}`, 0, 'restart');
                     else { start = 0; this.npOfferResume(video.path, sane); }
                     this.npLoad(idx, start, true);
+                    if (d.chapters_added) this.npChip(`Added ${d.chapters_added} marker${d.chapters_added === 1 ? '' : 's'} from the file's chapters`);
                     this.npCaptions();
                     np.ccStatus = null;
                     if (d.captions && d.captions.queued && !(d.captions.tracks || []).length) this.npCCPoll();
@@ -10217,6 +10219,17 @@ No metadata is changed.`)) return;
                 },
 
                 // Settings -> Player
+                // ----- chapters in video files -> markers (chapters.py) -----
+                async chaptersBulk(action) {
+                    try {
+                        const d = action === 'status' ? await (await fetch('/api/player/chapters/status')).json()
+                                                      : await this.extDbPostAny('/api/player/chapters/' + action, {});
+                        this.chapterJob = d.status;
+                        clearTimeout(this.chapterJobTimer);
+                        if (d.status && d.status.running && this.modals.settings) this.chapterJobTimer = setTimeout(() => this.chaptersBulk('status'), 2000);
+                    } catch (e) { alert(e.message); }
+                },
+
                 // ----- clips: GIFs and short videos (clips.py) -----
                 clipFmtTime(s) {
                     s = Math.max(0, +s || 0);
@@ -10478,6 +10491,7 @@ No metadata is changed.`)) return;
                     } catch (e) { /* shown as not loaded */ }
                     this.npSprStatus();
                     this.ccSettingsLoad();
+                    this.chaptersBulk('status');
                 },
 
                 async npSettingSet(key, value) {
@@ -13798,6 +13812,20 @@ No metadata is changed.`)) return;
                             <p x-show="npSettings.spr && npSettings.spr.last_error" class="text-xs text-yellow-500" x-text="'Last problem: ' + (npSettings.spr?.last_error || '')"></p>
                         </div>
 
+                        <!-- Chapters -> markers (chapters.py) -->
+                        <div class="bg-gray-900 p-4 rounded border border-gray-700 space-y-2 text-sm">
+                            <h3 class="font-semibold">Markers from chapters</h3>
+                            <p class="text-xs text-gray-400">Chapters inside video files (MKV, some MP4s) become markers - new files when they're added,
+                                others the first time they're played. Renamed, moved or deleted markers are never changed back or duplicated.</p>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <button @click="chaptersBulk('scan')" :disabled="chapterJob && chapterJob.running"
+                                        class="px-3 py-1.5 rounded text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40">Import chapters from all videos</button>
+                                <button x-show="chapterJob && chapterJob.running" @click="chaptersBulk('stop')" class="px-3 py-1.5 rounded text-xs bg-red-800 hover:bg-red-700">Stop</button>
+                                <span x-show="chapterJob && chapterJob.total" class="text-xs text-gray-400"
+                                      x-text="chapterJob ? `${chapterJob.done} of ${chapterJob.total} files checked · ${chapterJob.markers} markers from ${chapterJob.files_with_chapters} files` + (chapterJob.running ? '' : ' - done') : ''"></span>
+                            </div>
+                        </div>
+
                         <!-- Captions (captions.py) -->
                         <div class="bg-gray-900 p-4 rounded border border-gray-700 space-y-3 text-sm">
                             <div class="flex items-center gap-2">
@@ -15755,7 +15783,8 @@ No metadata is changed.`)) return;
                             <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" :style="'background:' + npMarkerColor(m.tag || m.title)"></span>
                             <div class="flex-1 min-w-0">
                                 <div class="truncate text-gray-100" x-text="npMarkerLabel(m)"></div>
-                                <div class="text-xs text-gray-500" x-text="npMarkerTime(m) + (m.title && m.tag ? ' · ' + m.tag : '')"></div>
+                                <div class="text-xs text-gray-500"><span x-text="npMarkerTime(m) + (m.title && m.tag ? ' · ' + m.tag : '')"></span>
+                                    <span x-show="m.source === 'chapter'" class="ml-1 px-1 rounded bg-gray-700 text-gray-300" title="From the chapters in the video file">chapter</span></div>
                             </div>
                             <button @click.stop="npMarkerEdit(m)" class="text-xs text-blue-400 hover:text-blue-300">Edit</button>
                             <button @click.stop="npMarkerDelete(m)" class="text-xs text-red-400 hover:text-red-300">✕</button>

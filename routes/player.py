@@ -159,6 +159,13 @@ def streams(path: str = Query(...), model=Depends(get_model)):
         if not d['sprite']['ready'] and s['sprites_on_open']:
             sprites.worker.enqueue(path, d['cache_id'], front=True)
             d['sprite']['queued'] = True
+        try:                                         # chapters in the file -> markers (once per file)
+            import chapters
+            ensure_markers(conn)
+            d['chapters_added'] = chapters.import_file(conn, path)
+        except Exception as e:
+            d['chapters_added'] = 0
+            print(f'[chapters] {os.path.basename(path)}: {e}')
         try:
             import routes.captions
             d['captions'] = routes.captions.player_info(conn, path, d['cache_id'])
@@ -274,14 +281,16 @@ def ensure_markers(conn):
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_video_markers_video ON video_markers(video_id, seconds)')
+    import chapters                      # where a marker came from (chapters in the file) + which files were checked
+    chapters.ensure_schema(conn)
     conn.commit()
     _markers_ready = True
 
 
 def list_markers(conn, video_id):
     ensure_markers(conn)
-    return [{'id': r[0], 'seconds': r[1], 'end_seconds': r[2], 'title': r[3] or '', 'tag': r[4] or ''}
-            for r in conn.execute('SELECT id, seconds, end_seconds, title, tag FROM video_markers WHERE video_id = ? '
+    return [{'id': r[0], 'seconds': r[1], 'end_seconds': r[2], 'title': r[3] or '', 'tag': r[4] or '', 'source': r[5] or 'user'}
+            for r in conn.execute('SELECT id, seconds, end_seconds, title, tag, source FROM video_markers WHERE video_id = ? '
                                   'ORDER BY seconds, id', (video_id,))]
 
 
@@ -359,11 +368,35 @@ def markers_delete(body: MarkerDeleteBody, model=Depends(get_model)):
         conn = _conn()
         ensure_markers(conn)
         row = conn.execute('SELECT video_id FROM video_markers WHERE id = ?', (body.id,)).fetchone()
+        import chapters
+        chapters.dismiss(conn, body.id)              # a deleted chapter marker isn't imported again
         conn.execute('DELETE FROM video_markers WHERE id = ?', (body.id,))
         conn.commit()
         return {'success': True, 'markers': list_markers(conn, row[0]) if row else []}
     except Exception as e:
         return _err(e)
+
+
+@router.post('/chapters/scan')
+def chapters_scan(model=Depends(get_model)):
+    """Import chapters from every file not checked yet (background)."""
+    import chapters
+    ensure_markers(_conn())
+    started = chapters.bulk.start(lambda: _model.db.get_connection())
+    return {'success': True, 'started': started, 'status': chapters.bulk.status()}
+
+
+@router.get('/chapters/status')
+def chapters_status(model=Depends(get_model)):
+    import chapters
+    return {'success': True, 'status': chapters.bulk.status()}
+
+
+@router.post('/chapters/stop')
+def chapters_stop(model=Depends(get_model)):
+    import chapters
+    chapters.bulk.stop()
+    return {'success': True, 'status': chapters.bulk.status()}
 
 
 def start_background():
