@@ -1740,6 +1740,7 @@
                             
                 async init() {
                     console.log('App init starting');
+                    this.$nextTick(() => this.autoDraggables());
                     
                     // Call onAlpineInit immediately since Alpine is already initialized when init() runs
                     this.onAlpineInit();
@@ -6666,8 +6667,33 @@ No metadata is changed.`)) return;
                     Object.assign(el.style, { maxHeight: '', position: 'relative', left: '', top: '', margin: '' });   // back to the middle
                 },
 
+                // every popup window can be moved by its title: find them (also ones added later) and make them draggable
+                autoDraggables() {
+                    const run = () => {
+                        document.querySelectorAll('.fixed.inset-0.flex.justify-center').forEach(ov => {
+                            const panel = ov.firstElementChild;
+                            if (!panel || panel.dataset.dragReady) return;
+                            const cls = panel.className || '';
+                            if (typeof cls !== 'string' || !/\brounded/.test(cls) || !/\bbg-gray-(7|8|9)00\b/.test(cls)) return;   // players, full-size photo: no
+                            if (!panel.querySelector('[data-drag-handle]')) {
+                                const h = panel.querySelector('h1, h2, h3');
+                                if (!h) return;
+                                const row = h.parentElement;
+                                (row && row !== panel && row.children.length <= 6 && !row.querySelector('input, textarea, select') ? row : h)
+                                    .setAttribute('data-drag-handle', '');
+                            }
+                            this.makeDraggable(panel);
+                        });
+                    };
+                    run();
+                    let timer = null;
+                    new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(run, 300); })
+                        .observe(document.body, { childList: true, subtree: true });
+                },
+
                 makeDraggable(el) {
-                    if (!el) return;
+                    if (!el || el.dataset.dragReady) return;
+                    el.dataset.dragReady = '1';
                     
                     // Find or create header
                     let header = el.querySelector('[data-drag-handle]') || el.querySelector('.p-4.border-b') || el.firstElementChild;
