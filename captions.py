@@ -421,6 +421,7 @@ class Worker:
         self.wake = threading.Event()
         self.queue = deque()                      # (path, cache_id, force, bulk)
         self.queued = set()
+        self.history = deque(maxlen=100)          # finished jobs this session, newest last
         self.cancel = None                        # cache_id being stopped
         self.thread = None
         self.state = {'running': False, 'current': None, 'current_cache_id': None, 'progress': 0.0,
@@ -472,6 +473,23 @@ class Worker:
             self.state.update(bulk_total=self.state['bulk_done'])
         return dropped
 
+    def queue_list(self, limit=200):
+        with self.lock:
+            return [{'file': os.path.basename(p), 'path': p, 'cache_id': c, 'bulk': bool(b)}
+                    for p, c, _, b in list(self.queue)[:limit]]
+
+    def drop(self, cache_id):
+        """Take one video off the queue. -> True if it was queued"""
+        with self.lock:
+            for item in list(self.queue):
+                if item[1] == cache_id:
+                    self.queue.remove(item)
+                    self.queued.discard(cache_id)
+                    if item[3]:
+                        self.state['bulk_total'] = max(self.state['bulk_done'], self.state['bulk_total'] - 1)
+                    return True
+        return False
+
     def queued_ids(self):
         with self.lock:
             return [i[1] for i in self.queue]
@@ -493,7 +511,7 @@ class Worker:
                     path, cid, force, bulk = self.queue.popleft()
                     self.state.update(running=True, current=os.path.basename(path), current_cache_id=cid, progress=0.0)
                     self.cancel = None
-                t0, ok = time.time(), False
+                t0, ok, kind, err = time.time(), False, None, ''
                 try:
                     if not os.path.exists(path):
                         raise FileNotFoundError(path)
@@ -508,8 +526,10 @@ class Worker:
                         self.state['speed'] = {'model': settings['model'], 'x_realtime': round(dur / max(1, time.time() - t0), 2)}
                     ok = True
                 except InterruptedError:
+                    err = 'stopped'
                     self.state['last_error'] = f'{os.path.basename(path)}: stopped'
                 except Exception as e:
+                    err = str(e)
                     self.state['last_error'] = f'{os.path.basename(path)}: {e}'
                 if self.on_change:
                     try:
@@ -519,6 +539,9 @@ class Worker:
                 with self.lock:
                     self.queued.discard(cid)
                     self.state.update(last_done={'cache_id': cid, 'ok': ok}, current_cache_id=None)
+                    self.history.append({'file': os.path.basename(path), 'path': path, 'cache_id': cid, 'ok': ok,
+                                         'kind': kind if ok else None, 'error': err,
+                                         'seconds': round(time.time() - t0, 1), 'at': datetime.now().isoformat(timespec='seconds')})
                     if bulk:
                         self.state['bulk_done'] += 1
                         if not ok:

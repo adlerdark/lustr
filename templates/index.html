@@ -543,7 +543,8 @@
                           shape: 'original', cx: 0.5, cy: 0.5, audio: true, quality: 'standard', busy: false, error: '', thumb: '', w: 0, h: 0 },
                 clipsWin: { open: false, rows: [], total: 0, page: 1, loading: false, status: null, timer: null,
                             format: '', q: '', cast: '', library: '', video_id: '', label: '', sort: 'newest', hover: null },
-                cc: { loaded: false, settings: null, models: [], whisper: false, status: null, busy: false, msg: '', libsText: '' },
+                cc: { loaded: false, settings: null, models: [], whisper: false, status: null, busy: false, msg: '', libsText: '',
+                      queue: [], history: [], done: [], doneTotal: 0, showQueue: true, showDone: false, timer: null },
                 photoCrop: { open: false, name: '', src: '', natW: 0, natH: 0, box: { x: 0, y: 0, w: 1, h: 1 }, aspect: 2 / 3,
                              cropped: false, busy: false, error: '', drag: null },          // crop a cast photo
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
@@ -10521,11 +10522,33 @@ No metadata is changed.`)) return;
                         Object.assign(this.cc, { settings: d.settings, models: d.models || this.cc.models });
                     } catch (e) { alert('Could not save: ' + e.message); } finally { this.cc.busy = false; }
                 },
+                // Settings -> Player: status, queue and done list, kept current while the tab is open
                 async ccStatusLoad() {
-                    try { this.cc.status = (await (await fetch('/api/captions/status')).json()).status; } catch (e) { /* ignore */ }
+                    const C = this.cc;
+                    try {
+                        const d = await (await fetch('/api/captions/status?details=1')).json();
+                        if (d.success) Object.assign(C, { status: d.status, queue: d.queue || [], history: d.history || [],
+                                                          done: d.done || [], doneTotal: d.done_total || 0 });
+                    } catch (e) { /* keep last */ }
+                    clearTimeout(C.timer);
+                    if (this.modals.settings && this.settingsTab === 'player') C.timer = setTimeout(() => this.ccStatusLoad(), 3000);
+                },
+                async ccDrop(cacheId) {
+                    try { await this.extDbPostAny('/api/captions/drop', { cache_id: cacheId }); } catch (e) { /* ignore */ }
+                    this.ccStatusLoad();
+                },
+                ccWhen(at) {
+                    if (!at) return '';
+                    const d = new Date(String(at).replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? '' : 'Z'));
+                    return isNaN(d) ? '' : d.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+                },
+                ccSourceLabel(sources) {
+                    const m = { whisper: 'Whisper', embedded: 'from the file', sidecar: 'subtitle file' };
+                    return String(sources || '').split(',').filter(Boolean).map(x => m[x] || x).join(', ');
                 },
                 async ccStop() {
                     try { this.cc.status = (await this.extDbPostAny('/api/captions/stop', {})).status; } catch (e) { /* ignore */ }
+                    this.ccStatusLoad();
                 },
 
                 async npSettingsLoad() {
@@ -10535,6 +10558,7 @@ No metadata is changed.`)) return;
                     } catch (e) { /* shown as not loaded */ }
                     this.npSprStatus();
                     this.ccSettingsLoad();
+                    this.ccStatusLoad();
                     this.chaptersBulk('status');
                 },
 
@@ -13874,7 +13898,6 @@ No metadata is changed.`)) return;
                         <div class="bg-gray-900 p-4 rounded border border-gray-700 space-y-3 text-sm">
                             <div class="flex items-center gap-2">
                                 <h3 class="font-semibold flex-1">Captions</h3>
-                                <button @click="ccSettingsLoad(); ccStatusLoad()" class="px-2 py-0.5 rounded text-xs bg-gray-700 hover:bg-gray-600" title="Refresh">⟳</button>
                             </div>
                             <p class="text-xs text-gray-400">Subtitles that come with a file (inside it, or a .srt / .vtt next to it) are used as they are.
                                 Otherwise captions are made on this server with Whisper - nothing leaves it. They're made in the background at low priority:
@@ -13934,6 +13957,49 @@ No metadata is changed.`)) return;
                                         <button x-show="cc.status && (cc.status.queued || cc.status.current)" @click="ccStop()" class="px-2 py-0.5 rounded bg-red-800 hover:bg-red-700 text-white">Stop</button>
                                     </div>
                                     <p x-show="cc.status && cc.status.last_error" class="text-xs text-yellow-500" x-text="'Last problem: ' + (cc.status?.last_error || '')"></p>
+                                    <!-- what's waiting, and what's done -->
+                                    <div class="border-t border-gray-700 pt-2 text-xs">
+                                        <button @click="cc.showQueue = !cc.showQueue" class="flex items-center gap-1 text-gray-300 hover:text-white">
+                                            <span x-text="cc.showQueue ? '▾' : '▸'"></span>
+                                            <span x-text="'Queue (' + ((cc.status && cc.status.queued) || 0) + (cc.status && cc.status.current ? ' + 1 working' : '') + ')'"></span>
+                                        </button>
+                                        <div x-show="cc.showQueue" class="mt-1 max-h-48 overflow-y-auto bg-gray-800 rounded border border-gray-700 divide-y divide-gray-700">
+                                            <div x-show="cc.status && cc.status.current" class="flex items-center gap-2 px-2 py-1">
+                                                <span class="flex-1 truncate text-gray-100" :title="cc.status?.current" x-text="cc.status?.current"></span>
+                                                <span class="text-blue-300" x-text="Math.round(100 * (cc.status?.progress || 0)) + '%'"></span>
+                                            </div>
+                                            <template x-for="q in cc.queue" :key="q.cache_id">
+                                                <div class="flex items-center gap-2 px-2 py-1">
+                                                    <span class="flex-1 truncate text-gray-300" :title="q.path" x-text="q.file"></span>
+                                                    <span x-show="q.bulk" class="text-gray-500" title="From a library or the night window">bulk</span>
+                                                    <button @click="ccDrop(q.cache_id)" class="text-gray-500 hover:text-red-400" title="Take it off the queue">✕</button>
+                                                </div>
+                                            </template>
+                                            <div x-show="(cc.status?.queued || 0) > cc.queue.length" class="px-2 py-1 text-gray-500"
+                                                 x-text="'… and ' + ((cc.status?.queued || 0) - cc.queue.length) + ' more'"></div>
+                                            <div x-show="!(cc.status && cc.status.current) && !cc.queue.length" class="px-2 py-1 text-gray-500">Nothing waiting.</div>
+                                        </div>
+                                        <button @click="cc.showDone = !cc.showDone" class="flex items-center gap-1 text-gray-300 hover:text-white mt-2">
+                                            <span x-text="cc.showDone ? '▾' : '▸'"></span>
+                                            <span x-text="'Done (' + cc.doneTotal + ' video' + (cc.doneTotal === 1 ? '' : 's') + ' with captions)'"></span>
+                                        </button>
+                                        <div x-show="cc.showDone" class="mt-1 max-h-64 overflow-y-auto bg-gray-800 rounded border border-gray-700 divide-y divide-gray-700">
+                                            <template x-for="(h, hi) in cc.history.filter(h => !h.ok)" :key="'f' + hi + h.cache_id">
+                                                <div class="px-2 py-1 text-yellow-500 truncate" :title="h.path + ': ' + h.error" x-text="h.file + ' - ' + (h.error || 'failed')"></div>
+                                            </template>
+                                            <template x-for="d in cc.done" :key="d.video_id">
+                                                <button @click="d.path && openPlayer({ path: d.path, title: d.title, video_id: d.video_id })" :disabled="!d.path"
+                                                        class="w-full flex items-center gap-2 px-2 py-1 text-left hover:bg-gray-700" title="Play">
+                                                    <span class="flex-1 truncate text-gray-100" :title="d.path" x-text="d.title || d.file"></span>
+                                                    <span class="text-gray-400 uppercase" x-text="d.langs"></span>
+                                                    <span class="text-gray-500" x-text="ccSourceLabel(d.sources)"></span>
+                                                    <span class="text-gray-500 whitespace-nowrap" x-text="ccWhen(d.at)"></span>
+                                                </button>
+                                            </template>
+                                            <div x-show="cc.doneTotal > cc.done.length" class="px-2 py-1 text-gray-500" x-text="'Showing the newest ' + cc.done.length + '.'"></div>
+                                            <div x-show="!cc.done.length && !cc.history.some(h => !h.ok)" class="px-2 py-1 text-gray-500">No captions yet.</div>
+                                        </div>
+                                    </div>
                                 </div>
                             </template>
                         </div>

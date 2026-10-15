@@ -4,6 +4,7 @@ Closed captions (captions.py): tracks for a video, making them (one video, a sel
 the queue, settings. Settings live in the metadata table under 'captions'.
 """
 import os
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -86,10 +87,13 @@ def sync_all(conn=None):
         if vid not in found and os.path.exists(os.path.join(captions.folder(key), captions.INDEX)):
             tr = captions.tracks(key)
             if tr:
-                found[vid] = (','.join(sorted({t['lang'] for t in tr})), ','.join(sorted({t['source'] or '' for t in tr})))
+                at = datetime.utcfromtimestamp(os.path.getmtime(os.path.join(captions.folder(key), captions.INDEX)))
+                found[vid] = (','.join(sorted({t['lang'] for t in tr})), ','.join(sorted({t['source'] or '' for t in tr})),
+                              at.strftime('%Y-%m-%d %H:%M:%S'))
+    # dated by the caption files (the Done list in Settings is ordered by it), not by this rebuild
     conn.execute('DELETE FROM video_captions')
-    conn.executemany('INSERT INTO video_captions (video_id, langs, sources) VALUES (?, ?, ?)',
-                     [(v, l, s) for v, (l, s) in found.items()])
+    conn.executemany('INSERT INTO video_captions (video_id, langs, sources, updated_at) VALUES (?, ?, ?, ?)',
+                     [(v, l, s, at) for v, (l, s, at) in found.items()])
     conn.commit()
     return len(found)
 
@@ -176,15 +180,44 @@ def generate(body: GenerateBody, model=Depends(get_model)):
         return _err(e)
 
 
+def _done(conn, limit=100):
+    """Videos with captions, newest first -> ([{video_id, title, path, langs, sources, at}], total)"""
+    ensure_table(conn)
+    total = conn.execute('SELECT COUNT(*) FROM video_captions').fetchone()[0]
+    rows = conn.execute('''SELECT c.video_id, v.title, (SELECT fv.path FROM file_versions fv WHERE fv.video_id = c.video_id
+                                  AND fv.deleted_at IS NULL ORDER BY fv.is_preferred DESC LIMIT 1), c.langs, c.sources, c.updated_at
+                           FROM video_captions c LEFT JOIN videos v ON v.video_id = c.video_id
+                           ORDER BY c.updated_at DESC LIMIT ?''', (limit,)).fetchall()
+    return [{'video_id': r[0], 'title': r[1] or '', 'path': r[2], 'file': os.path.basename(r[2] or ''), 'langs': r[3] or '',
+             'sources': r[4] or '', 'at': r[5]} for r in rows], total
+
+
 @router.get('/status')
-def status(path: Optional[str] = None, model=Depends(get_model)):
+def status(path: Optional[str] = None, details: bool = False, model=Depends(get_model)):
     out = {'success': True, 'status': captions.worker.status()}
+    if details:
+        out['queue'] = captions.worker.queue_list()
+        out['history'] = list(reversed(captions.worker.history))
+        try:
+            out['done'], out['done_total'] = _done(_conn())
+        except Exception as e:
+            out['done'], out['done_total'] = [], 0
+            print(f'[captions] done list: {e}')
     if path:
         try:
             out['tracks'] = captions.tracks(cache_id_of(_conn(), path))
         except Exception:
             out['tracks'] = []
     return out
+
+
+class DropBody(BaseModel):
+    cache_id: str
+
+
+@router.post('/drop')
+def drop(body: DropBody, model=Depends(get_model)):
+    return {'success': True, 'dropped': captions.worker.drop(body.cache_id), 'status': captions.worker.status()}
 
 
 @router.post('/stop')
