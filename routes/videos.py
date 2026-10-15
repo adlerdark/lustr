@@ -22,12 +22,57 @@ router = APIRouter(prefix="/api", tags=["videos"])
 # Male Cast (ext_db.py): men in straight scenes stay in the cast but don't count
 # when sorting by Cast. Falls back to the plain cast if ext_db isn't available.
 try:
-    from ext_db import male_cast_for_video as _male_cast_for_video
+    from ext_db import male_cast_for_video as _male_cast_for_video, _male_invalidate
 except Exception:
     try:
-        from routes.ext_db import male_cast_for_video as _male_cast_for_video
+        from routes.ext_db import male_cast_for_video as _male_cast_for_video, _male_invalidate
     except Exception:
-        _male_cast_for_video = None
+        _male_cast_for_video = _male_invalidate = None
+
+
+# Merging files into one video: the scene link (video_ext_link) and Male Cast marks
+# (video_cast_role) are kept per video, so they're carried over by hand.
+def _table_exists(conn, name):
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+
+def _merge_links(conn, video_ids):
+    """video_id -> its video_ext_link row (dict), for the linked ones."""
+    if not video_ids or not _table_exists(conn, 'video_ext_link'):
+        return {}
+    ids = list(video_ids)
+    rows = conn.execute(f'SELECT * FROM video_ext_link WHERE video_id IN ({",".join("?" * len(ids))})', ids).fetchall()
+    return {r['video_id']: dict(r) for r in rows}
+
+
+def _merge_link_key(link):
+    return (link.get('ext_source'), link.get('ext_id'), link.get('ext_kind') or 'scene')
+
+
+def _merge_men(conn, video_ids):
+    """Cast ids marked Male Cast on any of these videos."""
+    if not video_ids or not _table_exists(conn, 'video_cast_role'):
+        return set()
+    ids = list(video_ids)
+    return {r[0] for r in conn.execute(f'SELECT cast_id FROM video_cast_role WHERE video_id IN ({",".join("?" * len(ids))})', ids)}
+
+
+def _merge_carry_over(conn, video_id, link, men, old_ids):
+    """Give the merged video the chosen link and its Male Cast marks; drop rows of videos that are gone."""
+    if link:
+        cols = [c for c in link if c != 'video_id']
+        conn.execute(f'INSERT OR REPLACE INTO video_ext_link (video_id, {", ".join(cols)}) VALUES (?, {", ".join("?" * len(cols))})',
+                     [video_id] + [link[c] for c in cols])
+    gone = [v for v in old_ids if v != video_id and not conn.execute('SELECT 1 FROM videos WHERE video_id = ?', (v,)).fetchone()]
+    for table in ('video_ext_link', 'video_cast_role'):
+        if gone and _table_exists(conn, table):
+            conn.execute(f'DELETE FROM {table} WHERE video_id IN ({",".join("?" * len(gone))})', gone)
+    for cid in men:
+        if conn.execute('SELECT 1 FROM video_cast_junction WHERE video_id = ? AND cast_id = ?', (video_id, cid)).fetchone():
+            conn.execute('INSERT OR IGNORE INTO video_cast_role (video_id, cast_id) VALUES (?, ?)', (video_id, cid))
+    conn.commit()
+    if men and _male_invalidate:
+        _male_invalidate()
 
 
 def _without_male_cast(item, val):
@@ -1538,6 +1583,7 @@ async def merge_videos(request: Request, model = Depends(get_model)):
         paths = data.get('paths', [])
         primary_path = data.get('primary_path')
         video_title = data.get('title')
+        link_from = data.get('link_from')          # which video's scene link to keep when they differ ('' = none)
         
         if len(paths) < 2:
             return JSONResponse({'error': 'Need at least 2 files to merge'}, status_code=400)
@@ -1559,10 +1605,13 @@ async def merge_videos(request: Request, model = Depends(get_model)):
         # CRITICAL: Collect metadata from source videos BEFORE deleting them
         merged_metadata = defaultdict(set)
         source_video_ids = set()
+        files_of = defaultdict(list)
         
         for path in paths:
             try:
                 old_video = model.db.get_video_by_path(path)
+                if old_video:
+                    files_of[old_video['video_id']].append(os.path.basename(path))
                 if old_video and old_video['video_id'] != video_id:
                     source_video_ids.add(old_video['video_id'])
                     
@@ -1589,6 +1638,25 @@ async def merge_videos(request: Request, model = Depends(get_model)):
                         merged_metadata['favorite'] = 1
             except:
                 pass
+        
+        # Scene links: one -> the merged video gets it; different ones -> ask which (nothing changed yet)
+        conn = model.db.get_connection()
+        old_ids = source_video_ids | {video_id}
+        links = _merge_links(conn, old_ids)
+        distinct = {}
+        for vid in sorted(links, key=lambda v: (v != video_id, v)):
+            distinct.setdefault(_merge_link_key(links[vid]), vid)
+        if len(distinct) > 1 and link_from is None:
+            return JSONResponse({'conflict': 'link', 'links': [
+                {'video_id': vid, 'source': links[vid].get('ext_source'), 'kind': links[vid].get('ext_kind') or 'scene',
+                 'title': links[vid].get('ext_title') or '', 'studio': links[vid].get('ext_studio_name') or '',
+                 'date': links[vid].get('ext_date') or '', 'files': files_of.get(vid, [])}
+                for vid in distinct.values()]}, status_code=409)
+        if link_from is not None:
+            link = links.get(link_from) if link_from else None
+        else:
+            link = links[next(iter(distinct.values()))] if distinct else None
+        men = _merge_men(conn, old_ids)
         
         # Check if video already exists
         try:
@@ -1701,7 +1769,12 @@ async def merge_videos(request: Request, model = Depends(get_model)):
         else:
             model.db.auto_set_preferred(video_id)
         
-        return JSONResponse({'success': True, 'video_id': video_id})
+        conn = model.db.get_connection()
+        if link_from == '' and _table_exists(conn, 'video_ext_link'):
+            conn.execute('DELETE FROM video_ext_link WHERE video_id = ?', (video_id,))     # you chose no link
+        _merge_carry_over(conn, video_id, link, men, old_ids)
+        
+        return JSONResponse({'success': True, 'video_id': video_id, 'linked': bool(link)})
         
     except Exception as e:
         print(f"Error merging videos: {e}")
