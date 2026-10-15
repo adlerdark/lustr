@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List
 from helpers import get_file_data
-from media_handler import MediaHandler
+from media_handler import MediaHandler, COVER, COVER_JSON
 from config import USE_SQLITE, CACHE_DIR
 
 router = APIRouter(prefix="/api", tags=["thumbnails"])
@@ -218,6 +218,70 @@ def generate_thumbnails(req: GenThumbsRequest, model = Depends(get_model)):
     return {"generated": len(jobs), "queued": True}
 
 
+def _shown_cache_key(model, path):
+    """The cache key whose thumbnails the library shows for this file: the preferred version's,
+    for a video with several versions (as /thumbnails/check does)."""
+    video_id, cache_id, check_path = None, None, path
+    if USE_SQLITE:
+        row = _row_for_path(model, path)
+        if row:
+            video_id, cache_id = row['video_id'], row['cache_id']
+            versions = model.db.get_file_versions(video_id)
+            if len(versions) > 1:
+                primary = next((v for v in versions if v.get('is_preferred') == 1), None) or versions[0]
+                cache_id, check_path = primary['cache_id'], primary['path']
+    return MediaHandler._get_cache_key(check_path, video_id, cache_id)
+
+
+def _cover_index(folder):
+    try:
+        with open(os.path.join(folder, COVER_JSON), encoding='utf-8') as f:
+            return int(json.load(f).get('index', 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+@router.get("/thumbnails/frames")
+def thumbnail_frames(path: str, model = Depends(get_model)):
+    """Every thumbnail frame of a video, and which one is the main thumbnail (cover)."""
+    key = _shown_cache_key(model, path)
+    folder = os.path.join(CACHE_DIR, key)
+    frames = []
+    for f in MediaHandler.get_thumbnails(path, None, key):
+        frames.append(f"/cache/{key}/{os.path.basename(f)}?v={int(os.path.getmtime(f))}")
+    cover = _cover_index(folder) if os.path.exists(os.path.join(folder, COVER)) else 0
+    return {'cache_id': key, 'frames': frames, 'cover': cover}
+
+
+class CoverRequest(BaseModel):
+    path: str
+    index: int
+
+
+@router.post("/thumbnails/cover")
+def set_thumbnail_cover(req: CoverRequest, model = Depends(get_model)):
+    """Make frame `index` the main thumbnail: a copy of it as cover.webp (frame 0, the default,
+    removes the cover). The frames keep their order, so the hover preview is unchanged."""
+    key = _shown_cache_key(model, req.path)
+    folder = os.path.join(CACHE_DIR, key)
+    frame = os.path.join(folder, f"thumb_{req.index}.webp")
+    if req.index < 0 or not os.path.exists(frame):
+        raise HTTPException(404, "No such thumbnail frame")
+    cover, meta = os.path.join(folder, COVER), os.path.join(folder, COVER_JSON)
+    if req.index == 0:
+        for f in (cover, meta):
+            if os.path.exists(f):
+                os.remove(f)
+    else:
+        tmp = cover + '.tmp'
+        shutil.copyfile(frame, tmp)
+        os.replace(tmp, cover)
+        with open(meta, 'w', encoding='utf-8') as f:
+            json.dump({'index': req.index}, f)
+    from helpers import get_thumbnail_path
+    return {'success': True, 'cover': req.index, 'thumb': get_thumbnail_path(key)}
+
+
 @router.post("/thumbnails/check")
 async def check_thumbnails(request: Request, model = Depends(get_model)):
     """
@@ -285,6 +349,12 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
     if not paths:
         raise HTTPException(400, "No paths provided")
 
+    # optional: skip this many seconds at the start (title cards); the frames spread over the rest
+    try:
+        offset = max(0.0, float(data.get('offset') or 0))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "offset must be a number of seconds")
+
     results = []
     # Avoid redundant work if multiple selected paths belong to the same
     # merge group (same primary row would otherwise be processed repeatedly).
@@ -344,7 +414,12 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
 
         # Create the new cache folder and generate thumbnails into it.
         os.makedirs(new_cache_dir, exist_ok=True)
-        MediaHandler.generate_thumbnails(primary_path, force=True, video_id=video_id, cache_id=new_cache_id)
+        MediaHandler.generate_thumbnails(primary_path, force=True, video_id=video_id, cache_id=new_cache_id,
+                                         start=offset)
+        offset_used = offset
+        if offset:
+            duration = MediaHandler.get_extended_metadata(primary_path).get('duration', 0) or 0
+            offset_used = MediaHandler.thumb_times(duration, 1, offset)[1] if duration else 0
 
         # Clean up the old cache folder - unless another file still uses it (same filename, no
         # cache_id of its own). This file's captions move to the new folder first.
@@ -355,7 +430,7 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
                 _move_captions(old_cache_dir, new_cache_dir)
                 shutil.rmtree(old_cache_dir, ignore_errors=True)
 
-        thumb_count = len([f for f in os.listdir(new_cache_dir) if f.endswith('.webp')]) if os.path.exists(new_cache_dir) else 0
+        thumb_count = len(MediaHandler.get_thumbnails(primary_path, video_id, new_cache_id))
 
         success = thumb_count > 0
         results.append({
@@ -364,6 +439,8 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
             'old_cache_id': old_cache_id,
             'cache_id': new_cache_id,
             'thumbnails': thumb_count,
+            'offset_used': round(offset_used, 1),
+            'capped': bool(offset) and offset_used < offset,
             'message': f'{thumb_count} thumbnails generated' if success else 'No thumbnails generated'
         })
 

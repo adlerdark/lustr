@@ -485,7 +485,8 @@ def _get_videos_sql_fast(
         conditions.append("v.favorite = 1")
     
     if hide_zero_length == "hide":
-        conditions.append("(fv.length IS NULL OR fv.length = '' OR fv.length != '0:00')")
+        import library_stats
+        conditions.append(library_stats.nonzero_length_sql('fv'))
     
     # Length filter (supports multiple ranges)
     if length_filter:

@@ -604,6 +604,12 @@ class LibraryModel:
                         else:
                             file_exists = full_path in self.files
                         
+                        if not file_exists and self._still_writing(full_path):
+                            # a file still being copied or encoded can't be read yet (length 0), so it
+                            # couldn't be matched to its video: the next scan adds it
+                            print(f"[Scan] Skipped {full_path}: still being written (added on a later scan)")
+                            continue
+
                         if not file_exists:
                             # Before creating new entry, check if this is a move within library
                             if self.use_sqlite:
@@ -684,6 +690,10 @@ class LibraryModel:
                                 # extension, same length): add it as a version of that video and
                                 # leave the video's metadata alone
                                 joined_to = self._same_video_in_library(conn, full_path, filename, lib_here, roots)
+                                if joined_to is self.UNREADABLE:
+                                    print(f"[Scan] Skipped {full_path}: same name as a video here, but its "
+                                          f"length can't be read yet (still being written?)")
+                                    continue
                                 if joined_to:
                                     from media_handler import MediaHandler
                                     self.db.add_file_version(joined_to, full_path, filename, MediaHandler.get_file_info(full_path))
@@ -770,10 +780,21 @@ class LibraryModel:
             trees = pool.map(lambda r: list(os.walk(r, followlinks=True)), roots)
             return dict(zip(roots, trees))
 
+    WRITING_SECONDS = 120          # a new file changed this recently is still being written
+    UNREADABLE = object()          # _same_video_in_library: a same-name video exists, this file's length is unknown
+
+    def _still_writing(self, path):
+        try:
+            import time
+            return time.time() - os.path.getmtime(path) < self.WRITING_SECONDS
+        except OSError:
+            return False
+
     def _same_video_in_library(self, conn, path, filename, library, roots, tolerance=5):
         """The video_id of the one video in this library that has an active file with the same
         name (ignoring extension and case) and the same length (within `tolerance` s), else None.
-        Several such videos: ambiguous, None."""
+        Several such videos: ambiguous, None. A same-name file exists but this file's length
+        can't be read (half written): UNREADABLE."""
         if not library:
             return None
         import db_maintenance as dm
@@ -788,7 +809,7 @@ class LibraryModel:
             return None
         dur = int(MediaHandler.get_extended_metadata(path).get('duration', 0) or 0)
         if not dur:
-            return None
+            return self.UNREADABLE
         def length(r):       # files added by a fast scan have no stored length yet
             if r['length_seconds']:
                 return r['length_seconds']

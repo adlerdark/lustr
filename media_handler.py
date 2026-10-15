@@ -6,6 +6,8 @@ import ctypes
 import json
 from config import CACHE_DIR, VIDEO_EXTENSIONS, THUMBNAIL_QUALITY, THUMBNAIL_FRAMES
 
+COVER, COVER_JSON = 'cover.webp', 'cover.json'      # the chosen main thumbnail (a copy of one frame)
+
 class MediaHandler:
     @staticmethod
     def _hide_path_windows(path):
@@ -197,9 +199,21 @@ class MediaHandler:
             return hashlib.md5(filename.encode('utf-8')).hexdigest()
 
     @staticmethod
-    def generate_thumbnails(path, num_frames=None, force=False, quality=None, video_id=None, cache_id=None):
+    def thumb_times(duration, num_frames, start=0):
+        """(times, start used): num_frames times spread evenly over the part after `start`.
+        A start that would leave less than 10% of the video is cut to 90% of the length, and
+        no time is later than half a second before the end."""
+        start = max(0.0, float(start or 0))
+        start = min(start, duration * 0.9)
+        step = (duration - start) / (num_frames + 1)
+        last = max(0.0, duration - 0.5)
+        return [min(start + step * i, last) for i in range(1, num_frames + 1)], start
+
+    @staticmethod
+    def generate_thumbnails(path, num_frames=None, force=False, quality=None, video_id=None, cache_id=None, start=0):
         """
         Generate WebP thumbnails for video previews.
+        start: skip this many seconds (e.g. a title card); the frames are spread over the rest.
         
         Args:
             path: Video file path (used for actual ffmpeg processing)
@@ -221,8 +235,9 @@ class MediaHandler:
             os.makedirs(output_folder)
             MediaHandler._hide_path_windows(output_folder)
         
-        # Check for existing thumbnails (look for .webp files now)
-        existing = sorted([os.path.join(output_folder, f) for f in os.listdir(output_folder) if f.endswith('.webp')])
+        # Check for existing thumbnails (the frames; not the chosen cover)
+        existing = sorted([os.path.join(output_folder, f) for f in os.listdir(output_folder)
+                           if f.startswith('thumb_') and f.endswith('.webp')])
         
         if not force and len(existing) >= num_frames:
             return existing
@@ -230,7 +245,7 @@ class MediaHandler:
         # If forcing or need more frames, delete old thumbnails to save space
         if force or (existing and len(existing) < num_frames):
             for f in os.listdir(output_folder):
-                if f.endswith('.dat') or f.endswith('.webp'):  # Delete both old JPEG and WebP
+                if f.endswith('.dat') or f.endswith('.webp') or f == COVER_JSON:  # old JPEG, WebP, and the chosen cover
                     try: 
                         os.remove(os.path.join(output_folder, f))
                     except: 
@@ -244,16 +259,14 @@ class MediaHandler:
             return []
 
         generated_files = []
-        step = 1.0 / (num_frames + 1)
-        intervals = [step * i for i in range(1, num_frames + 1)]
+        times, _start = MediaHandler.thumb_times(duration, num_frames, start)
         
         startupinfo = None
         if os.name == 'nt':
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-        for i, pct in enumerate(intervals):
-            timestamp = duration * pct
+        for i, timestamp in enumerate(times):
             out_name = os.path.join(output_folder, f"thumb_{i}.webp")
             
             # Use WebP format with configurable quality
@@ -281,7 +294,8 @@ class MediaHandler:
         output_folder = os.path.join(CACHE_DIR, file_hash)
         if os.path.exists(output_folder):
             # Look for .webp files (new format) or fall back to .dat (old format)
-            files = [f for f in os.listdir(output_folder) if f.endswith('.webp') or f.endswith('.dat')]
+            files = [f for f in os.listdir(output_folder)
+                     if f.startswith('thumb_') and (f.endswith('.webp') or f.endswith('.dat'))]
             try:
                 files.sort(key=lambda f: int(f.split('_')[1].split('.')[0]))
             except:

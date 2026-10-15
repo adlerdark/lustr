@@ -36,10 +36,12 @@ def _collection_rows():
 
 
 @router.get('')
-def home_rows(request: Request, library: Optional[str] = None, model=Depends(get_model)):
+def home_rows(request: Request, library: Optional[str] = None, hide_zero_length: Optional[str] = None,
+              model=Depends(get_model)):
     try:
         username = check_auth(request)
-        return {'success': True, **home.build(_model, username, library, _watch_history, _collection_rows())}
+        return {'success': True, **home.build(_model, username, library, _watch_history, _collection_rows(),
+                                              hide_zero=hide_zero_length != 'show')}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 

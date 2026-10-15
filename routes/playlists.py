@@ -7,7 +7,7 @@ Playlist and Watchlist management routes.
 from fastapi import APIRouter, Depends, Request, HTTPException
 from typing import Optional, List
 from pydantic import BaseModel
-from helpers import check_auth
+from helpers import check_auth, get_thumbnail_path
 
 router = APIRouter(prefix="/api/playlists", tags=["playlists"])
 
@@ -294,7 +294,7 @@ def get_playlist_items(
             'playlist_position': row[16],
             'added_to_playlist': row[17],
             # Now use the computed cache_id
-            'thumb': f'/cache/{cache_id}/thumb_0.webp'
+            'thumb': get_thumbnail_path(cache_id) or f'/cache/{cache_id}/thumb_0.webp'
         }
         
         # Get cast members using the correct table structure

@@ -36,6 +36,12 @@ def arrival_sql(alias='fv', video='v'):
             f"NULLIF(replace({alias}.added_at, 'T', ' '), ''), {alias}.date_created)")
 
 
+def nonzero_length_sql(alias='fv'):
+    """SQL that leaves out files whose length is zero (any of the stored forms); an unknown
+    length (not read yet) still shows."""
+    return f"COALESCE({alias}.length, '') NOT IN ('0:00', '00:00', '0:00:00', '00:00:00')"
+
+
 def ensure_schema(conn):
     key = id(conn)
     if key in _schema_ready:

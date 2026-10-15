@@ -226,18 +226,21 @@ def row_because(conn, where, params, username, seed_vid, n):
     return _paths(conn, sql, p + params + [seed_vid, username or '', n])
 
 
-def build(model, username, library=None, watch_history=None, collections_rows=None, n=ROW_SIZE):
-    """-> {'rows': [{key, title, items, see_all}], 'settings'}"""
+def build(model, username, library=None, watch_history=None, collections_rows=None, n=ROW_SIZE, hide_zero=True):
+    """-> {'rows': [{key, title, items, see_all}], 'settings'}. hide_zero: leave out 0:00 files,
+    like the library view does."""
     import display_filter
     conn = model.db.get_connection()
     library_stats.ensure_schema(conn)
-    key = (username, library or 'Home', display_filter.cache_key(conn), n)
+    key = (username, library or 'Home', display_filter.cache_key(conn), n, hide_zero)
     with _cache_lock:
         hit = _cache.get(key)
         if hit and time.time() - hit[0] < CACHE_SECONDS:
             return hit[1]
     settings = get_settings(conn)
     where, params = scope_sql(model, conn, library)
+    if hide_zero:
+        where += ' AND ' + library_stats.nonzero_length_sql('fv')
     rows = []
     mk = lambda p, extra=None: card(model, p, username, watch_history, extra)
 

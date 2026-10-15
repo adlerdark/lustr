@@ -550,6 +550,9 @@
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
+                castPeek: { name: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 1500 },   // photo after resting on a cast name
+                thumbPick: { open: false, path: '', title: '', frames: [], cover: 0, busy: false, error: '' },   // choose the main thumbnail
+                forceThumbs: { open: false, count: 0, offset: '', error: '', resolve: null },   // Force New: optional start offset
                 loginUsername: '',
                 loginPassword: '',
                 loginError: '',
@@ -2931,6 +2934,85 @@
                         Object.assign(this.castPicker, { open: true, typed: name, choices: rows, resolve });
                     });
                 },
+                // Resting on a cast name for castPeek.delay ms shows their photo; moving across names,
+                // clicking or scrolling cancels it. Nothing shows for someone without a photo.
+                castPeekStart(name, ev) {
+                    this.castPeekEnd();
+                    const el = ev.currentTarget;
+                    this.castPeek.name = name;
+                    this.castPeek.timer = setTimeout(() => {
+                        const src = `/api/cast/photo/${encodeURIComponent(name)}?thumbnail=true`;
+                        const img = new Image();
+                        img.onload = () => {
+                            if (this.castPeek.name !== name || !el.isConnected) return;
+                            const r = el.getBoundingClientRect(), W = 124, H = 196;
+                            let x = Math.min(r.left, window.innerWidth - W - 8), y = r.bottom + 6;
+                            if (y + H > window.innerHeight - 8) y = Math.max(8, r.top - H - 6);
+                            Object.assign(this.castPeek, { src, x: Math.max(8, x), y, show: true });
+                        };
+                        img.src = src;
+                    }, this.castPeek.delay);
+                },
+                castPeekEnd() {
+                    clearTimeout(this.castPeek.timer);
+                    Object.assign(this.castPeek, { name: '', show: false, timer: null });
+                },
+
+                // Force New dialog: "90", "1:30" or "1:02:03" -> seconds; blank = no offset
+                forceThumbsDone(go) {
+                    const F = this.forceThumbs;
+                    let secs = 0;
+                    if (go) {
+                        const t = String(F.offset ?? '').trim();
+                        if (/^\d+(\.\d+)?$/.test(t)) secs = parseFloat(t);
+                        else if (/^\d+(:\d{1,2}){1,2}$/.test(t)) secs = t.split(':').reduce((a, n) => a * 60 + parseInt(n, 10), 0);
+                        else if (t) { F.error = 'Use seconds (90) or minutes:seconds (1:30).'; return; }
+                    }
+                    const r = F.resolve;
+                    Object.assign(F, { open: false, resolve: null });
+                    if (r) r(go ? secs : null);
+                },
+
+                // Choose Main Thumbnail: every frame of the video; the picked one becomes the card picture
+                async thumbPickOpen() {
+                    this.activeMenu = null;
+                    const path = Array.from(this.selectedPaths)[0];
+                    if (!path) return;
+                    const v = this.videos.find(x => x.path === path) || {};
+                    Object.assign(this.thumbPick, { open: true, path, title: v.title || v.filename || path.split('/').pop(),
+                                                    frames: [], cover: 0, busy: true, error: '' });
+                    try {
+                        const d = await (await fetch('/api/thumbnails/frames?path=' + encodeURIComponent(path))).json();
+                        this.thumbPick.frames = d.frames || [];
+                        this.thumbPick.cover = d.cover || 0;
+                        if (!this.thumbPick.frames.length) this.thumbPick.error = 'This video has no thumbnails yet.';
+                    } catch (e) {
+                        this.thumbPick.error = 'Could not load the thumbnails.';
+                    } finally {
+                        this.thumbPick.busy = false;
+                    }
+                },
+                async thumbPickSet(index) {
+                    const P = this.thumbPick;
+                    if (P.busy) return;
+                    P.busy = true;
+                    P.error = '';
+                    try {
+                        const r = await fetch('/api/thumbnails/cover', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                         body: JSON.stringify({ path: P.path, index }) });
+                        const d = await r.json();
+                        if (!r.ok) throw new Error(d.detail || 'Could not set the thumbnail');
+                        // every card showing this video gets the new picture
+                        const lists = [this.videos, this.castBioData?.exact_matches, this.coll?.items, ...(this.homeRows || []).map(h => h.items)];
+                        for (const list of lists) for (const v of (list || [])) if (v.path === P.path) v.thumb = d.thumb;
+                        P.open = false;
+                    } catch (e) {
+                        P.error = e.message;
+                    } finally {
+                        P.busy = false;
+                    }
+                },
+
                 mergeLinkPickDone(videoId) {
                     const P = this.mergeLinkPick;
                     const r = P.resolve;
@@ -5958,7 +6040,8 @@ No metadata is changed.`)) return;
                 async loadHomeData(library = null) {
                     this.homeLoading = true;
                     try {
-                        const url = '/api/home' + (library ? '?library=' + encodeURIComponent(library) : '');
+                        const url = '/api/home?hide_zero_length=' + (this.appSettings.hideZeroLength || 'hide')
+                            + (library ? '&library=' + encodeURIComponent(library) : '');
                         const d = await (await fetch(url)).json();
                         if (!d.success) throw new Error(d.error || 'Could not load');
                         this.homeRows = d.rows || [];
@@ -7984,17 +8067,31 @@ No metadata is changed.`)) return;
                     const paths = Array.from(this.selectedPaths);
                     if (paths.length === 0) return;
 
-                    const label = paths.length === 1 ? 'this video' : `all ${paths.length} selected videos`;
-                    if (!window.confirm(`Force new thumbnails for ${label}? This creates a brand-new thumbnail set.`)) return;
+                    // the dialog asks for an optional start offset (skip a title card); null = cancelled
+                    const offset = await new Promise(resolve =>
+                        Object.assign(this.forceThumbs, { open: true, count: paths.length, offset: '', error: '', resolve }));
+                    if (offset === null) return;
 
                     // /api/cache/regenerate handles single AND multiple paths,
                     // assigning a new cache_id per video (deduplicating merge
                     // groups server-side) and regenerating synchronously.
-                    await fetch('/api/cache/regenerate', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ paths })
-                    });
+                    try {
+                        const d = await (await fetch('/api/cache/regenerate', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ paths, offset })
+                        })).json();
+                        const capped = (d.results || []).filter(r => r.capped);
+                        let msg = d.message || 'Thumbnails regenerated';
+                        if (capped.length) msg += ` · offset shortened for ${capped.length} short video(s): `
+                            + capped.slice(0, 3).map(r => r.path.split('/').pop()).join(', ') + (capped.length > 3 ? '…' : '');
+                        const box = document.getElementById('messageBox');
+                        box.textContent = msg;
+                        box.classList.remove('hidden');
+                        setTimeout(() => box.classList.add('hidden'), capped.length ? 8000 : 3000);
+                    } catch (e) {
+                        alert('Error regenerating thumbnails: ' + e);
+                    }
 
                     // cache/regenerate is synchronous (blocking FFmpeg call)
                     // so no extra wait needed — just refresh.
@@ -10063,7 +10160,7 @@ No metadata is changed.`)) return;
                     try {
                         ms.metadata = this.appSettings.lockScreenInfo        // Settings -> Player -> Lock screen
                             ? new MediaMetadata({ title: this.npTitle(), artist: 'lustr',
-                                artwork: d.cache_id ? [{ src: `/cache/${d.cache_id}/thumb_0.webp`, sizes: '480x270', type: 'image/webp' }] : [] })
+                                artwork: (np.video?.thumb || d.cache_id) ? [{ src: np.video?.thumb || `/cache/${d.cache_id}/thumb_0.webp`, sizes: '480x270', type: 'image/webp' }] : [] })
                             : new MediaMetadata({ title: 'lustr', artist: '', artwork: [] });
                     } catch (e) { /* not supported */ }
                     const p = () => this.npPlayer();
@@ -10293,7 +10390,7 @@ No metadata is changed.`)) return;
                         open: true, path: v.path, video: v, dur, start: +start.toFixed(2), end: +end.toFixed(2),
                         title: `${v.title || (v.path || '').split('/').pop().replace(/\.[^.]+$/, '')} @ ${Math.floor(t0 / 60)}:${String(t0 % 60).padStart(2, '0')}`,
                         w: np.data.width || 0, h: np.data.height || 0, busy: false, error: '',
-                        thumb: np.data.cache_id ? `/cache/${np.data.cache_id}/thumb_0.webp` : ''
+                        thumb: np.video?.thumb || (np.data.cache_id ? `/cache/${np.data.cache_id}/thumb_0.webp` : '')
                     });
                     if (p && !p.paused()) p.pause();
                 },
@@ -12135,7 +12232,7 @@ No metadata is changed.`)) return;
                                     <p class="text-xs text-gray-400 mt-0.5 truncate">
                                         <template x-for="(member, idx) in orderedCast(video)" :key="idx">
                                             <span>
-                                                <a @click.stop="searchCastMember(member)" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
+                                                <a @click.stop="castPeekEnd(); searchCastMember(member)" @mouseenter="castPeekStart(member, $event)" @mouseleave="castPeekEnd()" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
                                                    x-text="castLabel(member)"></a><span x-show="idx < (video.cast || []).length - 1">, </span>
                                             </span>
                                         </template>
@@ -12202,7 +12299,7 @@ No metadata is changed.`)) return;
                                 <p x-show="video.type !== 'folder'" class="text-xs text-gray-400 mt-0.5 truncate">
                                     <template x-for="(member, idx) in orderedCast(video)" :key="idx">
                                         <span>
-                                            <a @click.stop="searchCastMember(member)" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
+                                            <a @click.stop="castPeekEnd(); searchCastMember(member)" @mouseenter="castPeekStart(member, $event)" @mouseleave="castPeekEnd()" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
                                                :title="isMaleCast(video, member) ? 'Male cast' : ''">
                                                 <span x-show="favoriteCast.includes(member)" class="text-yellow-400">⭐</span>
                                                 <span x-text="castLabel(member)"></span>
@@ -12251,7 +12348,16 @@ No metadata is changed.`)) return;
                                         </td>
                                         
                                         <template x-for="col in visibleColumns" :key="col">
-                                            <td class="p-2 truncate" :style="{ maxWidth: getColWidth(col) }" x-text="getDisplayValue(video, col)"></td>
+                                            <td class="p-2 truncate" :style="{ maxWidth: getColWidth(col) }">
+                                                <template x-if="col.toLowerCase() === 'cast' && Array.isArray(video.cast)">
+                                                    <span><template x-for="(member, idx) in video.cast" :key="idx"><span><span
+                                                        @mouseenter="castPeekStart(member, $event)" @mouseleave="castPeekEnd()" @click="castPeekEnd()"
+                                                        x-text="castLabel(member)"></span><span x-show="idx < video.cast.length - 1">, </span></span></template></span>
+                                                </template>
+                                                <template x-if="!(col.toLowerCase() === 'cast' && Array.isArray(video.cast))">
+                                                    <span x-text="getDisplayValue(video, col)"></span>
+                                                </template>
+                                            </td>
                                         </template>
                                     </tr>
                                 </template>
@@ -12436,7 +12542,7 @@ No metadata is changed.`)) return;
                                     <p class="text-xs text-gray-400 mt-0.5 truncate">
                                         <template x-for="(member, idx) in orderedCast(video)" :key="idx">
                                             <span>
-                                                <a @click.stop="searchCastMember(member)" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
+                                                <a @click.stop="castPeekEnd(); searchCastMember(member)" @mouseenter="castPeekStart(member, $event)" @mouseleave="castPeekEnd()" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
                                                :title="isMaleCast(video, member) ? 'Male cast' : ''">
                                                     <span x-show="favoriteCast.includes(member)" class="text-yellow-400">⭐</span>
                                                     <span x-text="castLabel(member)"></span>
@@ -12876,6 +12982,8 @@ No metadata is changed.`)) return;
                 </div>
             </template>
 
+            <button @click="thumbPickOpen" x-show="selectedPaths.size === 1 && thumbnailStatusCache[Array.from(selectedPaths)[0]]"
+                    class="w-full text-left px-4 py-2 hover:bg-blue-600">Choose Main Thumbnail…</button>
             <button @click="toggleFavSelection" class="w-full text-left px-4 py-2 hover:bg-blue-600">Toggle Favorite</button>
             <button @click="applyCastAttrsToSelected" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-cyan-400">
                 <span x-text="selectedPaths.size === 1 ? 'Apply Cast Attributes' : `Apply Cast Attributes (${selectedPaths.size} videos)`"></span>
@@ -15043,6 +15151,56 @@ No metadata is changed.`)) return;
                     <button @click="mergeLinkPickDone(null)" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel merge</button>
                 </div>
             </div>
+        </div>
+
+        <!-- Choose Main Thumbnail -->
+        <div x-show="thumbPick.open" x-cloak class="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-3xl p-5 shadow-2xl" @click.outside="thumbPick.open = false" @keydown.escape.window="thumbPick.open = false">
+                <h2 class="text-lg font-bold mb-1">Choose Main Thumbnail</h2>
+                <p class="text-xs text-gray-400 mb-3 truncate" x-text="thumbPick.title"></p>
+                <div x-show="thumbPick.busy && !thumbPick.frames.length" class="text-sm text-gray-400 py-6 text-center">Loading…</div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-[65vh] overflow-y-auto">
+                    <template x-for="(f, i) in thumbPick.frames" :key="f">
+                        <button @click="thumbPickSet(i)" :disabled="thumbPick.busy"
+                                class="relative rounded overflow-hidden border-2 hover:border-blue-400 disabled:opacity-60"
+                                :class="i === thumbPick.cover ? 'border-blue-500' : 'border-transparent'">
+                            <img :src="f" class="w-full aspect-video object-cover bg-gray-900" loading="lazy" alt="">
+                            <span class="absolute top-1 left-1 text-[10px] bg-black/70 text-white px-1 rounded" x-text="i + 1"></span>
+                            <span x-show="i === thumbPick.cover" class="absolute top-1 right-1 text-[10px] bg-blue-600 text-white px-1 rounded">Main</span>
+                        </button>
+                    </template>
+                </div>
+                <p x-show="thumbPick.error" class="text-sm text-red-400 mt-2" x-text="thumbPick.error"></p>
+                <div class="flex justify-end mt-4">
+                    <button @click="thumbPick.open = false" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Close</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Force New Thumbnails: optional start offset -->
+        <div x-show="forceThumbs.open" x-cloak class="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-md p-5 shadow-2xl" @click.outside="forceThumbsDone(false)"
+                 @keydown.escape.window="forceThumbs.open && forceThumbsDone(false)">
+                <h2 class="text-lg font-bold mb-1" x-text="forceThumbs.count === 1 ? 'Force new thumbnails' : `Force new thumbnails for ${forceThumbs.count} videos`"></h2>
+                <p class="text-xs text-gray-400 mb-3">Makes a brand-new thumbnail set. To get different frames (or skip a title card),
+                    skip the start: the frames are spread over the rest of the video.</p>
+                <label class="block text-sm text-gray-300 mb-1">Skip the first … (optional)</label>
+                <input type="text" x-model="forceThumbs.offset" @keydown.enter="forceThumbsDone(true)" placeholder="seconds, e.g. 30 or 1:30"
+                       class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm" x-effect="forceThumbs.open && $nextTick(() => $el.focus())">
+                <p class="text-xs text-gray-500 mt-1">Too long for a video? It's shortened so every frame stays inside the video.</p>
+                <p x-show="forceThumbs.error" class="text-sm text-red-400 mt-2" x-text="forceThumbs.error"></p>
+                <div class="flex justify-end gap-2 mt-4">
+                    <button @click="forceThumbsDone(false)" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel</button>
+                    <button @click="forceThumbsDone(true)" class="px-3 py-1.5 rounded text-sm bg-yellow-600 hover:bg-yellow-500 text-white">Generate</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Cast photo shown after resting on a name -->
+        <div x-show="castPeek.show" x-cloak class="fixed z-[210] pointer-events-none bg-gray-900 border border-gray-600 rounded-lg shadow-2xl p-1.5"
+             :style="`left:${castPeek.x}px; top:${castPeek.y}px`" @scroll.window.capture.passive="castPeek.name && castPeekEnd()">
+            <img :src="castPeek.src" class="w-[108px] h-[162px] object-cover rounded bg-gray-800" alt="">
+            <div class="text-[11px] text-gray-200 text-center truncate w-[108px] mt-1" x-text="castPeek.name"></div>
         </div>
 
         <!-- Split off videos (same name, different person) -->

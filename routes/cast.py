@@ -1211,6 +1211,13 @@ def get_cast_photo_route(cast_name: str, thumbnail: bool = False, original: bool
     
     if USE_SQLITE:
         photo = model.db.get_cast_photo(cast_name, thumbnail, original)
+        if not photo:
+            # a video can list an alias; the photo is kept under the performer's main name
+            with model.db.get_connection() as conn:
+                row = conn.execute('SELECT primary_name FROM cast_aliases WHERE alias_name = ? LIMIT 1',
+                                   (cast_name,)).fetchone()
+            if row and row[0] != cast_name:
+                photo = model.db.get_cast_photo(row[0], thumbnail, original)
         if photo:
             # Add cache headers for browser caching (1 year)
             headers = {

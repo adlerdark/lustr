@@ -105,10 +105,13 @@ def get_thumbnail_path(cache_id: str) -> Optional[str]:
     Returns:
         URL path to thumbnail or None if not found
     """
+    cover_path = os.path.join(CACHE_DIR, cache_id, "cover.webp")      # the frame chosen as main thumbnail
     webp_path = os.path.join(CACHE_DIR, cache_id, "thumb_0.webp")
     dat_path = os.path.join(CACHE_DIR, cache_id, "thumb_0.dat")
     
-    if os.path.exists(webp_path):
+    if os.path.exists(cover_path):
+        return f"/cache/{cache_id}/cover.webp?v={int(os.path.getmtime(cover_path))}"
+    elif os.path.exists(webp_path):
         return f"/cache/{cache_id}/thumb_0.webp"
     elif os.path.exists(dat_path):
         return f"/cache/{cache_id}/thumb_0.dat"
