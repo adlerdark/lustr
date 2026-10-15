@@ -4170,7 +4170,7 @@
                             clearInterval(this.extSceneBulkTimer);
                             this.extSceneBulkTimer = null;
                             if (b.open && b.view === 'running') await this.extSceneBulkShowResults();
-                            if ((b.status?.counts?.linked || 0) > 0) this.fetchVideos('none');
+                            if ((b.status?.counts?.linked || 0) > 0) { await this.loadMaleCast(); this.fetchVideos('none'); }
                         }
                     }, 2000);
                 },
@@ -8688,6 +8688,7 @@ No metadata is changed.`)) return;
                         P.items = P.items.filter(i => !done.has(i.video_id));
                         P.msg = `Added ${d.added} value(s) to ${d.videos} video(s).` + (d.learned ? ` Remembered ${d.learned} correction(s).` : '');
                         if (d.learned) this.parserLoadLearned();
+                        await this.loadMaleCast();          // men it marked show as Male Cast right away
                         this.fetchVideos('none');
                         this.fetchAvailableFilters();
                     } catch (e) { alert('Could not apply: ' + e.message); }
