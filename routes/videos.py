@@ -115,6 +115,91 @@ def _merge_carry_over(conn, video_id, link, men, old_ids):
         _male_invalidate()
 
 
+# Sorting: some list-view columns aren't stored fields (CC, Versions, Male Cast), some are
+# named differently (Fav, Date Edited), and some are text that must sort as numbers.
+_SORT_ALIASES = {'fav': 'favorite', 'date_edited': 'date_last_edited'}
+_SIZE_UNITS = {'b': 1, 'kb': 1024, 'mb': 1024 ** 2, 'gb': 1024 ** 3, 'tb': 1024 ** 4}
+
+
+def _sort_field_of(sort_by):
+    f = (sort_by or '').lower().replace(' ', '_')
+    return _SORT_ALIASES.get(f, f)
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _size_bytes(v):
+    m = re.match(r'\s*([\d.,]+)\s*([kmgt]?b)?', str(v or ''), re.I)
+    if not m:
+        return None
+    n = _num(m.group(1).replace(',', ''))
+    return None if n is None else n * _SIZE_UNITS.get((m.group(2) or 'b').lower(), 1)
+
+
+def _resolution_num(v):
+    t = str(v or '').strip().lower()
+    if t in ('4k', 'uhd'):
+        return 2160.0
+    if t in ('8k',):
+        return 4320.0
+    m = re.match(r'(\d+)\s*x\s*(\d+)', t) or re.match(r'(\d+)', t)
+    return float(m.group(m.lastindex)) if m else None
+
+
+_SORT_NUMBERS = {
+    'cc': _num, 'versions': _num, 'favorite': _num, 'rating': _num, 'year': _num,
+    'file_size': _size_bytes, 'resolution': _resolution_num,
+    'total_bitrate': lambda v: _num(re.sub(r'[^\d.]', '', str(v or '')) or None),
+}
+
+
+def _prepare_sort(conn, rows, field):
+    """Fill in a computed sort value (CC, Versions, Male Cast) on the rows being sorted."""
+    if not rows:
+        return
+    if field == 'cc':
+        try:
+            have = {r[0] for r in conn.execute('SELECT video_id FROM video_captions')}
+        except Exception:
+            have = set()
+        for r in rows:
+            r['cc'] = 1 if r.get('video_id') in have else 0
+    elif field == 'versions':
+        counts = {r[0]: r[1] for r in conn.execute('SELECT video_id, COUNT(*) FROM file_versions '
+                                                   'WHERE deleted_at IS NULL GROUP BY video_id')}
+        for r in rows:
+            r['versions'] = counts.get(r.get('video_id'), 1)
+    elif field == 'male_cast' and _male_cast_for_video:
+        for r in rows:
+            r['male_cast'] = sorted(_male_cast_for_video(r.get('video_id')) or [])
+
+
+def _sort_key(field):
+    """-> key function: (0,) for empty values, (1, value) otherwise, so types never mix."""
+    to_num = _SORT_NUMBERS.get(field)
+
+    def key(item):
+        val = item.get(field)
+        if field == 'cast':
+            val = _without_male_cast(item, val)
+        if to_num:
+            n = to_num(val)
+            return (0, 0.0) if n is None else (1, n)
+        if isinstance(val, list):
+            val = ', '.join(sorted((str(x) for x in val), key=str.lower))
+        if val is None or val == '':
+            return (0, '')
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return (1, f'{float(val):020.6f}')
+        return (1, str(val).lower())
+    return key
+
+
 def _without_male_cast(item, val):
     if not _male_cast_for_video or not isinstance(val, list):
         return val
@@ -548,28 +633,16 @@ def _get_videos_sql_fast(
         WHERE {where_clause}
     """, params)
     rows = [dict(r) for r in cursor.fetchall()]
-    sort_field = sort_by.lower().replace(' ', '_')
+    sort_field = _sort_field_of(sort_by)
     if sort_field in db.FILE_LIST_FIELDS and rows:
         vids = {r['video_id'] for r in rows}
         values = db.list_values_by_video(sort_field, None if len(vids) > 5000 else vids)
         for r in rows:
             r[sort_field] = list(values.get(r['video_id'], []))
+    _prepare_sort(cursor.connection, rows, sort_field)
+    sort_key = _sort_key(sort_field)
 
     # 2. Sort and page
-    def sort_key(item):
-        val = item.get(sort_field)
-        if sort_by.lower() == 'cast': val = _without_male_cast(item, val)
-        if val is None:
-            return ""
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, (int, float)):
-            return float(val)
-        if isinstance(val, str):
-            return val.lower()
-        if isinstance(val, list):
-            return ', '.join(sorted(val, key=lambda x: str(x).lower())).lower()
-        return val
 
     import library_stats
     special = library_stats.sort_field(sort_by)
@@ -974,15 +1047,8 @@ def get_videos(
     folders_list = [i for i in items if i.get('type') == 'folder']
     files_list = [i for i in items if i.get('type') == 'file']
 
-    def sort_key(item):
-        val = item.get(sort_by.lower().replace(' ', '_'))
-        if sort_by.lower() == 'cast': val = _without_male_cast(item, val)
-        if val is None: return ""
-        if isinstance(val, bool): return val
-        if isinstance(val, (int, float)): return float(val)
-        if isinstance(val, str): return val.lower()
-        if isinstance(val, list): return ', '.join(sorted(val, key=lambda x: str(x).lower())).lower()
-        return val
+    _prepare_sort(model.db.get_connection(), files_list, _sort_field_of(sort_by))
+    sort_key = _sort_key(_sort_field_of(sort_by))
 
     import library_stats
     special = library_stats.sort_field(sort_by)
