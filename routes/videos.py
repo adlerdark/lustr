@@ -57,6 +57,46 @@ def _merge_men(conn, video_ids):
     return {r[0] for r in conn.execute(f'SELECT cast_id FROM video_cast_role WHERE video_id IN ({",".join("?" * len(ids))})', ids)}
 
 
+def _merge_move_rows(conn, video_id, old_ids):
+    """Markers, watch stats, playlist entries, clips, captions and the rest follow the files into the
+    merged video. Runs before the old videos are deleted (playlist entries would cascade away)."""
+    old = [v for v in old_ids if v != video_id]
+    if not old:
+        return
+    ph = ','.join('?' * len(old))
+    if _table_exists(conn, 'watch_stats'):                 # plays add up; first / last played span both
+        conn.execute(f"""INSERT INTO watch_stats (username, video_id, plays, first_played, last_played)
+                         SELECT username, ?, SUM(plays), MIN(first_played), MAX(last_played) FROM watch_stats
+                         WHERE video_id IN ({ph}) GROUP BY username
+                         ON CONFLICT(username, video_id) DO UPDATE SET plays = plays + excluded.plays,
+                           first_played = MIN(COALESCE(first_played, excluded.first_played), COALESCE(excluded.first_played, first_played)),
+                           last_played = MAX(COALESCE(last_played, excluded.last_played), COALESCE(excluded.last_played, last_played))""",
+                     [video_id] + old)
+        conn.execute(f'DELETE FROM watch_stats WHERE video_id IN ({ph})', old)
+    if _table_exists(conn, 'video_captions'):              # the CC badge: every language either one had
+        rows = conn.execute(f'SELECT langs, sources FROM video_captions WHERE video_id IN ({ph}, ?)', old + [video_id]).fetchall()
+        if rows:
+            langs = sorted({x for r in rows for x in (r[0] or '').split(',') if x})
+            sources = sorted({x for r in rows for x in (r[1] or '').split(',')})
+            conn.execute('INSERT OR REPLACE INTO video_captions (video_id, langs, sources) VALUES (?, ?, ?)',
+                         (video_id, ','.join(langs), ','.join(sources)))
+            conn.execute(f'DELETE FROM video_captions WHERE video_id IN ({ph})', old)
+    # one row per (key, video): keep the merged video's / the first one, drop the doubles
+    for table in ('playlist_items', 'marker_dismissed', 'video_ext_bulk_log'):
+        if _table_exists(conn, table):
+            conn.execute(f'UPDATE OR IGNORE {table} SET video_id = ? WHERE video_id IN ({ph})', [video_id] + old)
+            conn.execute(f'DELETE FROM {table} WHERE video_id IN ({ph})', old)
+    for table in ('video_markers', 'clips', 'file_changes'):
+        if _table_exists(conn, table):
+            conn.execute(f'UPDATE {table} SET video_id = ? WHERE video_id IN ({ph})', [video_id] + old)
+    if _table_exists(conn, 'video_markers'):               # the same marker on both copies -> once
+        conn.execute("""DELETE FROM video_markers WHERE video_id = ? AND id NOT IN (
+                          SELECT MIN(id) FROM video_markers WHERE video_id = ?
+                          GROUP BY seconds, COALESCE(end_seconds, -1), COALESCE(title, ''), COALESCE(tag, ''))""",
+                     (video_id, video_id))
+    conn.commit()
+
+
 def _merge_carry_over(conn, video_id, link, men, old_ids):
     """Give the merged video the chosen link and its Male Cast marks; drop rows of videos that are gone."""
     if link:
@@ -1685,6 +1725,8 @@ async def merge_videos(request: Request, model = Depends(get_model)):
                 conn = model.db.get_connection()
                 conn.execute('UPDATE videos SET favorite = 1 WHERE video_id = ?', (video_id,))
                 conn.commit()
+        
+        _merge_move_rows(model.db.get_connection(), video_id, old_ids)
         
         # Add all paths as versions (this will remove them from old videos)
         for path in paths:
