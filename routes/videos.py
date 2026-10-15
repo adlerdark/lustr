@@ -179,6 +179,13 @@ def _prepare_sort(conn, rows, field):
             r['male_cast'] = sorted(_male_cast_for_video(r.get('video_id')) or [])
 
 
+def _fold(text):
+    """Lowercase without accents, so 'Émilie' sorts with the E's (not after Z)."""
+    import unicodedata
+    t = unicodedata.normalize('NFKD', text.lower())
+    return ''.join(ch for ch in t if not unicodedata.combining(ch))
+
+
 def _sort_key(field):
     """-> key function: (0,) for empty values, (1, value) otherwise, so types never mix."""
     to_num = _SORT_NUMBERS.get(field)
@@ -191,13 +198,38 @@ def _sort_key(field):
             n = to_num(val)
             return (0, 0.0) if n is None else (1, n)
         if isinstance(val, list):
-            val = ', '.join(sorted((str(x) for x in val), key=str.lower))
+            val = ', '.join(sorted((str(x) for x in val), key=_fold))
         if val is None or val == '':
             return (0, '')
         if isinstance(val, (int, float)) and not isinstance(val, bool):
             return (1, f'{float(val):020.6f}')
-        return (1, str(val).lower())
+        return (1, _fold(str(val)))
     return key
+
+
+_LETTER_FIELDS = ('title', 'cast', 'filename')
+
+
+def _letter_of(k):
+    """'#' or 'A'-'Z' for a sort key from _sort_key (accents ignored: 'Émilie' -> E)."""
+    import unicodedata
+    if not k or k[0] == 0:
+        return '#'
+    ch = unicodedata.normalize('NFKD', str(k[1]).strip())[:1].upper()
+    return ch if 'A' <= ch <= 'Z' else '#'
+
+
+def _letter_index(rows, field, offset=0):
+    """[{letter, index}] - where each letter starts in the already sorted rows (letter jump bar)."""
+    if field not in _LETTER_FIELDS:
+        return []
+    key, out, seen = _sort_key(field), [], set()
+    for i, r in enumerate(rows):
+        L = _letter_of(key(r))
+        if L not in seen:
+            seen.add(L)
+            out.append({'letter': L, 'index': i + offset})
+    return out
 
 
 def _without_male_cast(item, val):
@@ -652,6 +684,7 @@ def _get_videos_sql_fast(
     else:
         rows.sort(key=lambda r: r['path'])       # ties keep a stable order (by path) across pages
         rows.sort(key=sort_key, reverse=desc)
+    letters = [] if special else _letter_index(rows, sort_field)
     total = len(rows)
     start = (page - 1) * limit
     page_rows = rows[start:start + limit]
@@ -712,7 +745,8 @@ def _get_videos_sql_fast(
         "limit": limit,
         "stats": {"total_files": total, "filtered_files": total},
         "tags": {},
-        "sites": {}
+        "sites": {},
+        "letters": letters
     }
 
 @router.get("/videos")
@@ -1057,6 +1091,7 @@ def get_videos(
         library_stats.special_sort(model.db.get_connection(), files_list, special, username, seed, desc)
     else:
         files_list.sort(key=sort_key, reverse=desc)
+    letters = [] if special else _letter_index(files_list, _sort_field_of(sort_by), len(folders_list))
     items = folders_list + files_list
     total = len(items)
     start = (page - 1) * limit
@@ -1081,7 +1116,7 @@ def get_videos(
     return {
         "items": paginated_items, "total": total, "page": page, "limit": limit,
         "stats": {"total_files": total_files_in_scope, "filtered_files": filtered_files_count},
-        "tags": tag_counts, "sites": site_counts
+        "tags": tag_counts, "sites": site_counts, "letters": letters
     }
 
 @router.get("/available_filters")

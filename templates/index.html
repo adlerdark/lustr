@@ -550,6 +550,7 @@
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
+                jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1,   // # A-Z jump bar (Title / Cast / Filename sorts)
                 castPeek: { name: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
                 thumbPick: { open: false, path: '', title: '', frames: [], cover: 0, busy: false, error: '' },   // choose the main thumbnail
                 forceThumbs: { open: false, count: 0, offset: '', error: '', resolve: null },   // Force New: optional start offset
@@ -2593,7 +2594,10 @@
                             this.videos = [...this.videos, ...data.items];
                         } else {
                             this.videos = data.items;
+                            this.listStartPage = this.page;          // the page the loaded list starts on (jump bar)
                         }
+                        this.jumpLetters = data.letters || [];
+                        this.$nextTick(() => this.jumpMeasure());
                         
                         // DEBUG: Check videos array after assignment
                         console.log('=== VIDEOS ARRAY CHECK ===');
@@ -2934,6 +2938,69 @@
                         Object.assign(this.castPicker, { open: true, typed: name, choices: rows, resolve });
                     });
                 },
+                // ----- # A-Z jump bar: the server says where each letter starts in the sorted list -----
+                jumpBarShown() {
+                    return this.jumpLetters.length > 0 && this.viewMode === 'grid' && this.currentView === 'library'
+                        && this.currentLibrary !== 'Home' && this.libraryTab === 'library' && !this.castBioMode;
+                },
+                jumpBarLetters() {
+                    const all = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
+                    return this.sortDesc ? all.reverse() : all;
+                },
+                jumpIndexOf(L) {
+                    const hit = this.jumpLetters.find(x => x.letter === L);
+                    return hit ? hit.index : undefined;
+                },
+                jumpMeasure() {
+                    const sc = document.querySelector('.scroller-main');
+                    if (sc) this.jumpBarH = Math.max(200, sc.clientHeight - 24);
+                    this.jumpTrack();
+                },
+                // Same page size and page navigation as usual: a letter on page 3 goes to page 3
+                // (as the page box would), then scrolls to its first video
+                async jumpToLetter(L) {
+                    const i = this.jumpIndexOf(L);
+                    if (i === undefined || this.jumpBusy) return;
+                    this.jumpBusy = true;
+                    try {
+                        const limit = parseInt(this.appSettings.itemsPerPage) || 150;
+                        const paged = !this.appSettings.loadAll;
+                        if (paged) {
+                            const from = (this.listStartPage - 1) * limit;
+                            if (i < from || i >= from + this.videos.length) {
+                                this.page = Math.floor(i / limit) + 1;
+                                await this.fetchVideos('reset');
+                            }
+                        }
+                        const pos = paged ? i - (this.listStartPage - 1) * limit : i;
+                        await this.$nextTick();
+                        const el = document.querySelector(`.scroller-main [data-vidx="${pos}"]`);
+                        if (el) el.scrollIntoView({ block: 'start', behavior: 'instant' });
+                        this.jumpCurrent = L;
+                    } finally {
+                        this.jumpBusy = false;
+                    }
+                },
+                // highlight the letter of the first video at the top of the view
+                jumpTrack() {
+                    if (!this.jumpBarShown() || this._jumpRaf) return;
+                    this._jumpRaf = requestAnimationFrame(() => {
+                        this._jumpRaf = null;
+                        const sc = document.querySelector('.scroller-main');
+                        if (!sc) return;
+                        const top = sc.getBoundingClientRect().top;
+                        const cards = sc.querySelectorAll('[data-vidx]');
+                        let first = null;
+                        for (const c of cards) { if (c.getBoundingClientRect().bottom > top + 4) { first = c; break; } }
+                        if (!first) return;
+                        const limit = parseInt(this.appSettings.itemsPerPage) || 150;
+                        const g = +first.dataset.vidx + (this.appSettings.loadAll ? 0 : (this.listStartPage - 1) * limit);
+                        let cur = '';
+                        for (const x of this.jumpLetters) if (x.index <= g) cur = x.letter;
+                        this.jumpCurrent = cur;
+                    });
+                },
+
                 // Resting on a cast name for castPeek.delay ms shows their photo; moving across names,
                 // clicking or scrolling cancels it. Nothing shows for someone without a photo.
                 castPeekStart(name, ev) {
@@ -12062,7 +12129,23 @@ No metadata is changed.`)) return;
             </div>
 
             <!-- List View -->
-            <div class="flex-1 overflow-y-auto bg-gray-900 scroller-main pb-16" @contextmenu.prevent @scroll="handleScroll">
+            <div class="flex-1 overflow-y-auto bg-gray-900 scroller-main pb-16" @contextmenu.prevent @scroll="handleScroll($event); jumpTrack()"
+                 @resize.window.debounce.150ms="jumpMeasure()">
+
+                <!-- # A-Z jump bar (grid sorted by Title / Cast / Filename) -->
+                <div x-show="jumpBarShown()" x-cloak class="sticky top-0 h-0 z-30">
+                    <div class="absolute right-1 top-3 w-6 flex flex-col items-center justify-between bg-gray-900/70 rounded-full py-1 select-none"
+                         :style="`height:${jumpBarH}px`" :class="jumpBusy ? 'opacity-60 cursor-wait' : ''">
+                        <template x-for="L in jumpBarLetters()" :key="L">
+                            <button @click="jumpToLetter(L)" :disabled="jumpIndexOf(L) === undefined || jumpBusy"
+                                    class="w-6 leading-none font-semibold rounded"
+                                    :style="`font-size:${Math.max(8, Math.min(12, Math.floor(jumpBarH / 30)))}px`"
+                                    :class="jumpIndexOf(L) === undefined ? 'text-gray-600 cursor-default'
+                                            : (jumpCurrent === L ? 'text-white bg-blue-600' : 'text-gray-300 hover:text-white hover:bg-gray-700')"
+                                    x-text="L"></button>
+                        </template>
+                    </div>
+                </div>
 
                 <!-- LIBRARY VIEW -->
                 <div x-show="currentView === 'library'">
@@ -12255,9 +12338,10 @@ No metadata is changed.`)) return;
                 </div>
 
                 
-                <div x-show="currentView !== 'playlists' && viewMode === 'grid' && currentLibrary !== 'Home' && libraryTab === 'library' && !castBioMode" class="p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                    <template x-for="video in videos" :key="video.path">
-                        <div :data-path="video.path" class="bg-gray-800 rounded-lg shadow-lg border border-gray-700 overflow-hidden relative group select-none"
+                <div x-show="currentView !== 'playlists' && viewMode === 'grid' && currentLibrary !== 'Home' && libraryTab === 'library' && !castBioMode" class="p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"
+                     :class="jumpBarShown() ? 'pr-10' : ''">
+                    <template x-for="(video, vidx) in videos" :key="video.path">
+                        <div :data-path="video.path" :data-vidx="vidx" class="bg-gray-800 rounded-lg shadow-lg border border-gray-700 overflow-hidden relative group select-none"
                              :class="isSelected(video.path) ? 'selected-card' : 'hover:border-blue-500'"
                              @click="handleCardClick(video, $event)" @dblclick="openPlayer(video)"
                              @contextmenu.prevent.stop="handleRightClick($event, video)"
