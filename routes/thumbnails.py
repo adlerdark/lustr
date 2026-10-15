@@ -19,6 +19,7 @@ MediaHandler._get_cache_key(path, video_id, cache_id), which prefers
   row, so the same logic applies uniformly.
 """
 
+import json
 import os
 import shutil
 import hashlib
@@ -99,6 +100,33 @@ def _set_cache_id(model, path, cache_id):
         (cache_id, path)
     )
     conn.commit()
+
+
+def _cache_key_in_use(model, key, except_path):
+    """True if another file's thumbnails / captions live in this cache folder."""
+    rows = model.db.get_connection().execute(
+        'SELECT path, video_id, cache_id FROM file_versions WHERE path != ? AND deleted_at IS NULL AND '
+        '(cache_id = ? OR cache_id IS NULL)', (except_path, key)).fetchall()
+    return any(MediaHandler._get_cache_key(r[0], r[1], r[2]) == key for r in rows)
+
+
+def _move_captions(old_dir, new_dir):
+    """Captions belong to the file, not to its thumbnails: keep them when the folder changes."""
+    try:
+        import captions
+        idx = os.path.join(old_dir, captions.INDEX)
+        if not os.path.exists(idx):
+            return
+        os.makedirs(new_dir, exist_ok=True)
+        with open(idx, encoding='utf-8') as f:
+            items = json.load(f)
+        for i in items:
+            src = os.path.join(old_dir, i.get('file', ''))
+            if i.get('file') and os.path.exists(src):
+                shutil.move(src, os.path.join(new_dir, i['file']))
+        shutil.move(idx, os.path.join(new_dir, captions.INDEX))
+    except Exception as e:
+        print(f"[thumb] Could not move captions from {old_dir}: {e}")
 
 
 def _new_unique_cache_id(path):
@@ -318,11 +346,14 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
         os.makedirs(new_cache_dir, exist_ok=True)
         MediaHandler.generate_thumbnails(primary_path, force=True, video_id=video_id, cache_id=new_cache_id)
 
-        # Clean up the old cache folder, but only if it's different from the
-        # new one and isn't still in use (it shouldn't be, since we just
-        # repointed the primary row away from it).
+        # Clean up the old cache folder - unless another file still uses it (same filename, no
+        # cache_id of its own). This file's captions move to the new folder first.
         if old_cache_dir != new_cache_dir and os.path.exists(old_cache_dir):
-            shutil.rmtree(old_cache_dir, ignore_errors=True)
+            if _cache_key_in_use(model, old_cache_key, primary_path):
+                print(f"[thumb] Kept {old_cache_key}: another file still uses it")
+            else:
+                _move_captions(old_cache_dir, new_cache_dir)
+                shutil.rmtree(old_cache_dir, ignore_errors=True)
 
         thumb_count = len([f for f in os.listdir(new_cache_dir) if f.endswith('.webp')]) if os.path.exists(new_cache_dir) else 0
 

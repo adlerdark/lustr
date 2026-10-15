@@ -1903,6 +1903,7 @@ class Database:
         
         # Calculate length_seconds from length string
         length_seconds = self._parse_length_to_seconds(metadata.get('length'))
+        cache_id = self._own_cache_id(cursor, path, metadata.get('cache_id'))
         
         # Insert file version
         cursor.execute('''
@@ -1924,7 +1925,7 @@ class Database:
             metadata.get('file_size'),
             metadata.get('date_created'),
             metadata.get('date_modified'),
-            metadata.get('cache_id'),
+            cache_id,
             datetime.now().isoformat(),
             datetime.now().isoformat()
         ))
@@ -2000,6 +2001,21 @@ class Database:
         
         conn.commit()
         return True
+
+    @staticmethod
+    def _own_cache_id(cursor, path, cache_id):
+        """The cache folder (thumbnails, previews, captions) is named after the filename unless a row has
+        its own cache_id. A new file with the same name as another file that's still there would share
+        that folder, so it gets its own. A moved file (the other path is gone) keeps the folder."""
+        import hashlib, uuid, time as _time
+        name = os.path.basename(path)
+        key = cache_id or hashlib.md5(name.encode('utf-8')).hexdigest()
+        others = cursor.execute('SELECT path FROM file_versions WHERE path != ? AND deleted_at IS NULL AND '
+                                '(cache_id = ? OR (cache_id IS NULL AND filename = ?))', (path, key, name)).fetchall()
+        if any(os.path.exists(o[0]) for o in others):
+            seed = f'{name}_{int(_time.time() * 1000)}_{uuid.uuid4().hex[:8]}'
+            return hashlib.md5(seed.encode('utf-8')).hexdigest()
+        return cache_id
 
     def create_video(self, video_id, filename_base, library, metadata=None):
         """Create a new video entry (without file versions)."""
