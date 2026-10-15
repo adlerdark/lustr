@@ -550,7 +550,7 @@
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
-                castPeek: { name: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 1500 },   // photo after resting on a cast name
+                castPeek: { name: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
                 thumbPick: { open: false, path: '', title: '', frames: [], cover: 0, busy: false, error: '' },   // choose the main thumbnail
                 forceThumbs: { open: false, count: 0, offset: '', error: '', resolve: null },   // Force New: optional start offset
                 loginUsername: '',
@@ -2938,20 +2938,21 @@
                 // clicking or scrolling cancels it. Nothing shows for someone without a photo.
                 castPeekStart(name, ev) {
                     this.castPeekEnd();
-                    const el = ev.currentTarget;
+                    const el = ev.currentTarget, src = `/api/cast/photo/${encodeURIComponent(name)}?thumbnail=true`;
                     this.castPeek.name = name;
-                    this.castPeek.timer = setTimeout(() => {
-                        const src = `/api/cast/photo/${encodeURIComponent(name)}?thumbnail=true`;
-                        const img = new Image();
-                        img.onload = () => {
-                            if (this.castPeek.name !== name || !el.isConnected) return;
-                            const r = el.getBoundingClientRect(), W = 124, H = 196;
-                            let x = Math.min(r.left, window.innerWidth - W - 8), y = r.bottom + 6;
-                            if (y + H > window.innerHeight - 8) y = Math.max(8, r.top - H - 6);
-                            Object.assign(this.castPeek, { src, x: Math.max(8, x), y, show: true });
-                        };
-                        img.src = src;
-                    }, this.castPeek.delay);
+                    // the photo loads while you rest on the name; it shows once both the wait and the load are done
+                    let waited = false, loaded = false;
+                    const show = () => {
+                        if (!waited || !loaded || this.castPeek.name !== name || !el.isConnected) return;
+                        const r = el.getBoundingClientRect(), W = 232, H = 360;
+                        let x = Math.min(r.left, window.innerWidth - W - 8), y = r.bottom + 6;
+                        if (y + H > window.innerHeight - 8) y = Math.max(8, r.top - H - 6);
+                        Object.assign(this.castPeek, { src, x: Math.max(8, x), y, show: true });
+                    };
+                    const img = new Image();
+                    img.onload = () => { loaded = true; show(); };
+                    img.src = src;
+                    this.castPeek.timer = setTimeout(() => { waited = true; show(); }, this.castPeek.delay);
                 },
                 castPeekEnd() {
                     clearTimeout(this.castPeek.timer);
@@ -15199,8 +15200,8 @@ No metadata is changed.`)) return;
         <!-- Cast photo shown after resting on a name -->
         <div x-show="castPeek.show" x-cloak class="fixed z-[210] pointer-events-none bg-gray-900 border border-gray-600 rounded-lg shadow-2xl p-1.5"
              :style="`left:${castPeek.x}px; top:${castPeek.y}px`" @scroll.window.capture.passive="castPeek.name && castPeekEnd()">
-            <img :src="castPeek.src" class="w-[108px] h-[162px] object-cover rounded bg-gray-800" alt="">
-            <div class="text-[11px] text-gray-200 text-center truncate w-[108px] mt-1" x-text="castPeek.name"></div>
+            <img :src="castPeek.src" class="w-[216px] h-[324px] object-cover rounded bg-gray-800" alt="">
+            <div class="text-sm text-gray-200 text-center truncate w-[216px] mt-1" x-text="castPeek.name"></div>
         </div>
 
         <!-- Split off videos (same name, different person) -->
