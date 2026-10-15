@@ -104,6 +104,12 @@ def start_background():
     import threading
     captions.worker.settings_fn = lambda: captions.get_settings(_conn())
     captions.worker.on_change = lambda path, cid: sync_one(path, cid)
+    try:
+        n = captions.worker.restore()
+        if n:
+            print(f'[captions] {n} videos back in the queue')
+    except Exception as e:
+        print(f'[captions] could not restore the queue: {e}')
     captions.start_night_scheduler(lambda: captions.get_settings(_conn()), files_without_captions)
 
     def fill():

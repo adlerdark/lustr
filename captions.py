@@ -412,9 +412,15 @@ def _lower_priority():
         pass
 
 
+def queue_file():
+    return os.path.join(os.path.dirname(transcoder.CACHE_DIR.rstrip('/')), 'captions_queue.json')
+
+
 class Worker:
-    """One background thread; a video opened in the player jumps the queue."""
-    def __init__(self, settings_fn=None):
+    """One background thread; a video opened in the player jumps the queue.
+    The queue (with the video being worked on first) is kept in data/captions_queue.json across restarts."""
+    def __init__(self, settings_fn=None, queue_path=None):
+        self.queue_path = queue_path              # None = don't keep the queue (tests)
         self.settings_fn = settings_fn            # () -> settings dict
         self.on_change = None                     # (path, cache_id) after each video: keeps the 'has captions' list current
         self.lock = threading.Lock()
@@ -427,6 +433,41 @@ class Worker:
         self.state = {'running': False, 'current': None, 'current_cache_id': None, 'progress': 0.0,
                       'bulk_total': 0, 'bulk_done': 0, 'bulk_errors': 0, 'made': 0, 'last_error': '',
                       'last_done': None, 'speed': None}
+
+    def _save(self):
+        """Write the queue to disk (call with the lock held). The current video goes first, so it's redone."""
+        if not self.queue_path:
+            return
+        items = list(self.queue)
+        cur = self.state.get('current_item')
+        if cur and self.state.get('current_cache_id'):
+            items = [cur] + [i for i in items if i[1] != cur[1]]
+        try:
+            tmp = self.queue_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump([{'path': p, 'cache_id': c, 'force': bool(fo), 'bulk': bool(b)} for p, c, fo, b in items], f)
+            os.replace(tmp, self.queue_path)
+        except Exception as e:
+            print(f'[captions] could not save the queue: {e}')
+
+    def restore(self):
+        """At start: put the saved queue back. -> number restored"""
+        if not self.queue_path or not os.path.exists(self.queue_path):
+            return 0
+        try:
+            with open(self.queue_path, encoding='utf-8') as f:
+                saved = json.load(f)
+        except Exception as e:
+            print(f'[captions] could not read the saved queue: {e}')
+            return 0
+        n = 0
+        for i in saved:
+            p, c = i.get('path'), i.get('cache_id')
+            if p and c and (i.get('force') or not has_captions(c)) and self.enqueue(p, c, force=bool(i.get('force')), bulk=bool(i.get('bulk'))):
+                n += 1
+        with self.lock:
+            self._save()                          # drops what was already done
+        return n
 
     def _start(self):
         if not self.thread:
@@ -441,12 +482,14 @@ class Worker:
                         if item[1] == cache_id:
                             self.queue.remove(item)
                             self.queue.appendleft(item)
+                    self._save()
                 return False
             item = (path, cache_id, force, bulk)
             self.queued.add(cache_id)
             (self.queue.appendleft if front else self.queue.append)(item)
             if bulk:
                 self.state['bulk_total'] += 1
+            self._save()
         self._start()
         self.wake.set()
         return True
@@ -471,6 +514,8 @@ class Worker:
             if current and self.state.get('current_cache_id'):
                 self.cancel = self.state['current_cache_id']
             self.state.update(bulk_total=self.state['bulk_done'])
+            self.state['current_item'] = None        # stopped: not redone after a restart
+            self._save()
         return dropped
 
     def queue_list(self, limit=200):
@@ -487,6 +532,7 @@ class Worker:
                     self.queued.discard(cache_id)
                     if item[3]:
                         self.state['bulk_total'] = max(self.state['bulk_done'], self.state['bulk_total'] - 1)
+                    self._save()
                     return True
         return False
 
@@ -509,7 +555,8 @@ class Worker:
                         self.state.update(running=False, current=None, current_cache_id=None, progress=0.0)
                         break
                     path, cid, force, bulk = self.queue.popleft()
-                    self.state.update(running=True, current=os.path.basename(path), current_cache_id=cid, progress=0.0)
+                    self.state.update(running=True, current=os.path.basename(path), current_cache_id=cid, progress=0.0,
+                                      current_item=(path, cid, force, bulk))
                     self.cancel = None
                 t0, ok, kind, err = time.time(), False, None, ''
                 try:
@@ -538,7 +585,8 @@ class Worker:
                         print(f'[captions] index update: {e}')
                 with self.lock:
                     self.queued.discard(cid)
-                    self.state.update(last_done={'cache_id': cid, 'ok': ok}, current_cache_id=None)
+                    self.state.update(last_done={'cache_id': cid, 'ok': ok}, current_cache_id=None, current_item=None)
+                    self._save()
                     self.history.append({'file': os.path.basename(path), 'path': path, 'cache_id': cid, 'ok': ok,
                                          'kind': kind if ok else None, 'error': err,
                                          'seconds': round(time.time() - t0, 1), 'at': datetime.now().isoformat(timespec='seconds')})
@@ -549,7 +597,7 @@ class Worker:
                 time.sleep(0.05)
 
 
-worker = Worker()
+worker = Worker(queue_path=queue_file())
 
 
 # ---------------------------------------------------------------------------
