@@ -110,10 +110,26 @@ def start_background():
     threading.Thread(target=fill, name='captions-index', daemon=True).start()
 
 
+def _other_version_tracks(conn, path):
+    """Captions of another file of the same video (merged versions), closest in length first. -> tracks or []"""
+    row = conn.execute('SELECT video_id, length_seconds FROM file_versions WHERE path = ?', (path,)).fetchone()
+    if not row:
+        return []
+    others = conn.execute('SELECT path, cache_id, length_seconds FROM file_versions WHERE video_id = ? AND path != ? '
+                          'AND deleted_at IS NULL', (row[0], path)).fetchall()
+    others.sort(key=lambda o: abs((o[2] or 0) - (row[1] or 0)) if row[1] and o[2] else float('inf'))
+    for p, cid, _ in others:
+        tr = captions.tracks(MediaHandler._get_cache_key(p, row[0], cid))
+        if tr:
+            return [{**t, 'other_file': os.path.basename(p), 'label': t['label'] + ' - other version'} for t in tr]
+    return []
+
+
 def player_info(conn, path, cache_id):
-    """For /api/player/streams: the tracks, whether it's being made, and (setting) queue it on play."""
+    """For /api/player/streams: the tracks, whether it's being made, and (setting) queue it on play.
+    A file without captions borrows them from another version of the same video."""
     s = captions.get_settings(conn)
-    tr = captions.tracks(cache_id)
+    tr = captions.tracks(cache_id) or _other_version_tracks(conn, path)
     queued = cache_id in captions.worker.queued_ids() or captions.worker.status().get('current_cache_id') == cache_id
     if not tr and s['auto_on_play'] and captions.whisper_available():
         queued = captions.worker.enqueue(path, cache_id, front=True) or queued

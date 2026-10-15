@@ -1751,6 +1751,12 @@ async def merge_videos(request: Request, model = Depends(get_model)):
                 'date_modified': m_time,
                 'cache_id': MediaHandler._get_cache_key(path)
             }
+            try:                                   # keep the file's own cache (thumbnails, captions, previews)
+                row = model.db.get_connection().execute('SELECT cache_id FROM file_versions WHERE path = ?', (path,)).fetchone()
+                if row and row[0]:
+                    metadata['cache_id'] = row[0]
+            except Exception:
+                pass
             
             # Remove from old video if exists
             try:
