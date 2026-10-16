@@ -31,8 +31,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List
 from helpers import get_file_data
-from media_handler import MediaHandler, COVER, COVER_JSON
-from config import USE_SQLITE, CACHE_DIR
+from media_handler import MediaHandler, COVER, COVER_JSON, FRAMES_JSON
+from config import USE_SQLITE, CACHE_DIR, THUMBNAIL_FRAMES
 
 router = APIRouter(prefix="/api", tags=["thumbnails"])
 
@@ -221,6 +221,11 @@ def generate_thumbnails(req: GenThumbsRequest, model = Depends(get_model)):
 def _shown_cache_key(model, path):
     """The cache key whose thumbnails the library shows for this file: the preferred version's,
     for a video with several versions (as /thumbnails/check does)."""
+    return _shown_version(model, path)[0]
+
+
+def _shown_version(model, path):
+    """(cache key, path of the file those thumbnails come from) - see _shown_cache_key."""
     video_id, cache_id, check_path = None, None, path
     if USE_SQLITE:
         row = _row_for_path(model, path)
@@ -230,7 +235,7 @@ def _shown_cache_key(model, path):
             if len(versions) > 1:
                 primary = next((v for v in versions if v.get('is_preferred') == 1), None) or versions[0]
                 cache_id, check_path = primary['cache_id'], primary['path']
-    return MediaHandler._get_cache_key(check_path, video_id, cache_id)
+    return MediaHandler._get_cache_key(check_path, video_id, cache_id), check_path
 
 
 def _cover_index(folder):
@@ -267,19 +272,68 @@ def set_thumbnail_cover(req: CoverRequest, model = Depends(get_model)):
     frame = os.path.join(folder, f"thumb_{req.index}.webp")
     if req.index < 0 or not os.path.exists(frame):
         raise HTTPException(404, "No such thumbnail frame")
+    _set_cover(folder, req.index)
+    from helpers import get_thumbnail_path
+    return {'success': True, 'cover': req.index, 'thumb': get_thumbnail_path(key)}
+
+
+def _set_cover(folder, index):
+    """cover.webp = a copy of frame `index`; frame 0 (the default) removes the cover."""
     cover, meta = os.path.join(folder, COVER), os.path.join(folder, COVER_JSON)
-    if req.index == 0:
+    if index == 0:
         for f in (cover, meta):
             if os.path.exists(f):
                 os.remove(f)
     else:
         tmp = cover + '.tmp'
-        shutil.copyfile(frame, tmp)
+        shutil.copyfile(os.path.join(folder, f"thumb_{index}.webp"), tmp)
         os.replace(tmp, cover)
         with open(meta, 'w', encoding='utf-8') as f:
-            json.dump({'index': req.index}, f)
+            json.dump({'index': index}, f)
+
+
+class ThumbAtRequest(BaseModel):
+    path: str
+    seconds: float
+
+
+@router.post("/thumbnails/at")
+def set_thumbnail_at(req: ThumbAtRequest, model = Depends(get_model)):
+    """Make the frame at `seconds` the main thumbnail (from the player). The existing frame nearest
+    that moment moves onto it and the others are re-spread around it, so the hover preview
+    still runs through the whole video."""
+    key, shown_path = _shown_version(model, req.path)
+    if os.path.normpath(shown_path) != os.path.normpath(req.path):
+        raise HTTPException(409, "This is not the version the library shows - make it the preferred "
+                                 "version first, or set the thumbnail while playing that one")
+    if not os.path.exists(req.path):
+        raise HTTPException(404, "The file is not on disk")
+    duration = MediaHandler.get_extended_metadata(req.path).get('duration', 0) or 0
+    if not duration:
+        raise HTTPException(422, "Could not read the length of this video")
+    folder = os.path.join(CACHE_DIR, key)
+    os.makedirs(folder, exist_ok=True)
+    try:
+        with open(os.path.join(folder, FRAMES_JSON), encoding='utf-8') as f:
+            current = json.load(f)
+    except (OSError, ValueError):
+        current = None
+    n = THUMBNAIL_FRAMES
+    times, k = MediaHandler.anchor_times(duration, n, req.seconds, current)
+    start = (current or {}).get('start') or 0
+    written = MediaHandler._write_frames(req.path, folder, times, None, start if start < times[k] else 0)
+    if not os.path.exists(os.path.join(folder, f"thumb_{k}.webp")) or len(written) < n:
+        raise HTTPException(500, "ffmpeg could not make the frames")
+    for f in os.listdir(folder):                 # frames left over from a larger frame count
+        if f.startswith('thumb_') and f.endswith('.webp'):
+            try:
+                if int(f[6:-5]) >= n:
+                    os.remove(os.path.join(folder, f))
+            except ValueError:
+                pass
+    _set_cover(folder, k)
     from helpers import get_thumbnail_path
-    return {'success': True, 'cover': req.index, 'thumb': get_thumbnail_path(key)}
+    return {'success': True, 'index': k, 'frames': n, 'seconds': times[k], 'thumb': get_thumbnail_path(key)}
 
 
 @router.post("/thumbnails/check")

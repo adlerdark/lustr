@@ -813,6 +813,7 @@
                 hoverAnimationFrame: null,
                 hoverVideo: null,
                 hoverFrame: 0,
+                thumbAt: { busy: false, done: false },
                 hoverStartTime: null,
                 
                 // Library Groups Protection
@@ -3070,14 +3071,55 @@
                                                                          body: JSON.stringify({ path: P.path, index }) });
                         const d = await r.json();
                         if (!r.ok) throw new Error(d.detail || 'Could not set the thumbnail');
-                        // every card showing this video gets the new picture
-                        const lists = [this.videos, this.castBioData?.exact_matches, this.coll?.items, ...(this.homeRows || []).map(h => h.items)];
-                        for (const list of lists) for (const v of (list || [])) if (v.path === P.path) v.thumb = d.thumb;
+                        this.applyThumb(P.path, d.thumb);
                         P.open = false;
                     } catch (e) {
                         P.error = e.message;
                     } finally {
                         P.busy = false;
+                    }
+                },
+
+                // every card showing this video gets the new picture
+                applyThumb(path, thumb) {
+                    const lists = [this.videos, this.castBioData?.exact_matches, this.coll?.items, ...(this.homeRows || []).map(h => h.items)];
+                    for (const list of lists) for (const v of (list || [])) if (v.path === path) v.thumb = thumb;
+                    if (this.np.video?.path === path) this.np.video.thumb = thumb;
+                    if (this.activeVideo?.path === path) this.activeVideo.thumb = thumb;
+                },
+
+                // The frame showing in the player becomes the main thumbnail; the hover frames are
+                // rebuilt around it (the nearest one moves onto this moment). From the new player
+                // (np) or the classic one.
+                async thumbFromPlayer(where) {
+                    if (this.thumbAt.busy) return;
+                    let path, at;
+                    if (where === 'np') {
+                        const p = this.npPlayer();
+                        if (!p || !this.np.video) return;
+                        p.pause();
+                        path = this.np.video.path; at = p.currentTime() || 0;
+                        this.np.error = ''; this.np.msg = 'Making the thumbnail…';
+                    } else {
+                        if (!this.activeVideo || !this.$refs.player) return;
+                        this.$refs.player.pause();
+                        path = this.activeVideo.path; at = this.seekValue || 0;
+                    }
+                    this.thumbAt.busy = true;
+                    try {
+                        const r = await fetch('/api/thumbnails/at', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                      body: JSON.stringify({ path, seconds: at }) });
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(d.detail || 'Could not set the thumbnail');
+                        this.applyThumb(path, d.thumb);
+                        const msg = `Main thumbnail set at ${this.formatTime(d.seconds)} - the hover preview was rebuilt around it`;
+                        if (where === 'np') this.np.msg = msg;
+                        else { this.thumbAt.done = true; setTimeout(() => { this.thumbAt.done = false; }, 3000); }
+                    } catch (e) {
+                        if (where === 'np') { this.np.msg = ''; this.np.error = e.message; }
+                        else alert(e.message);
+                    } finally {
+                        this.thumbAt.busy = false;
                     }
                 },
 
@@ -7497,8 +7539,9 @@ No metadata is changed.`)) return;
                     if(!video.thumb) return '/static/placeholder.png';
                     if(this.hoverVideo === video.path && video.cache_id) {
                         // Try WebP first, fall back to .dat
-                        const webpPath = `/cache/${video.cache_id}/thumb_${this.hoverFrame}.webp`;
-                        const datPath = `/cache/${video.cache_id}/thumb_${this.hoverFrame}.dat`;
+                        // (the card picture's ?v= goes along, so frames rebuilt from the player aren't stale)
+                        const ver = (String(video.thumb).match(/\?v=\d+/) || [''])[0];
+                        const webpPath = `/cache/${video.cache_id}/thumb_${this.hoverFrame}.webp${ver}`;
                         // Return WebP path - browser will fallback gracefully if it doesn't exist
                         return webpPath;
                     }
@@ -10389,6 +10432,7 @@ No metadata is changed.`)) return;
                         case ']': seek(now + dur * 0.1); break;
                         case 'l': case 'L': this.npLoopKey(); break;
                         case 'a': case 'A': this.npCycleFit(); break;
+                        case 't': case 'T': if (e.ctrlKey || e.metaKey) handled = false; else this.thumbFromPlayer('np'); break;
                         case 'n': case 'N': case 'MediaTrackNext': this.npGo('next'); break;
                         case 'p': case 'P': case 'MediaTrackPrevious': this.npGo('prev'); break;
                         default:
@@ -16126,6 +16170,8 @@ No metadata is changed.`)) return;
                 </div>
             </template>
             <button @click="npMarkerNew()" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200" title="Add a marker at the current time">+ Marker</button>
+            <button @click="thumbFromPlayer('np')" :disabled="thumbAt.busy" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-60"
+                    title="Make this frame the main thumbnail (T)">🖼<span class="hidden sm:inline"> Thumbnail</span></button>
             <button @click="np.panel = !np.panel" class="px-2 py-1 rounded text-xs" :class="np.panel ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'"
                     x-text="'Markers (' + np.markers.length + ')'"></button>
             <button x-show="np.stripReady && np.tall" @click="npToggleStrip()" class="hidden sm:inline-block px-2 py-1 rounded text-xs"
@@ -16276,6 +16322,14 @@ No metadata is changed.`)) return;
                         <span class="hidden sm:inline">New Tab</span>
                         <span class="sm:hidden">↗</span>
                     </a>
+
+                    <!-- Main thumbnail from this frame -->
+                    <button @click="thumbFromPlayer('classic')" :disabled="thumbAt.busy"
+                            class="flex items-center gap-1 px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs shrink-0 whitespace-nowrap disabled:opacity-60"
+                            title="Make this frame the main thumbnail">
+                        <span>🖼</span>
+                        <span class="hidden sm:inline" x-text="thumbAt.busy ? 'Making…' : thumbAt.done ? '✓ Thumbnail set' : 'Thumbnail'"></span>
+                    </button>
 
                     <!-- Copy URL -->
                     <button @click="copyStreamUrl()"

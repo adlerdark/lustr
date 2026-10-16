@@ -111,8 +111,8 @@ def get_thumbnail_path(cache_id: str) -> Optional[str]:
     
     if os.path.exists(cover_path):
         return f"/cache/{cache_id}/cover.webp?v={int(os.path.getmtime(cover_path))}"
-    elif os.path.exists(webp_path):
-        return f"/cache/{cache_id}/thumb_0.webp"
+    elif os.path.exists(webp_path):     # versioned, so a rebuilt frame isn't served from the browser cache
+        return f"/cache/{cache_id}/thumb_0.webp?v={int(os.path.getmtime(webp_path))}"
     elif os.path.exists(dat_path):
         return f"/cache/{cache_id}/thumb_0.dat"
     return None

@@ -7,6 +7,7 @@ import json
 from config import CACHE_DIR, VIDEO_EXTENSIONS, THUMBNAIL_QUALITY, THUMBNAIL_FRAMES
 
 COVER, COVER_JSON = 'cover.webp', 'cover.json'      # the chosen main thumbnail (a copy of one frame)
+FRAMES_JSON = 'frames.json'                          # where the frames were taken: {"start", "times"}
 
 class MediaHandler:
     @staticmethod
@@ -245,7 +246,7 @@ class MediaHandler:
         # If forcing or need more frames, delete old thumbnails to save space
         if force or (existing and len(existing) < num_frames):
             for f in os.listdir(output_folder):
-                if f.endswith('.dat') or f.endswith('.webp') or f == COVER_JSON:  # old JPEG, WebP, and the chosen cover
+                if f.endswith('.dat') or f.endswith('.webp') or f in (COVER_JSON, FRAMES_JSON):  # old JPEG, WebP, the chosen cover
                     try: 
                         os.remove(os.path.join(output_folder, f))
                     except: 
@@ -258,9 +259,34 @@ class MediaHandler:
         if duration == 0: 
             return []
 
-        generated_files = []
         times, _start = MediaHandler.thumb_times(duration, num_frames, start)
-        
+        return MediaHandler._write_frames(path, output_folder, times, quality, _start)
+
+    @staticmethod
+    def anchor_times(duration, num_frames, at, current=None):
+        """(times, k): frame k lands exactly on `at` - k is the current frame nearest it - and the
+        others are spread evenly before it (from the current start) and after it (to the end).
+        current: the stored {"start", "times"} of the frames, if known."""
+        last = max(0.0, duration - 0.5)
+        at = max(0.0, min(float(at), last))
+        cur = (current or {}).get('times') or []
+        start = (current or {}).get('start') or 0.0
+        if len(cur) != num_frames:
+            cur, start = MediaHandler.thumb_times(duration, num_frames, 0)
+        k = min(range(num_frames), key=lambda i: abs(cur[i] - at))
+        lo = start if start < at else 0.0
+        before = [lo + (at - lo) * (i + 1) / (k + 1) for i in range(k)]
+        after_n = num_frames - k - 1
+        after = [min(at + (duration - at) * (i + 1) / (after_n + 1), last) for i in range(after_n)]
+        return before + [at] + after, k
+
+    @staticmethod
+    def _write_frames(path, output_folder, times, quality=None, start=0):
+        """ffmpeg one WebP frame per time as thumb_<i>.webp (each written aside, then swapped in),
+        and note the times in frames.json."""
+        if quality is None:
+            quality = THUMBNAIL_QUALITY
+        generated_files = []
         startupinfo = None
         if os.name == 'nt':
             startupinfo = subprocess.STARTUPINFO()
@@ -268,24 +294,31 @@ class MediaHandler:
 
         for i, timestamp in enumerate(times):
             out_name = os.path.join(output_folder, f"thumb_{i}.webp")
-            
+            tmp_name = out_name + '.tmp'
+
             # Use WebP format with configurable quality
             cmd = [
                 'ffmpeg', '-y', '-ss', str(timestamp), '-i', path, 
                 '-frames:v', '1', '-vf', 'scale=480:-1',
                 '-c:v', 'libwebp', '-quality', str(quality),
                 '-f', 'webp',
-                out_name
+                tmp_name
             ]
             
             try:
                 subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo)
-                if os.path.exists(out_name):
+                if os.path.exists(tmp_name):
+                    os.replace(tmp_name, out_name)
                     generated_files.append(out_name)
                     MediaHandler._hide_path_windows(out_name)
             except Exception as e:
                 print(f"Error generating thumb for {path}: {e}")
 
+        try:
+            with open(os.path.join(output_folder, FRAMES_JSON), 'w', encoding='utf-8') as f:
+                json.dump({'start': round(float(start), 3), 'times': [round(t, 3) for t in times]}, f)
+        except OSError:
+            pass
         return generated_files
 
     @staticmethod
