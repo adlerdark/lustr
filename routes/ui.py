@@ -164,6 +164,7 @@ class UIConfigRequest(BaseModel):
     visible_columns: List[str]
     column_widths: Dict[str, int]
     view_mode: str
+    quick_tag_order: Optional[str] = None      # 'custom' (as listed in Settings) or 'alpha' (#, A-Z)
 
 
 class LibrarySetting(BaseModel):
@@ -226,7 +227,8 @@ def save_ui_config(req: UIConfigRequest, model = Depends(get_model)):
         "sort_desc": req.sort_desc,
         "visible_columns": req.visible_columns,
         "column_widths": req.column_widths,
-        "view_mode": req.view_mode
+        "view_mode": req.view_mode,
+        "quick_tag_order": req.quick_tag_order if req.quick_tag_order in ('custom', 'alpha') else 'custom',
     }
     
     if USE_SQLITE:

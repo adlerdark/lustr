@@ -992,6 +992,7 @@
                 },
                 
                 quickTags: {}, // Will be loaded from /api/quicktags
+                quickTagOrder: 'custom',   // how the quick-pick buttons are ordered when editing: 'custom' (as in Settings) or 'alpha'
 
                 get streamUrl() {
                     if (!this.activeVideo) return '';
@@ -2391,7 +2392,8 @@
                                 sort_desc: this.sortDesc,
                                 visible_columns: this.visibleColumns,
                                 column_widths: this.columnWidths,
-                                view_mode: this.viewMode
+                                view_mode: this.viewMode,
+                                quick_tag_order: this.quickTagOrder
                             })
                         }).catch(e => console.error("Save Config Failed", e));
                     }, 1000); 
@@ -2476,6 +2478,7 @@
                             if (initData.config.visible_columns) this.visibleColumns = initData.config.visible_columns;
                             if (initData.config.column_widths) this.columnWidths = initData.config.column_widths;
                             if (initData.config.view_mode) this.viewMode = initData.config.view_mode;
+                            if (initData.config.quick_tag_order) this.quickTagOrder = initData.config.quick_tag_order;
                         
                         const savedSettings = localStorage.getItem('appSettings');
                         if (savedSettings) {
@@ -7421,6 +7424,21 @@ No metadata is changed.`)) return;
                     if (which === 'sites') this.extSitesOpen();
                     else if (which === 'sugbulk') this.extSugOpen();
                     else this.extBulkOpen();
+                },
+
+                // A field's quick-pick buttons when editing (Edit Metadata, cast attributes): as listed in
+                // Settings -> Edit Quick Tags, or alphabetical - numbers and symbols first, then A-Z
+                qtButtons(field) {
+                    const list = (this.quickTags || {})[field] || [];
+                    if (this.quickTagOrder !== 'alpha') return list;
+                    const letter = s => /^\p{L}/u.test(String(s).trim());
+                    return [...list].sort((a, b) => (letter(a) - letter(b))
+                        || String(a).localeCompare(String(b), undefined, { sensitivity: 'base', numeric: true }));
+                },
+
+                qtSetOrder(order) {
+                    this.quickTagOrder = order;
+                    this.saveConfig();
                 },
 
                 // ===== Quick Tags editor (data/quicktags.json) =====
@@ -15744,8 +15762,17 @@ No metadata is changed.`)) return;
         <div x-show="modals.quickTags" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4"
              @keydown.escape.window="if (modals.quickTags) qtClose()">
             <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-4xl shadow-2xl flex flex-col" style="max-height: 85vh;">
-                <div class="p-4 border-b border-gray-700 flex justify-between items-center shrink-0" data-drag-handle style="cursor: move">
-                    <h3 class="font-bold text-xl">Quick Tags</h3>
+                <div class="p-4 border-b border-gray-700 flex justify-between items-center gap-3 shrink-0" data-drag-handle style="cursor: move">
+                    <h3 class="font-bold text-xl flex-1">Quick Tags</h3>
+                    <div class="flex items-center gap-2 text-xs" @mousedown.stop title="The order of the quick-pick buttons in Edit Metadata and cast attributes. The list here always keeps your own order.">
+                        <span class="text-gray-400">Order when editing:</span>
+                        <div class="flex bg-gray-900 rounded p-0.5 gap-0.5">
+                            <button @click="qtSetOrder('custom')" class="px-2 py-1 rounded"
+                                    :class="quickTagOrder !== 'alpha' ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-700'">As listed here</button>
+                            <button @click="qtSetOrder('alpha')" class="px-2 py-1 rounded"
+                                    :class="quickTagOrder === 'alpha' ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-700'">Alphabetical (#, A–Z)</button>
+                        </div>
+                    </div>
                     <button @click="qtClose()" class="text-gray-400 hover:text-white text-2xl font-bold">&times;</button>
                 </div>
                 <div class="flex flex-1 min-h-0">
@@ -15864,7 +15891,7 @@ No metadata is changed.`)) return;
                                        x-text="field === 'male_cast' ? 'Male Cast (men in straight scenes)' : field"></label>
                                 <!-- Quick tag buttons if available -->
                                 <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
-                                    <template x-for="tag in quickTags[field] || []" :key="tag">
+                                    <template x-for="tag in qtButtons(field)" :key="tag">
                                         <button @click="addQuickTag(field, tag)" 
                                                 type="button"
                                                 class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
@@ -15882,7 +15909,7 @@ No metadata is changed.`)) return;
                                 <label class="block text-xs text-gray-400 mb-1 capitalize" x-text="field"></label>
                                 <!-- Quick tag buttons if available -->
                                 <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
-                                    <template x-for="tag in quickTags[field] || []" :key="tag">
+                                    <template x-for="tag in qtButtons(field)" :key="tag">
                                         <button @click="addQuickTag(field, tag)" 
                                                 type="button"
                                                 class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
@@ -15907,7 +15934,7 @@ No metadata is changed.`)) return;
                                 <label class="block text-xs text-gray-400 mb-1 capitalize" x-text="field"></label>
                                 <!-- Quick tag buttons if available -->
                                 <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
-                                    <template x-for="tag in quickTags[field] || []" :key="tag">
+                                    <template x-for="tag in qtButtons(field)" :key="tag">
                                         <button @click="addQuickTag(field, tag)" 
                                                 type="button"
                                                 class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
@@ -18998,7 +19025,7 @@ No metadata is changed.`)) return;
                         <!-- Quick Tag Buttons -->
                         <div x-show="quickTags[field]" class="mb-3">
                             <div class="flex flex-wrap gap-1">
-                                <template x-for="tag in quickTags[field] || []" :key="tag">
+                                <template x-for="tag in qtButtons(field)" :key="tag">
                                     <button 
                                         @click="addQuickCastAttribute(field, tag)"
                                         type="button"
