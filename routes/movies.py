@@ -46,11 +46,63 @@ def _changed():
 
 @router.get('')
 def list_movies(library: Optional[str] = None, q: str = '', sort: str = 'title', page: int = 1, limit: int = 120,
+                status: str = '', tags: str = '', tags_exclude: str = '', sites: str = '', sites_exclude: str = '',
                 model=Depends(get_model)):
     try:
-        return {'success': True, **movies.listing(_model, _conn(), library, q, sort, max(1, page), max(1, min(limit, 500)))}
+        return {'success': True, **movies.listing(_model, _conn(), library, q, sort, max(1, page), max(1, min(limit, 500)),
+                                                  status, tags, tags_exclude, sites, sites_exclude)}
     except Exception as e:
         return _err(e)
+
+
+@router.get('/filters')
+def filters(library: Optional[str] = None, q: str = '', status: str = '', tags: str = '', tags_exclude: str = '',
+            sites: str = '', sites_exclude: str = '', model=Depends(get_model)):
+    """The sidebar's tag / site counts on the Movies tab (movies, not videos; movie tags included)."""
+    try:
+        return {'success': True, **movies.filter_counts(_model, _conn(), library, q, status, tags, tags_exclude, sites, sites_exclude)}
+    except Exception as e:
+        return _err(e)
+
+
+class BulkBody(BaseModel):
+    library: Optional[str] = None
+    movie_ids: Optional[List[int]] = None
+    skip_checked: bool = True
+    add_tags: bool = True
+    delay: float = 1.0
+
+
+@router.post('/bulk/preview')
+def bulk_preview(body: BulkBody, model=Depends(get_model)):
+    try:
+        conn = _conn()
+        return {'success': True, 'count': len(movies.bulk_targets(_model, conn, body.library, body.skip_checked, body.movie_ids)),
+                'unlinked': len(movies.bulk_targets(_model, conn, body.library, False, body.movie_ids))}
+    except Exception as e:
+        return _err(e)
+
+
+@router.post('/bulk/start')
+def bulk_start(body: BulkBody, model=Depends(get_model)):
+    try:
+        targets = movies.bulk_targets(_model, _conn(), body.library, body.skip_checked, body.movie_ids)
+        if not targets:
+            return _err('No unlinked movies to check here')
+        return {'success': True, 'status': movies.start_bulk(_model, targets, body.add_tags, max(0.5, min(body.delay, 10)))}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/bulk/status')
+def bulk_status():
+    return {'success': True, 'status': movies.bulk_status()}
+
+
+@router.post('/bulk/stop')
+def bulk_stop():
+    movies.stop_bulk()
+    return {'success': True}
 
 
 @router.get('/autocomplete')
@@ -125,6 +177,37 @@ def delete(mid: int, model=Depends(get_model)):
     try:
         movies.delete(_conn(), mid)
         _changed()
+        return {'success': True}
+    except Exception as e:
+        return _err(e)
+
+
+class TagsBody(BaseModel):
+    add: List[str] = []
+    remove: List[str] = []
+
+
+@router.post('/{mid}/tags')
+def set_tags(mid: int, body: TagsBody, model=Depends(get_model)):
+    try:
+        return {'success': True, 'tags': movies.set_tags(_conn(), mid, body.add, body.remove)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/{mid}/suggest')
+def suggest(mid: int, model=Depends(get_model)):
+    """Tags and details the linked ThePornDB movie suggests."""
+    try:
+        return {'success': True, **movies.suggestions(_conn(), mid)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.post('/{mid}/ext/dismiss')
+def ext_dismiss(mid: int, model=Depends(get_model)):
+    try:
+        movies.dismiss(_conn(), mid)
         return {'success': True}
     except Exception as e:
         return _err(e)

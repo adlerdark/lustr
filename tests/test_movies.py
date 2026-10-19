@@ -258,5 +258,128 @@ class ExtTests(MovieBase):
         self.assertEqual((m['ext_id'], m['year']), ('tp-3', '2003'))
 
 
+
+class TagFilterTests(MovieBase):
+    def field(self, field, vid, *vals):
+        for v in vals:
+            row = self.c.execute(f'SELECT id FROM video_{field} WHERE value = ?', (v,)).fetchone()
+            tid = row[0] if row else self.c.execute(f'INSERT INTO video_{field} (value) VALUES (?)', (v,)).lastrowid
+            self.c.execute(f'INSERT INTO video_{field}_junction (video_id, {field}_id) VALUES (?, ?)', (vid, tid))
+        self.c.commit()
+
+    def setUp(self):
+        super().setUp()
+        self.a = movies.set_video_movie(self.c, 'v1', 'Alpha', scene=1)
+        movies.set_video_movie(self.c, 'v2', 'Alpha', scene=2)
+        self.b = movies.set_video_movie(self.c, 'v3', 'Beta', scene=1)
+        self.field('tags', 'v1', 'outdoor')
+        self.field('outfit', 'v2', 'Stockings')
+        self.field('tags', 'v3', 'outdoor', 'pov')
+        self.field('site', 'v3', 'Some Site')
+
+    def names(self, **kw):
+        return [m['title'] for m in movies.listing(self.model, self.c, 'Lib', **kw)['movies']]
+
+    def test_scene_tags_belong_to_the_movie(self):
+        self.assertEqual(self.names(tags='outdoor'), ['Alpha', 'Beta'])
+        self.assertEqual(self.names(tags='stockings'), ['Alpha'])            # any field, any scene, lowercased
+        self.assertEqual(self.names(tags='outdoor,pov'), ['Beta'])
+        self.assertEqual(self.names(tags_exclude='pov'), ['Alpha'])
+        self.assertEqual(self.names(sites='some site'), ['Beta'])
+
+    def test_movie_tags_and_counts(self):
+        movies.set_tags(self.c, self.a, add=['Big Box Set'])
+        self.assertEqual(movies.movie_tags(self.c, self.a), ['big.box.set'])
+        self.assertEqual(self.names(tags='big.box.set'), ['Alpha'])
+        d = movies.filter_counts(self.model, self.c, 'Lib')
+        self.assertEqual((d['tags']['outdoor'], d['tags']['big.box.set'], d['sites']['Some Site']), (2, 1, 1))
+        d = movies.filter_counts(self.model, self.c, 'Lib', tags='pov')
+        self.assertEqual(d['tags'], {'outdoor': 1, 'pov': 1})
+        movies.set_tags(self.c, self.a, remove=['big.box.set'])
+        self.assertEqual(movies.movie_tags(self.c, self.a), [])
+
+    def test_tags_follow_a_merge_and_keep_an_empty_movie(self):
+        movies.set_tags(self.c, self.b, add=['pov', 'gonzo'])
+        movies.set_tags(self.c, self.a, add=['pov'])
+        movies.merge_into(self.c, [self.b], self.a)
+        self.assertEqual(movies.movie_tags(self.c, self.a), ['gonzo', 'pov'])
+        movies.set_video_movie(self.c, 'v1', '')
+        movies.set_video_movie(self.c, 'v2', '')
+        self.assertEqual(movies.movie_tags(self.c, self.a), ['gonzo', 'pov'])   # tagged movies stay
+
+    def test_status_filter_and_sort(self):
+        self.c.execute("UPDATE movies SET ext_source = 'tpdb', ext_id = 'x' WHERE id = ?", (self.b,))
+        c = movies.set_video_movie(self.c, 'v2', 'Gamma')
+        movies._log_check(self.c, self.a, 'review', 'two candidates', [{'id': 'c1', 'title': 'Alpha', 'score': 70}])
+        self.assertEqual(self.names(status='linked'), ['Beta'])
+        self.assertEqual(self.names(status='review'), ['Alpha'])
+        self.assertEqual(self.names(status='unlinked'), ['Alpha', 'Gamma'])
+        self.assertEqual(self.names(sort='status'), ['Alpha', 'Gamma', 'Beta'])
+        self.assertEqual(movies.check_of(self.c, self.a)['candidates'][0]['id'], 'c1')
+        movies.dismiss(self.c, self.a)
+        self.assertEqual(self.names(status='not_found'), ['Alpha'])
+        self.assertEqual(movies.bulk_targets(self.model, self.c, 'Lib'), [c])
+        self.assertEqual(movies.bulk_targets(self.model, self.c, 'Lib', skip_checked=False), [self.a, c])
+
+
+class BulkLinkTests(MovieBase):
+    def setUp(self):
+        super().setUp()
+        import ext_db
+        self.ext = ext_db
+        self.saved = (ext_db.tpdb_search, ext_db.tpdb_find, ext_db.download_image, ext_db._tag_mapping)
+        self.results = []
+        ext_db.tpdb_search = lambda kind, q, per_page=10: list(self.results)
+        ext_db.tpdb_find = lambda kind, i: {'id': i, 'title': 'Summer Road Trip 13', 'date': '2011-05-01', 'site': {'name': 'Studio X'},
+                                            'tags': [{'name': 'Outdoor'}, {'name': 'Gonzo'}, {'name': 'Skip Me'}]}
+        ext_db.download_image = lambda url: None
+        maps = {'outdoor': ('confirmed', 'outdoor'), 'skip me': ('ignored', None)}
+        ext_db._tag_mapping = lambda conn, src, name, vocab: (
+            {'status': maps[name.lower()][0], 'value': maps[name.lower()][1], 'field': 'tags'} if name.lower() in maps
+            else {'status': 'unmapped', 'value': ext_db.user_tag_format(name), 'field': None})
+        self.c.execute("UPDATE videos SET title = 'Summer Road Trip 13 Scene 2' WHERE video_id = 'v1'")
+        self.mid = movies.set_video_movie(self.c, 'v1', 'Summer Road Trip 13', scene=2)
+        self.c.execute("UPDATE movies SET year = '2011' WHERE id = ?", (self.mid,))
+        self.c.commit()
+
+    def tearDown(self):
+        (self.ext.tpdb_search, self.ext.tpdb_find, self.ext.download_image, self.ext._tag_mapping) = self.saved
+        super().tearDown()
+
+    def cand(self, i, title, date='', studio=None, scenes=0):
+        return {'id': i, 'title': title, 'date': date, 'studio_name': studio, 'parent_name': None, 'performers': [],
+                'scenes': [{'performers': []}] * scenes, 'image_url': None, 'page_url': ''}
+
+    def test_sure_match_links_and_adds_mapped_tags(self):
+        self.results = [self.cand('t1', 'Summer Road Trip 13', '2011-05-01', scenes=4), self.cand('t2', 'Summer Road Trip 12', '2010-01-01')]
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'linked', detail)
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 't1')
+        self.assertEqual(movies.movie_tags(self.c, self.mid), ['outdoor'])          # only mapped ones
+        sug = movies.suggestions(self.c, self.mid)
+        self.assertEqual([(t['value'], t['mapped']) for t in sug['tags']], [('gonzo', False)])
+        self.assertEqual(sug['details'], [])                                         # linking filled the empty details
+        movies.update(self.c, self.mid, {'studio': 'My Own Studio'})
+        self.assertEqual([(d['field'], d['value']) for d in movies.suggestions(self.c, self.mid)['details']], [('studio', 'Studio X')])
+
+    def test_two_with_the_same_title_need_review(self):
+        self.results = [self.cand('t1', 'Summer Road Trip 13', '2011-05-01'), self.cand('t2', 'Summer Road Trip 13', '2011-02-01')]
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'review', detail)
+        self.assertEqual(len(cands), 2)
+        self.assertIsNone(movies.get(self.c, self.mid)['ext_id'])
+
+    def test_title_alone_is_not_enough(self):
+        self.c.execute("UPDATE movies SET year = NULL WHERE id = ?", (self.mid,))
+        self.results = [self.cand('t1', 'Summer Road Trip 13')]
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'review')
+
+    def test_nothing_close(self):
+        self.results = [self.cand('t9', 'Completely Different Film')]
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'not_found')
+        self.results = []
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'not_found')
+
+
 if __name__ == '__main__':
     unittest.main()

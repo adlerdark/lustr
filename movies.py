@@ -30,8 +30,9 @@ UPDATE_KEYS = ('movie', 'movie_scene', 'movie_part', 'movie_whole')
 def ensure_schema(conn):
     if id(conn) in _schema_ready:
         return
-    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE name IN ('movies', 'video_movie', 'idx_video_movie_movie')")}
-    if len(have) == 3:                       # already there: no commit (it could split a caller's transaction)
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE name IN "
+                                       "('movies', 'video_movie', 'idx_video_movie_movie', 'movie_tags', 'movie_ext_check')")}
+    if len(have) == 5:                       # already there: no commit (it could split a caller's transaction)
         _schema_ready.add(id(conn))
         return
     conn.execute('''CREATE TABLE IF NOT EXISTS movies (
@@ -51,6 +52,13 @@ def ensure_schema(conn):
         whole INTEGER NOT NULL DEFAULT 0,
         source TEXT NOT NULL DEFAULT 'manual')''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_video_movie_movie ON video_movie(movie_id)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS movie_tags (
+        movie_id INTEGER NOT NULL, value TEXT NOT NULL, PRIMARY KEY (movie_id, value))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS movie_ext_check (
+        movie_id INTEGER PRIMARY KEY,
+        outcome TEXT NOT NULL,                     -- linked | review | not_found | error
+        detail TEXT, candidates_json TEXT, run_id TEXT,
+        checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     _schema_ready.add(id(conn))
 
@@ -289,7 +297,7 @@ def copy_movie(conn, from_video_id, to_video_id):
 
 def drop_empty(conn, movie_ids=None):
     """Remove movies without videos - not ones linked to ThePornDB or with your own cover."""
-    keep = "ext_id IS NULL AND COALESCE(cover_source, '') != 'user'"
+    keep = "ext_id IS NULL AND COALESCE(cover_source, '') != 'user' AND id NOT IN (SELECT movie_id FROM movie_tags)"
     empty = 'id NOT IN (SELECT vm.movie_id FROM video_movie vm JOIN videos v ON v.video_id = vm.video_id)'
     if movie_ids is None:
         return conn.execute(f'DELETE FROM movies WHERE {keep} AND {empty}').rowcount
@@ -304,6 +312,8 @@ def prune(conn):
     ensure_schema(conn)
     n = conn.execute('DELETE FROM video_movie WHERE video_id NOT IN (SELECT video_id FROM videos)').rowcount
     m = drop_empty(conn)
+    for t in ('movie_tags', 'movie_ext_check'):
+        conn.execute(f'DELETE FROM {t} WHERE movie_id NOT IN (SELECT id FROM movies)')
     conn.commit()
     return n, m
 
@@ -458,6 +468,9 @@ def merge_into(conn, source_ids, target_id):
                      'cover_source = (SELECT cover_source FROM movies WHERE id = ?) WHERE id = ? AND cover IS NULL', (s, s, s, target_id))
     ph = ','.join('?' * len(src))
     n = conn.execute(f'UPDATE video_movie SET movie_id = ? WHERE movie_id IN ({ph})', [target_id] + src).rowcount
+    conn.execute(f'UPDATE OR IGNORE movie_tags SET movie_id = ? WHERE movie_id IN ({ph})', [target_id] + src)
+    conn.execute(f'DELETE FROM movie_tags WHERE movie_id IN ({ph})', src)
+    conn.execute(f'DELETE FROM movie_ext_check WHERE movie_id IN ({ph})', src)
     conn.execute(f'DELETE FROM movies WHERE id IN ({ph})', src)
     conn.execute('UPDATE movies SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (target_id,))
     conn.commit()
@@ -467,7 +480,8 @@ def merge_into(conn, source_ids, target_id):
 def delete(conn, mid):
     """Delete a movie; its videos stay, just without a movie."""
     ensure_schema(conn)
-    conn.execute('DELETE FROM video_movie WHERE movie_id = ?', (mid,))
+    for t in ('video_movie', 'movie_tags', 'movie_ext_check'):
+        conn.execute(f'DELETE FROM {t} WHERE movie_id = ?', (mid,))
     conn.execute('DELETE FROM movies WHERE id = ?', (mid,))
     conn.commit()
 
@@ -498,11 +512,10 @@ def _order(scene, part, whole, title):
     return (0 if whole else 1, scene if scene else 999, part if part else 0, (title or '').lower())
 
 
-def listing(model, conn, library=None, q='', sort='title', page=1, limit=120):
-    """Movies with at least one video in this library / group (every movie for All Videos)."""
+def _scoped(model, conn, library):
+    """{movie_id: card dict} for the movies with a video in this library / group (all for All Videos)."""
     import home
     import library_stats
-    ensure_schema(conn)
     where, params = home.scope_sql(model, conn, library)
     movies = {}
     for r in conn.execute(
@@ -526,10 +539,82 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120):
             movies.setdefault(r[0], {'id': r[0], 'title': r[1], 'year': r[2] or '', 'studio': r[3] or '', 'linked': bool(r[4]),
                                      'has_cover': bool(r[5]), 'updated_at': r[6], 'count': 0, 'added': '',
                                      '_first': None, '_cover': None})
-    out = list(movies.values())
+    checks = {r[0]: r[1] for r in conn.execute('SELECT movie_id, outcome FROM movie_ext_check')}
+    for m in movies.values():
+        m['status'] = 'linked' if m['linked'] else ('review' if checks.get(m['id']) == 'review' else
+                                                    'not_found' if checks.get(m['id']) == 'not_found' else 'unchecked')
+    return movies
+
+
+def _tag_field_names():
+    try:
+        from config import LIST_FIELDS
+        return [f.lower() for f in LIST_FIELDS if f.lower() not in ('site', 'cast')]
+    except Exception:
+        return ['tags']
+
+
+def tag_sets(conn, movie_ids=None):
+    """({movie_id: {tag}}, {movie_id: {site lowercase: spelling}}): every tag / site of any of the movie's
+    videos (any library), plus its own movie tags and studio. Tags are lowercase, like the sidebar."""
+    want = None if movie_ids is None else set(movie_ids)
+    tags, sites = {}, {}
+    for f in _tag_field_names() + ['site']:
+        try:
+            rows = conn.execute(f'SELECT vm.movie_id, t.value FROM video_movie vm JOIN video_{f}_junction j ON j.video_id = vm.video_id '
+                                f'JOIN video_{f} t ON t.id = j.{f}_id').fetchall()
+        except Exception:
+            continue                                   # a field without a table yet
+        for mid, val in rows:
+            if not val or (want is not None and mid not in want):
+                continue
+            if f == 'site':
+                sites.setdefault(mid, {}).setdefault(str(val).strip().lower(), str(val).strip())
+            else:
+                tags.setdefault(mid, set()).add(str(val).strip().lower())
+    for mid, val in conn.execute('SELECT movie_id, value FROM movie_tags'):
+        if want is None or mid in want:
+            tags.setdefault(mid, set()).add(val.lower())
+    for mid, studio in conn.execute("SELECT id, studio FROM movies WHERE COALESCE(studio, '') != ''"):
+        if want is None or mid in want:
+            sites.setdefault(mid, {}).setdefault(studio.strip().lower(), studio.strip())
+    return tags, sites
+
+
+def _csv(v):
+    return {x.strip().lower() for x in (v or '').split(',') if x.strip()} if isinstance(v, str) else {str(x).lower() for x in (v or [])}
+
+
+def _filtered(model, conn, library, q='', status='', tags=None, tags_exclude=None, sites=None, sites_exclude=None):
+    """The scoped movies after the search, link status and sidebar tag / site filters -> (list, tags, sites)."""
+    movies = list(_scoped(model, conn, library).values())
     ql = title_key(q or '')
     if ql:
-        out = [m for m in out if ql in title_key(m['title']) or ql in title_key(m['studio'])]
+        movies = [m for m in movies if ql in title_key(m['title']) or ql in title_key(m['studio'])]
+    st = (status or '').lower()
+    if st == 'unlinked':
+        movies = [m for m in movies if m['status'] != 'linked']
+    elif st:
+        movies = [m for m in movies if m['status'] == st]
+    inc_t, exc_t, inc_s, exc_s = _csv(tags), _csv(tags_exclude), _csv(sites), _csv(sites_exclude)
+    tsets, ssets = tag_sets(conn, [m['id'] for m in movies])
+    if inc_t or exc_t or inc_s or exc_s:
+        def ok(m):
+            t, s = tsets.get(m['id'], set()), set(ssets.get(m['id'], {}))
+            return inc_t <= t and not (exc_t & t) and inc_s <= s and not (exc_s & s)
+        movies = [m for m in movies if ok(m)]
+    return movies, tsets, ssets
+
+
+_STATUS_ORDER = {'review': 0, 'unchecked': 1, 'not_found': 2, 'linked': 3}
+
+
+def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, status='', tags=None, tags_exclude=None,
+            sites=None, sites_exclude=None):
+    """Movies with at least one video in this library / group (every movie for All Videos), filtered and sorted."""
+    import home
+    ensure_schema(conn)
+    out, _t, _s = _filtered(model, conn, library, q, status, tags, tags_exclude, sites, sites_exclude)
     s = (sort or 'title').lower()
     out.sort(key=lambda m: _fold(m['title']).lower())
     if s == 'year':
@@ -538,6 +623,8 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120):
         out.sort(key=lambda m: m['count'], reverse=True)
     elif s == 'added':
         out.sort(key=lambda m: m['added'], reverse=True)
+    elif s == 'status':
+        out.sort(key=lambda m: _STATUS_ORDER.get(m['status'], 9))
     total = len(out)
     start = (max(1, page) - 1) * limit
     out = out[start:start + limit]
@@ -561,6 +648,338 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120):
     return {'movies': out, 'total': total}
 
 
+def filter_counts(model, conn, library=None, q='', status='', tags=None, tags_exclude=None, sites=None, sites_exclude=None):
+    """The sidebar's tag / site lists for the Movies tab: how many of the shown movies have each one."""
+    ensure_schema(conn)
+    movies, tsets, ssets = _filtered(model, conn, library, q, status, tags, tags_exclude, sites, sites_exclude)
+    tc, sc, spell = Counter(), Counter(), {}
+    for m in movies:
+        tc.update(tsets.get(m['id'], set()))
+        for k, v in ssets.get(m['id'], {}).items():
+            sc[k] += 1
+            spell.setdefault(k, v)
+    return {'tags': dict(tc), 'sites': {spell[k]: n for k, n in sc.items()}}
+
+
+# ---------------------------------------------------------------------------
+# movie tags (your own, for the Movies tab) and ThePornDB suggestions
+# ---------------------------------------------------------------------------
+def tag_format(value):
+    """Your tag format: lowercase, spaces -> periods ('Big Tits' -> 'big.tits')."""
+    s = re.sub(r'\s+', '.', (value or '').strip().lower())
+    return re.sub(r'\.{2,}', '.', s).strip('.')
+
+
+def movie_tags(conn, mid):
+    ensure_schema(conn)
+    return [r[0] for r in conn.execute('SELECT value FROM movie_tags WHERE movie_id = ? ORDER BY value', (mid,))]
+
+
+def set_tags(conn, mid, add=(), remove=(), commit=True):
+    ensure_schema(conn)
+    get(conn, mid)
+    for v in add or ():
+        v = tag_format(v)
+        if v:
+            conn.execute('INSERT OR IGNORE INTO movie_tags (movie_id, value) VALUES (?, ?)', (mid, v))
+    for v in remove or ():
+        conn.execute('DELETE FROM movie_tags WHERE movie_id = ? AND value = ?', (mid, tag_format(v)))
+    if commit:
+        conn.commit()
+    return movie_tags(conn, mid)
+
+
+def _raw(conn, mid):
+    r = conn.execute('SELECT ext_raw_json FROM movies WHERE id = ?', (mid,)).fetchone()
+    try:
+        return json.loads(r[0]) if r and r[0] else {}
+    except ValueError:
+        return {}
+
+
+def _tpdb_tag_values(conn, raw, vocab=None, mapped_only=False):
+    """ThePornDB tags -> [{'ext': name, 'value': your tag, 'mapped': bool}] through your tag mappings
+    (ext_db._tag_mapping). Ignored tags are left out; mapped_only: only auto / confirmed mappings."""
+    import ext_db
+    if vocab is None:
+        vocab = ext_db._video_vocab(conn, ext_db._tag_fields())
+    out, seen = [], set()
+    for t in raw.get('tags') or []:
+        name = (t.get('name') if isinstance(t, dict) else t) or ''
+        if not name.strip():
+            continue
+        m = ext_db._tag_mapping(conn, 'tpdb', name, vocab)
+        if m['status'] == 'ignored':
+            continue
+        mapped = m['status'] in ('auto', 'confirmed') and m.get('value')
+        if mapped_only and not mapped:
+            continue
+        for v in (ext_db.split_values(m['value']) if mapped else [ext_db.user_tag_format(name)]):
+            v = tag_format(v)
+            if v and v not in seen:
+                seen.add(v)
+                out.append({'ext': name, 'value': v, 'mapped': bool(mapped)})
+    return out
+
+
+def suggestions(conn, mid):
+    """What the linked ThePornDB movie suggests: tags the movie doesn't have, and details that differ."""
+    d = get(conn, mid)
+    raw = _raw(conn, mid)
+    if not raw:
+        return {'tags': [], 'details': []}
+    have = set(movie_tags(conn, mid))
+    tags = [t for t in _tpdb_tag_values(conn, raw) if t['value'] not in have]
+    site = raw.get('site') or {}
+    director = ', '.join(x.get('name', '') for x in (raw.get('directors') or []) if isinstance(x, dict) and x.get('name'))
+    details = []
+    for field, val in (('year', (raw.get('date') or '')[:4]), ('studio', site.get('name') or ''),
+                       ('director', director), ('description', (raw.get('description') or '').strip())):
+        if val and val != (d.get(field) or ''):
+            details.append({'field': field, 'value': val, 'current': d.get(field) or ''})
+    return {'tags': tags, 'details': details}
+
+
+# ---------------------------------------------------------------------------
+# bulk ThePornDB linking
+# ---------------------------------------------------------------------------
+AUTO_LEAD = 15
+REVIEW_MIN = 40
+
+
+def _movie_context(conn, mid):
+    import ext_db
+    m = conn.execute('SELECT title, year, studio FROM movies WHERE id = ?', (mid,)).fetchone()
+    sites = Counter(r[0] for r in conn.execute(
+        'SELECT t.value FROM video_movie vm JOIN video_site_junction j ON j.video_id = vm.video_id '
+        'JOIN video_site t ON t.id = j.site_id WHERE vm.movie_id = ?', (mid,)))
+    cast = set()
+    for (name,) in conn.execute('SELECT DISTINCT t.value FROM video_movie vm JOIN video_cast_junction j ON j.video_id = vm.video_id '
+                                'JOIN video_cast t ON t.id = j.cast_id WHERE vm.movie_id = ?', (mid,)):
+        cast.add(ext_db.norm_name(name))
+        try:
+            cast.add(ext_db.norm_name(ext_db.resolve_primary(conn, name)))
+        except Exception:
+            pass
+    top_scene = conn.execute('SELECT MAX(scene) FROM video_movie WHERE movie_id = ?', (mid,)).fetchone()[0] or 0
+    studios = {ext_db.norm_name(x) for x in ([m[2]] if m[2] else []) + [s for s, _n in sites.most_common(2)] if x}
+    return {'title': m[0], 'key': title_key(m[0]), 'year': (m[1] or '')[:4], 'studios': studios, 'cast': cast, 'top_scene': top_scene}
+
+
+def score_candidate(ctx, cand):
+    """-> (score, [reasons]) for one ThePornDB movie search result against your movie."""
+    import difflib
+    import ext_db
+    pts, why = 0, []
+    if title_key(cand.get('title')) == ctx['key']:
+        pts += 60
+        why.append('same title')
+    else:
+        sim = difflib.SequenceMatcher(None, ctx['key'], title_key(cand.get('title'))).ratio()
+        pts += round(sim * 50)
+        why.append(f'title {round(sim * 100)}% alike')
+    if ctx['year'] and (cand.get('date') or '')[:4] == ctx['year']:
+        pts += 15
+        why.append('same year')
+    names = {ext_db.norm_name(x) for x in (cand.get('studio_name'), cand.get('parent_name')) if x}
+    if ctx['studios'] and any(a and b and (a in b or b in a) for a in ctx['studios'] for b in names):
+        pts += 15
+        why.append('same studio')
+    perfs = set()
+    for p in cand.get('performers') or []:
+        perfs |= {ext_db.norm_name(p.get('name')), ext_db.norm_name(p.get('as'))}
+    for sc in cand.get('scenes') or []:
+        for p in sc.get('performers') or []:
+            perfs |= {ext_db.norm_name(p.get('name')), ext_db.norm_name(p.get('as'))}
+    shared = len((ctx['cast'] & perfs) - {''})
+    if shared:
+        pts += min(30, 10 * shared)
+        why.append(f'{shared} performer{"" if shared == 1 else "s"} in it')
+    if ctx['top_scene'] and len(cand.get('scenes') or []) >= ctx['top_scene']:
+        pts += 5
+        why.append(f"{len(cand['scenes'])} scenes")
+    return pts, why
+
+
+def bulk_one(conn, mid, add_tags=True):
+    """Check one movie on ThePornDB -> (outcome, detail, candidates). Links it when the match is sure."""
+    import ext_db
+    ctx = _movie_context(conn, mid)
+    found = ext_db.tpdb_search('movie', ctx['title'], per_page=10)
+    scored = []
+    for c in found:
+        pts, why = score_candidate(ctx, c)
+        scored.append({'id': c['id'], 'title': c['title'], 'date': c['date'], 'studio': c.get('studio_name') or '',
+                       'image_url': c.get('image_url'), 'scenes': len(c.get('scenes') or []), 'page_url': c.get('page_url'),
+                       'score': pts, 'reasons': why})
+    scored.sort(key=lambda x: -x['score'])
+    top5 = scored[:5]
+    if not scored or scored[0]['score'] < REVIEW_MIN:
+        return 'not_found', (f"Best: {scored[0]['title']} ({scored[0]['score']})" if scored else 'No results'), top5
+    top = scored[0]
+    same = [x for x in scored if 'same title' in x['reasons']]
+    lead = top['score'] - (scored[1]['score'] if len(scored) > 1 else 0)
+    agrees = any(r in ('same year', 'same studio') or r.endswith(' in it') for r in top['reasons'])
+    if 'same title' in top['reasons'] and (len(same) == 1 or lead >= AUTO_LEAD) and agrees:
+        link_tpdb(conn, mid, top['id'])
+        detail = f"{top['title']} ({top['score']}: {', '.join(top['reasons'])})"
+        if add_tags:
+            vals = [t['value'] for t in _tpdb_tag_values(conn, _raw(conn, mid), mapped_only=True)]
+            if vals:
+                set_tags(conn, mid, add=vals)
+                detail += f' · {len(vals)} tag{"" if len(vals) == 1 else "s"} added'
+        return 'linked', detail, top5
+    why = []
+    if 'same title' not in top['reasons']:
+        why.append('title differs')
+    elif not (len(same) == 1 or lead >= AUTO_LEAD):
+        why.append(f'{len(same)} movies with this title')
+    if not agrees:
+        why.append('nothing else agrees')
+    return 'review', f"{top['title']} ({top['score']}) - {'; '.join(why)}", top5
+
+
+def _log_check(conn, mid, outcome, detail, cands, run_id=None):
+    conn.execute('INSERT OR REPLACE INTO movie_ext_check (movie_id, outcome, detail, candidates_json, run_id, checked_at) '
+                 'VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+                 (mid, outcome, detail, json.dumps(cands or [], ensure_ascii=False), run_id))
+    conn.commit()
+
+
+def dismiss(conn, mid):
+    """'None of these': not on ThePornDB."""
+    ensure_schema(conn)
+    conn.execute("UPDATE movie_ext_check SET outcome = 'not_found', detail = 'None of the matches (your choice)' WHERE movie_id = ?", (mid,))
+    if not conn.execute('SELECT changes()').fetchone()[0]:
+        _log_check(conn, mid, 'not_found', 'None of the matches (your choice)', [])
+    conn.commit()
+
+
+def check_of(conn, mid):
+    ensure_schema(conn)
+    r = conn.execute('SELECT outcome, detail, candidates_json, checked_at FROM movie_ext_check WHERE movie_id = ?', (mid,)).fetchone()
+    if not r:
+        return None
+    try:
+        cands = json.loads(r[2] or '[]')
+    except ValueError:
+        cands = []
+    return {'outcome': r[0], 'detail': r[1], 'candidates': cands, 'checked_at': r[3]}
+
+
+BULK_OUTCOMES = {'linked': 'Linked', 'review': 'Needs review', 'not_found': 'Not found', 'error': 'Error'}
+_bulk = {'running': False, 'stop': False, 'run_id': None, 'total': 0, 'done': 0, 'counts': {}, 'recent': [],
+         'current': None, 'error': None, 'note': '', 'started_at': None, 'finished_at': None}
+_bulk_lock = __import__('threading').Lock()
+
+
+def bulk_targets(model, conn, library=None, skip_checked=True, movie_ids=None):
+    """Unlinked movies in this library (or these ids) to check, in name order."""
+    ensure_schema(conn)
+    if movie_ids:
+        ids = [m for (m,) in conn.execute(f'SELECT id FROM movies WHERE ext_id IS NULL AND id IN ({",".join("?" * len(movie_ids))})',
+                                         list(movie_ids))]
+        rows = {m: conn.execute('SELECT title FROM movies WHERE id = ?', (m,)).fetchone()[0] for m in ids}
+    else:
+        rows = {m['id']: m['title'] for m in _scoped(model, conn, library).values() if not m['linked']}
+    if skip_checked:
+        done = {r[0] for r in conn.execute("SELECT movie_id FROM movie_ext_check WHERE outcome != 'error'")}
+        rows = {k: v for k, v in rows.items() if k not in done}
+    return [k for k, _v in sorted(rows.items(), key=lambda kv: _fold(kv[1]).lower())]
+
+
+def bulk_status():
+    import time
+    st = {k: v for k, v in _bulk.items() if k != 'stop'}
+    st['recent'] = list(_bulk['recent'])
+    st['counts'] = dict(_bulk['counts'])
+    if st.get('started_at'):
+        end = st.get('finished_at') or time.time()
+        st['elapsed_seconds'] = round(end - st['started_at'])
+        st['eta_seconds'] = (round((end - st['started_at']) / st['done'] * (st['total'] - st['done']))
+                             if st['running'] and st['done'] else None)
+    st['outcome_labels'] = BULK_OUTCOMES
+    return st
+
+
+def start_bulk(model, targets, add_tags=True, delay=1.0):
+    import threading
+    import time
+    import uuid
+    with _bulk_lock:
+        if _bulk['running']:
+            raise ValueError('A bulk link is already running')
+        _bulk.update(running=True, stop=False, run_id=uuid.uuid4().hex[:12], total=len(targets), done=0, counts={}, recent=[],
+                     current=None, error=None, note='', started_at=time.time(), finished_at=None)
+    threading.Thread(target=_bulk_worker, args=(model, list(targets), add_tags, delay), daemon=True, name='movies-bulk').start()
+    return bulk_status()
+
+
+def stop_bulk():
+    _bulk['stop'] = True
+
+
+def _bulk_worker(model, targets, add_tags, delay):
+    import time
+    import ext_db
+    st = _bulk
+    ext_db._pace_interval = max(0.0, float(delay or 0))
+    errors = 0
+    try:
+        conn = model.db.get_connection()
+        ensure_schema(conn)
+        for idx, mid in enumerate(targets):
+            if st['stop']:
+                break
+            r = conn.execute('SELECT title, ext_id FROM movies WHERE id = ?', (mid,)).fetchone()
+            if not r or r[1]:
+                st['done'] = idx + 1
+                continue
+            st['current'] = r[0]
+            outcome, detail, cands = 'error', 'Rate limited', []
+            for attempt in range(3):
+                try:
+                    outcome, detail, cands = bulk_one(conn, mid, add_tags)
+                    break
+                except ext_db.ExtDBError as e:
+                    msg = str(e)
+                    if ('rate limit' in msg.lower() or '429' in msg) and attempt < 2:
+                        st['note'] = 'Rate limited by ThePornDB - pausing for 60 seconds'
+                        end = time.monotonic() + 60
+                        while time.monotonic() < end and not st['stop']:
+                            time.sleep(0.5)
+                        st['note'] = ''
+                        continue
+                    if 'api key' in msg.lower():
+                        raise
+                    outcome, detail = 'error', msg
+                    break
+                except Exception as e:
+                    outcome, detail = 'error', f'{type(e).__name__}: {e}'
+                    break
+            try:
+                _log_check(conn, mid, outcome, detail, cands, st['run_id'])
+            except Exception as e:
+                print(f"[movies] bulk: could not log {mid}: {e}")
+            st['counts'][outcome] = st['counts'].get(outcome, 0) + 1
+            st['recent'].insert(0, {'id': mid, 'title': r[0], 'outcome': outcome, 'outcome_label': BULK_OUTCOMES.get(outcome, outcome),
+                                    'detail': detail})
+            del st['recent'][40:]
+            st['done'] = idx + 1
+            errors = errors + 1 if outcome == 'error' else 0
+            if errors >= 10:
+                st['error'] = f'Stopped after 10 errors in a row. Last error: {detail}'
+                break
+    except ext_db.ExtDBError as e:
+        st['error'] = str(e)
+    except Exception as e:
+        st['error'] = f'Unexpected error: {e}'
+    finally:
+        ext_db._pace_interval = 0.0
+        st.update(running=False, current=None, note='', finished_at=time.time())
+        print(f"[movies] bulk link {st['run_id']} finished: {st['done']}/{st['total']} {st['counts']}")
+
+
 def detail(model, conn, mid, username=None, watch_history=None):
     """A movie, its videos in order (the same records as the Library) and its ThePornDB scene list."""
     import home
@@ -574,6 +993,8 @@ def detail(model, conn, mid, username=None, watch_history=None):
     items = [x for x in (home.card(model, r[0], username, watch_history, extra={'library': r[7]}) for r in rows) if x]
     library_stats.add_play_stats(conn, username, items)
     d['libraries'] = sorted({r[7] for r in rows if r[7]})
+    d['tags'] = movie_tags(conn, mid)
+    d['check'] = None if d['ext_id'] else check_of(conn, mid)
     have = {r[1] for r in rows if r[1]}
     for sc in d['ext_scenes']:
         sc['have'] = sc['n'] in have

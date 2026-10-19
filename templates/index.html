@@ -598,6 +598,9 @@
                 mvFind: { open: false, library: '', whole: false, loading: false, busy: false, groups: [], msg: '', done: '', filter: 'all', q: '', shown: 200 },
                 mvTitles: [], mvTitlesTimer: null,
                 mvPick: { open: false, q: '', list: [], scene: '', busy: false, msg: '', paths: [], timer: null },   // right-click -> Add to movie…
+                mvStatus: '',                 // Movies tab: '' | linked | unlinked | review | not_found
+                mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '' },
+                mvSug: { tags: [], details: [], loading: false }, mvTagInput: '',
                 
                 // Cast functionality
                 castBioMode: false,
@@ -6248,7 +6251,9 @@ No metadata is changed.`)) return;
 
                 // ----- library tabs: Recommended | Library | Collections -----
                 setLibraryTab(tab, remember = true) {
+                    const wasMovies = this.libraryTab === 'movies';
                     this.libraryTab = tab;
+                    if (wasMovies && tab !== 'movies' && this.currentLibrary !== 'Home') this.fetchAvailableFilters();   // video counts again
                     if (remember && this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = tab;
                     if (this.currentLibrary === 'Home') return;
                     if (tab === 'recommended') { this.homeRows = []; this.loadHomeData(this.currentLibrary); }
@@ -6301,11 +6306,36 @@ No metadata is changed.`)) return;
                 collBack() { this.coll.view = null; this.loadCollections(); },
 
                 // ----- Movies tab (movies.py): a movie's scenes / parts, its own details, cover, ThePornDB link -----
+                mvTabActive() {
+                    return this.currentView === 'library' && this.currentLibrary !== 'Home' && this.libraryTab === 'movies' && !this.castBioMode;
+                },
+
+                mvFilterParams() {
+                    const pick = (obj, s) => Object.entries(obj || {}).filter(([, v]) => v === s).map(([k]) => k).join(',');
+                    return { status: this.mvStatus || '', tags: pick(this.activeTags, 1), tags_exclude: pick(this.activeTags, -1),
+                             sites: pick(this.activeSites, 1), sites_exclude: pick(this.activeSites, -1) };
+                },
+
+                async mvFetchFilters() {
+                    // the sidebar's Tags / Sites with movie counts: a movie has every tag of its scenes, plus its own movie tags
+                    try {
+                        const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: this.mv.q || '' }, this.mvFilterParams()));
+                        const d = await (await fetch('/api/movies/filters?' + qs)).json();
+                        if (!d.success) throw new Error(d.error);
+                        if (!this.mvTabActive()) return;
+                        this.availableTags = d.tags || {};
+                        this.availableSites = d.sites || {};
+                    } catch (e) { console.error('Movie filters failed:', e); }
+                },
+
+                mvFiltersChanged() { this.loadMovies(1); this.mvFetchFilters(); },
+
                 async loadMovies(page = 1) {
                     const M = this.mv;
                     M.loading = true;
                     try {
-                        const qs = new URLSearchParams({ library: this.currentLibrary, q: M.q || '', sort: M.sort, page, limit: 120 });
+                        const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: M.q || '', sort: M.sort, page, limit: 120 },
+                                                                     this.mvFilterParams()));
                         const d = await (await fetch('/api/movies?' + qs)).json();
                         if (!d.success) throw new Error(d.error);
                         M.list = page === 1 ? d.movies : [...M.list, ...d.movies];
@@ -6337,6 +6367,8 @@ No metadata is changed.`)) return;
                         const d = await (await fetch('/api/movies/' + id)).json();
                         if (!d.success) throw new Error(d.error);
                         Object.assign(M, { view: d.movie, items: d.items, editing: false, msg: '' });
+                        this.mvSug = { tags: [], details: [], loading: !!d.movie.ext_id };
+                        if (d.movie.ext_id) this.mvLoadSuggestions(d.movie.id);
                         this.continueWatching = M.items;                 // right-click / edit lookups
                         this.recentlyWatched = [];
                     } catch (e) { M.msg = 'Could not open the movie: ' + e.message; }
@@ -6418,8 +6450,103 @@ No metadata is changed.`)) return;
                 },
 
                 mvExtOpen() {
-                    Object.assign(this.mv.ext, { open: true, query: this.mv.view.title, list: [], msg: '', paste: '' });
-                    this.mvExtSearch();
+                    const stored = (this.mv.view.check?.candidates || []);
+                    Object.assign(this.mv.ext, { open: true, query: this.mv.view.title, list: stored, msg: '', paste: '' });
+                    if (!stored.length) this.mvExtSearch();
+                },
+
+                async mvExtDismiss() {
+                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/ext/dismiss`); await this.mvLoad(this.mv.view.id); }
+                    catch (e) { this.mv.msg = e.message; }
+                },
+
+                // ----- movie tags + ThePornDB suggestions -----
+                async mvLoadSuggestions(id) {
+                    try {
+                        const d = await (await fetch(`/api/movies/${id}/suggest`)).json();
+                        if (!d.success) throw new Error(d.error);
+                        if (this.mv.view?.id === id) this.mvSug = { tags: d.tags, details: d.details, loading: false };
+                    } catch (e) { this.mvSug = { tags: [], details: [], loading: false }; }
+                },
+
+                async mvTags(add = [], remove = []) {
+                    add = add.map(t => String(t).trim()).filter(Boolean);
+                    if (!add.length && !remove.length) return;
+                    try {
+                        const d = await this.mvPost(`/api/movies/${this.mv.view.id}/tags`, { add, remove });
+                        this.mv.view.tags = d.tags;
+                        this.mvSug.tags = this.mvSug.tags.filter(t => !d.tags.includes(t.value));
+                        this.mvFetchFilters();
+                    } catch (e) { this.mv.msg = e.message; }
+                },
+
+                mvTagAddTyped() {
+                    const vals = (this.mvTagInput || '').split(',');
+                    this.mvTagInput = '';
+                    this.mvTags(vals);
+                },
+
+                get mvTagChoices() {
+                    const q = (this.mvTagInput || '').trim().toLowerCase();
+                    if (!q) return [];
+                    const have = new Set(this.mv.view?.tags || []);
+                    return Object.keys(this.allTags || {}).filter(t => t.toLowerCase().includes(q) && !have.has(t)).slice(0, 40);
+                },
+
+                async mvUseDetail(field, value) {
+                    try {
+                        await this.mvPost(`/api/movies/${this.mv.view.id}/update`, { changes: { [field]: value } });
+                        await this.mvLoad(this.mv.view.id);
+                    } catch (e) { this.mv.msg = e.message; }
+                },
+
+                // ----- bulk link to ThePornDB -----
+                async mvBulkOpen() {
+                    const B = this.mvBulk;
+                    Object.assign(B, { open: true, msg: '', preview: null });
+                    await this.mvBulkStatus();
+                    if (!B.status?.running) this.mvBulkPreview();
+                },
+
+                async mvBulkPreview() {
+                    const B = this.mvBulk;
+                    try { B.preview = await this.mvPost('/api/movies/bulk/preview', { library: this.currentLibrary, skip_checked: B.skip }); }
+                    catch (e) { B.msg = e.message; }
+                },
+
+                async mvBulkStart() {
+                    const B = this.mvBulk;
+                    B.msg = '';
+                    try {
+                        const d = await this.mvPost('/api/movies/bulk/start', { library: this.currentLibrary, skip_checked: B.skip,
+                                                                                add_tags: B.addTags, delay: Number(B.delay) || 1 });
+                        B.status = d.status;
+                        this.mvBulkPoll();
+                    } catch (e) { B.msg = e.message; }
+                },
+
+                async mvBulkStatus() {
+                    try { this.mvBulk.status = (await (await fetch('/api/movies/bulk/status')).json()).status; } catch (e) {}
+                    if (this.mvBulk.status?.running) this.mvBulkPoll();
+                },
+
+                mvBulkPoll() {
+                    const B = this.mvBulk;
+                    clearTimeout(B.timer);
+                    B.timer = setTimeout(async () => {
+                        try { B.status = (await (await fetch('/api/movies/bulk/status')).json()).status; } catch (e) {}
+                        if (B.status?.running) this.mvBulkPoll();
+                        else if (this.mvTabActive()) { this.loadMovies(1); this.mvBulkPreview(); }
+                    }, 2000);
+                },
+
+                async mvBulkStop() {
+                    try { await this.mvPost('/api/movies/bulk/stop'); } catch (e) {}
+                },
+
+                fmtSecs(s) {
+                    s = Math.round(s || 0);
+                    return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
                 },
 
                 async mvExtSearch() {
@@ -6935,6 +7062,7 @@ No metadata is changed.`)) return;
                     
                     if (next === 0) delete this.activeTags[tag];
                     else this.activeTags[tag] = next;
+                    if (this.mvTabActive()) this.loadMovies(1);
                     
                     // For library view, fetch from server
                     if (this.currentView === 'library') {
@@ -6957,6 +7085,7 @@ No metadata is changed.`)) return;
                     
                     if (next === 0) delete this.activeSites[site];
                     else this.activeSites[site] = next;
+                    if (this.mvTabActive()) this.loadMovies(1);
                     
                     // For library view, fetch from server
                     if (this.currentView === 'library') {
@@ -7017,6 +7146,7 @@ No metadata is changed.`)) return;
                 },
                 
                 async fetchAvailableFilters() {
+                    if (this.mvTabActive()) return this.mvFetchFilters();     // Movies tab: counts of movies
                     try {
                         let url = `/api/available_filters?library=${encodeURIComponent(this.currentLibrary)}`;
                         
@@ -7091,6 +7221,7 @@ No metadata is changed.`)) return;
                     }
                     
                     // Reset available filters to show all for current context
+                    if (this.mvTabActive()) this.mvFiltersChanged();
                     if (this.currentView === 'library') {
                         this.page = 1; 
                         this.fetchVideos('reset');
@@ -12892,16 +13023,23 @@ No metadata is changed.`)) return;
                             <div class="flex flex-wrap items-center gap-3 mb-4">
                                 <h2 class="text-xl font-bold text-gray-200 flex-1" x-text="'Movies' + (currentLibrary === 'All Videos' ? '' : ' in ' + currentLibrary)"></h2>
                                 <input type="search" x-model="mv.q" @input="mvSearch()" placeholder="Search movies" class="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm w-48">
+                                <select x-model="mvStatus" @change="mvFiltersChanged()" class="bg-gray-800 border border-gray-600 rounded px-1 py-1.5 text-sm" title="ThePornDB link status">
+                                    <option value="">All movies</option><option value="linked">Linked</option><option value="unlinked">Not linked</option>
+                                    <option value="review">Needs review</option><option value="not_found">Not found on ThePornDB</option>
+                                </select>
                                 <select x-model="mv.sort" @change="loadMovies(1)" class="bg-gray-800 border border-gray-600 rounded px-1 py-1.5 text-sm">
                                     <option value="title">Title</option><option value="year">Year</option><option value="count">Most videos</option><option value="added">Recently added</option>
+                                    <option value="status">Link status</option>
                                 </select>
+                                <button @click="mvBulkOpen()" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-200"
+                                        title="Look up every unlinked movie here on ThePornDB; sure matches are linked, the rest are kept for you to review">Link to ThePornDB…</button>
                                 <button @click="mvFindOpen()" class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-500 text-white"
                                         title="Find movies in your video titles, filenames and ThePornDB links, and review them before they're applied">Find movies…</button>
                             </div>
                             <div x-show="mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center">Loading…</div>
                             <div x-show="!mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center text-sm">
-                                <span x-show="mv.q">No movies match.</span>
-                                <span x-show="!mv.q">No movies here yet. Click <b>Find movies…</b> to find them in your titles (like "Movie Name 2 Scene 3"),
+                                <span x-show="mv.q || mvStatus || Object.keys(activeTags).length || Object.keys(activeSites).length">No movies match the search / filters.</span>
+                                <span x-show="!(mv.q || mvStatus || Object.keys(activeTags).length || Object.keys(activeSites).length)">No movies here yet. Click <b>Find movies…</b> to find them in your titles (like "Movie Name 2 Scene 3"),
                                     or set <b>Movie</b> on a video in Edit Metadata.</span>
                             </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
@@ -12911,6 +13049,7 @@ No metadata is changed.`)) return;
                                             <img x-show="m.cover" :src="m.cover" loading="lazy" class="absolute inset-0 w-full h-full object-cover">
                                             <div x-show="!m.cover" class="absolute inset-0 flex items-center justify-center text-4xl text-gray-600">🎞</div>
                                             <span x-show="m.linked" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-white" title="Linked to ThePornDB">TPDB</span>
+                                            <span x-show="m.status === 'review'" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white" title="Possible ThePornDB matches to review">Review</span>
                                         </div>
                                         <div class="p-2">
                                             <div class="font-bold text-sm truncate" :title="m.title" x-text="m.title"></div>
@@ -12957,6 +13096,68 @@ No metadata is changed.`)) return;
                                             </p>
                                             <p x-show="mv.view?.description" class="text-sm text-gray-300 mt-3 whitespace-pre-line max-w-3xl" x-text="mv.view?.description"></p>
                                             <p class="text-[11px] text-gray-500 mt-3">These are the movie's own details; they aren't copied to its scenes.</p>
+                                            <!-- movie tags -->
+                                            <div class="mt-3">
+                                                <div class="text-xs text-gray-400 mb-1">Movie tags <span class="text-gray-500">(for the Movies tab's tag filter, with the tags of its scenes)</span></div>
+                                                <div class="flex flex-wrap items-center gap-1">
+                                                    <template x-for="t in mv.view?.tags || []" :key="'mt' + t">
+                                                        <span class="bg-gray-700 px-2 py-0.5 rounded text-xs flex items-center gap-1"><span x-text="t"></span>
+                                                            <button @click="mvTags([], [t])" class="text-gray-400 hover:text-red-400" title="Remove">✕</button></span>
+                                                    </template>
+                                                    <input type="text" x-model="mvTagInput" @keydown.enter.prevent="mvTagAddTyped()" list="mv-tag-choices" autocomplete="off"
+                                                           placeholder="+ add tag" class="bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-xs w-36">
+                                                    <datalist id="mv-tag-choices"><template x-for="t in mvTagChoices" :key="'tc' + t"><option :value="t"></option></template></datalist>
+                                                </div>
+                                            </div>
+                                            <!-- ThePornDB suggestions -->
+                                            <div x-show="mv.view?.ext_id && (mvSug.tags.length || mvSug.details.length)" class="mt-3 bg-gray-800/60 border border-gray-700 rounded p-2 max-w-3xl">
+                                                <div class="text-xs text-gray-400 mb-1 flex items-center gap-2">Suggested from ThePornDB
+                                                    <button x-show="mvSug.tags.some(t => t.mapped)" @click="mvTags(mvSug.tags.filter(t => t.mapped).map(t => t.value))"
+                                                            class="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 text-white">Add all mapped tags</button></div>
+                                                <div class="flex flex-wrap gap-1">
+                                                    <template x-for="t in mvSug.tags" :key="'sg' + t.value">
+                                                        <button @click="mvTags([t.value])" class="px-2 py-0.5 rounded text-xs border"
+                                                                :class="t.mapped ? 'border-blue-600 text-blue-200 hover:bg-blue-800' : 'border-gray-600 text-gray-300 hover:bg-gray-700'"
+                                                                :title="t.mapped ? 'ThePornDB \'' + t.ext + '\' maps to your tag ' + t.value : 'ThePornDB \'' + t.ext + '\' (not mapped to one of your tags yet)'"
+                                                                x-text="'+ ' + t.value"></button>
+                                                    </template>
+                                                </div>
+                                                <div class="mt-2 space-y-1 text-xs">
+                                                    <template x-for="d in mvSug.details" :key="'sd' + d.field">
+                                                        <div class="flex items-baseline gap-2">
+                                                            <span class="w-20 shrink-0 text-gray-400 capitalize" x-text="d.field"></span>
+                                                            <span class="flex-1 text-gray-200 line-clamp-2" x-text="d.value" :title="d.value"></span>
+                                                            <button @click="mvUseDetail(d.field, d.value)" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 shrink-0"
+                                                                    :title="d.current ? 'Now: ' + d.current : 'Empty now'">Use</button>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                            <!-- bulk link: matches to review -->
+                                            <div x-show="!mv.view?.ext_id && mv.view?.check?.outcome === 'review'" class="mt-3 bg-amber-900/20 border border-amber-700 rounded p-2 max-w-4xl">
+                                                <div class="text-xs text-amber-200 mb-2 flex items-center gap-2">
+                                                    <span class="flex-1" x-text="'Possible ThePornDB matches · ' + (mv.view?.check?.detail || '')"></span>
+                                                    <button @click="mvExtDismiss()" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">None of these</button>
+                                                    <button @click="mvExtOpen(); mvExtSearch()" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">Search again…</button>
+                                                </div>
+                                                <div class="flex gap-2 overflow-x-auto scroller pb-1">
+                                                    <template x-for="c in mv.view?.check?.candidates || []" :key="'rc' + c.id">
+                                                        <div class="w-36 shrink-0 bg-gray-900 rounded border border-gray-700 overflow-hidden text-xs">
+                                                            <div class="h-44 bg-black flex items-center justify-center">
+                                                                <img x-show="c.image_url" :src="c.image_url" loading="lazy" referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain"></div>
+                                                            <div class="p-1.5">
+                                                                <div class="font-bold truncate" :title="c.title" x-text="c.title"></div>
+                                                                <div class="text-gray-400 truncate" x-text="[c.date, c.studio].filter(Boolean).join(' · ')"></div>
+                                                                <div class="text-gray-500 truncate" :title="(c.reasons || []).join(', ')" x-text="'score ' + c.score + ' · ' + (c.reasons || []).join(', ')"></div>
+                                                                <div class="flex gap-1 mt-1">
+                                                                    <button @click="mvExtLink(c.id)" class="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white">Link</button>
+                                                                    <a :href="c.page_url" target="_blank" rel="noopener noreferrer" class="px-1 py-0.5 text-blue-300 hover:underline">View ↗</a>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </div>
                                         </div>
                                     </template>
                                     <template x-if="mv.editing">
@@ -14520,6 +14721,66 @@ No metadata is changed.`)) return;
                     <input type="number" min="1" x-model="mvPick.scene" class="w-20 bg-gray-900 border border-gray-600 rounded px-2 py-1"></label>
                 <p class="text-[11px] text-gray-500">Videos from any library can be in the same movie. A video already in another movie moves to this one, keeping its scene number unless you set one.</p>
                 <p x-show="mvPick.msg" class="text-sm text-red-400" x-text="mvPick.msg"></p>
+            </div>
+        </div>
+
+        <!-- BULK LINK MOVIES TO THEPORNDB (movies.py start_bulk) -->
+        <div x-show="mvBulk.open" x-cloak class="fixed inset-0 z-[85] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvBulk.open = false">
+            <div class="bg-gray-800 rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl" @click.outside="mvBulk.open = false">
+                <div class="p-4 border-b border-gray-700 flex items-center">
+                    <span class="font-bold flex-1" x-text="'Link movies to ThePornDB' + (currentLibrary !== 'All Videos' ? ' · ' + currentLibrary : '')"></span>
+                    <button @click="mvBulk.open = false" class="text-gray-400 hover:text-white">✕</button>
+                </div>
+                <div class="p-4 space-y-3 overflow-y-auto scroller text-sm">
+                    <template x-if="!mvBulk.status?.running">
+                        <div class="space-y-3">
+                            <p class="text-gray-300">Each unlinked movie is looked up on ThePornDB by name. A movie is linked only when one result has the same title
+                                and the year, studio or a performer agrees; otherwise the best matches are kept under <b>Needs review</b>.</p>
+                            <p class="text-gray-200" x-show="mvBulk.preview" x-text="(mvBulk.preview?.count || 0) + ' movie' + (mvBulk.preview?.count === 1 ? '' : 's') + ' to check'
+                                + (mvBulk.skip && mvBulk.preview && mvBulk.preview.unlinked > mvBulk.preview.count ? ' (' + (mvBulk.preview.unlinked - mvBulk.preview.count) + ' checked before are skipped)' : '')"></p>
+                            <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" x-model="mvBulk.skip" @change="mvBulkPreview()" class="rounded"> Skip movies checked before</label>
+                            <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" x-model="mvBulk.addTags" class="rounded">
+                                Add ThePornDB tags you've already mapped to your tags (others show as suggestions on the movie)</label>
+                            <label class="flex items-center gap-2">Seconds between requests
+                                <input type="number" min="0.5" max="10" step="0.5" x-model="mvBulk.delay" class="w-20 bg-gray-900 border border-gray-600 rounded px-2 py-1"></label>
+                        </div>
+                    </template>
+                    <template x-if="mvBulk.status && (mvBulk.status.running || mvBulk.status.done)">
+                        <div class="space-y-2">
+                            <div class="flex items-center gap-2">
+                                <div class="flex-1 h-2 bg-gray-700 rounded overflow-hidden">
+                                    <div class="h-full bg-blue-500" :style="`width: ${mvBulk.status.total ? Math.round(mvBulk.status.done / mvBulk.status.total * 100) : 0}%`"></div></div>
+                                <span class="text-xs text-gray-300" x-text="mvBulk.status.done + ' / ' + mvBulk.status.total"></span>
+                            </div>
+                            <div class="text-xs text-gray-400" x-text="(mvBulk.status.running ? 'Checking: ' + (mvBulk.status.current || '…') : 'Finished')
+                                + (mvBulk.status.eta_seconds ? ' · about ' + fmtSecs(mvBulk.status.eta_seconds) + ' left' : '')"></div>
+                            <div x-show="mvBulk.status.note" class="text-xs text-amber-300" x-text="mvBulk.status.note"></div>
+                            <div x-show="mvBulk.status.error" class="text-xs text-red-400" x-text="mvBulk.status.error"></div>
+                            <div class="flex flex-wrap gap-2 text-xs">
+                                <template x-for="[k, n] in Object.entries(mvBulk.status.counts || {})" :key="'bc' + k">
+                                    <span class="px-2 py-0.5 rounded bg-gray-700" x-text="(mvBulk.status.outcome_labels?.[k] || k) + ': ' + n"></span>
+                                </template>
+                            </div>
+                            <div class="max-h-64 overflow-y-auto scroller text-xs space-y-0.5">
+                                <template x-for="r in mvBulk.status.recent || []" :key="'br' + r.id + r.outcome">
+                                    <div class="flex gap-2">
+                                        <span class="w-24 shrink-0" :class="r.outcome === 'linked' ? 'text-emerald-300' : r.outcome === 'review' ? 'text-amber-300' : r.outcome === 'error' ? 'text-red-400' : 'text-gray-500'"
+                                              x-text="r.outcome_label"></span>
+                                        <a href="#" @click.prevent="mvBulk.open = false; mvLoad(r.id)" class="truncate flex-1 hover:underline" :title="r.detail" x-text="r.title + ' · ' + r.detail"></a>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                    <p x-show="mvBulk.msg" class="text-red-400" x-text="mvBulk.msg"></p>
+                </div>
+                <div class="p-4 border-t border-gray-700 flex justify-end gap-2">
+                    <button x-show="mvBulk.status?.running" @click="mvBulkStop()" class="px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white text-sm">Stop</button>
+                    <button x-show="!mvBulk.status?.running" @click="mvStatus = 'review'; mvBulk.open = false; mvFiltersChanged()"
+                            class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Show movies to review</button>
+                    <button x-show="!mvBulk.status?.running" @click="mvBulkStart()" :disabled="!mvBulk.preview?.count"
+                            class="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm disabled:opacity-50">Start</button>
+                </div>
             </div>
         </div>
 
