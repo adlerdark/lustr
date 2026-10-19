@@ -573,7 +573,7 @@
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
                 jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1,   // # A-Z jump bar (Title / Cast / Filename sorts)
-                castPeek: { name: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
+                castPeek: { name: '', primary: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
                 thumbPick: { open: false, path: '', title: '', frames: [], cover: 0, busy: false, error: '' },   // choose the main thumbnail
                 forceThumbs: { open: false, count: 0, offset: '', error: '', resolve: null, dur: 0, frames: 8 },   // Force New: optional start offset
                 loginUsername: '',
@@ -3044,25 +3044,41 @@
                 // clicking or scrolling cancels it. Nothing shows for someone without a photo.
                 castPeekStart(name, ev) {
                     this.castPeekEnd();
-                    const el = ev.currentTarget, src = `/api/cast/photo/${encodeURIComponent(name)}?thumbnail=true`;
+                    const el = ev.currentTarget;
                     this.castPeek.name = name;
-                    // the photo loads while you rest on the name; it shows once both the wait and the load are done
-                    let waited = false, loaded = false;
+                    // an alias shows the performer's main name and photo; the photo loads while you rest
+                    // on the name, and shows once both the wait and the load are done
+                    let waited = false, loaded = false, primary = name, src = '';
                     const show = () => {
                         if (!waited || !loaded || this.castPeek.name !== name || !el.isConnected) return;
-                        const r = el.getBoundingClientRect(), W = 232, H = 360;
+                        const r = el.getBoundingClientRect(), W = 232, H = 380;
                         let x = Math.min(r.left, window.innerWidth - W - 8), y = r.bottom + 6;
                         if (y + H > window.innerHeight - 8) y = Math.max(8, r.top - H - 6);
-                        Object.assign(this.castPeek, { src, x: Math.max(8, x), y, show: true });
+                        Object.assign(this.castPeek, { src, primary, x: Math.max(8, x), y, show: true });
                     };
-                    const img = new Image();
-                    img.onload = () => { loaded = true; show(); };
-                    img.src = src;
+                    this.castPrimary(name).then(p => {
+                        if (this.castPeek.name !== name) return;
+                        primary = p;
+                        src = `/api/cast/photo/${encodeURIComponent(p)}?thumbnail=true`;
+                        const img = new Image();
+                        img.onload = () => { loaded = true; show(); };
+                        img.src = src;
+                    });
                     this.castPeek.timer = setTimeout(() => { waited = true; show(); }, this.castPeek.delay);
+                },
+                // a cast name's main name (itself unless it's an alias); asked once per name per page
+                castPrimary(name) {
+                    const memo = this._castPrimaryMemo || (this._castPrimaryMemo = new Map());
+                    if (!memo.has(name)) {
+                        memo.set(name, fetch('/api/cast/resolve/' + encodeURIComponent(name))
+                            .then(r => r.ok ? r.json() : null).then(d => (d && d.primary) || name)
+                            .catch(() => { memo.delete(name); return name; }));
+                    }
+                    return memo.get(name);
                 },
                 castPeekEnd() {
                     clearTimeout(this.castPeek.timer);
-                    Object.assign(this.castPeek, { name: '', show: false, timer: null });
+                    Object.assign(this.castPeek, { name: '', primary: '', show: false, timer: null });
                 },
 
                 // Force New dialog: "90", "1:30", "1:02:03", or with a minus to move the frames earlier
@@ -15629,7 +15645,9 @@ No metadata is changed.`)) return;
         <div x-show="castPeek.show" x-cloak class="fixed z-[210] pointer-events-none bg-gray-900 border border-gray-600 rounded-lg shadow-2xl p-1.5"
              :style="`left:${castPeek.x}px; top:${castPeek.y}px`" @scroll.window.capture.passive="castPeek.name && castPeekEnd()">
             <img :src="castPeek.src" class="w-[216px] h-[324px] object-cover rounded bg-gray-800" alt="">
-            <div class="text-sm text-gray-200 text-center truncate w-[216px] mt-1" x-text="castPeek.name"></div>
+            <div class="text-sm text-gray-200 text-center truncate w-[216px] mt-1" x-text="castLabel(castPeek.primary || castPeek.name)"></div>
+            <div x-show="castPeek.primary && castPeek.primary !== castPeek.name" class="text-xs text-gray-400 text-center truncate w-[216px]"
+                 x-text="'as ' + castLabel(castPeek.name)"></div>
         </div>
 
         <!-- Split off videos (same name, different person) -->
