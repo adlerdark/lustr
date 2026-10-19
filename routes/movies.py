@@ -47,20 +47,21 @@ def _changed():
 @router.get('')
 def list_movies(library: Optional[str] = None, q: str = '', sort: str = 'title', page: int = 1, limit: int = 120,
                 status: str = '', tags: str = '', tags_exclude: str = '', sites: str = '', sites_exclude: str = '',
-                model=Depends(get_model)):
+                favorites: bool = False, model=Depends(get_model)):
     try:
         return {'success': True, **movies.listing(_model, _conn(), library, q, sort, max(1, page), max(1, min(limit, 500)),
-                                                  status, tags, tags_exclude, sites, sites_exclude)}
+                                                  status, tags, tags_exclude, sites, sites_exclude, favorites)}
     except Exception as e:
         return _err(e)
 
 
 @router.get('/filters')
 def filters(library: Optional[str] = None, q: str = '', status: str = '', tags: str = '', tags_exclude: str = '',
-            sites: str = '', sites_exclude: str = '', model=Depends(get_model)):
+            sites: str = '', sites_exclude: str = '', favorites: bool = False, model=Depends(get_model)):
     """The sidebar's tag / site counts on the Movies tab (movies, not videos; movie tags included)."""
     try:
-        return {'success': True, **movies.filter_counts(_model, _conn(), library, q, status, tags, tags_exclude, sites, sites_exclude)}
+        return {'success': True, **movies.filter_counts(_model, _conn(), library, q, status, tags, tags_exclude, sites, sites_exclude,
+                                                        favorites)}
     except Exception as e:
         return _err(e)
 
@@ -132,6 +133,34 @@ def find_apply(body: ApplyBody, model=Depends(get_model)):
         n, made = movies.apply_found(_conn(), body.groups)
         _changed()
         return {'success': True, 'videos': n, 'made': made}
+    except Exception as e:
+        return _err(e)
+
+
+class FavoriteBody(BaseModel):
+    ids: List[int]
+    favorite: bool = True
+
+
+@router.post('/favorite')
+def favorite(body: FavoriteBody, model=Depends(get_model)):
+    try:
+        return {'success': True, 'count': movies.set_favorite(_conn(), body.ids, body.favorite)}
+    except Exception as e:
+        return _err(e)
+
+
+class SplitBody(BaseModel):
+    video_ids: List[str]
+    edition: str = ''
+
+
+@router.post('/split')
+def split(body: SplitBody, model=Depends(get_model)):
+    """Move videos to another movie with the same name and an edition label."""
+    try:
+        mid = movies.split_off(_conn(), body.video_ids, body.edition)
+        return {'success': True, 'movie': movies.get(_conn(), mid)}
     except Exception as e:
         return _err(e)
 
@@ -231,6 +260,18 @@ async def upload_cover(mid: int, file: UploadFile = File(...), model=Depends(get
             return _err('The image must be under 10 MB')
         movies.set_cover(_conn(), mid, data, file.content_type)
         return {'success': True, 'movie': movies.get(_conn(), mid)}
+    except Exception as e:
+        return _err(e)
+
+
+class CoverUrlBody(BaseModel):
+    url: str
+
+
+@router.post('/{mid}/cover/url')
+def cover_from_url(mid: int, body: CoverUrlBody, model=Depends(get_model)):
+    try:
+        return {'success': True, 'movie': movies.set_cover_from_url(_conn(), mid, body.url)}
     except Exception as e:
         return _err(e)
 

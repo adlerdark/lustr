@@ -27,24 +27,54 @@ _KEEP = object()
 UPDATE_KEYS = ('movie', 'movie_scene', 'movie_part', 'movie_whole')
 
 
-def ensure_schema(conn):
-    if id(conn) in _schema_ready:
-        return
-    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE name IN "
-                                       "('movies', 'video_movie', 'idx_video_movie_movie', 'movie_tags', 'movie_ext_check')")}
-    if len(have) == 5:                       # already there: no commit (it could split a caller's transaction)
-        _schema_ready.add(id(conn))
-        return
-    conn.execute('''CREATE TABLE IF NOT EXISTS movies (
+_MOVIES_TABLE = '''CREATE TABLE IF NOT EXISTS {name} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
-        title_key TEXT NOT NULL UNIQUE,
+        title_key TEXT NOT NULL,
+        edition TEXT NOT NULL DEFAULT '',                         -- tells same-named movies apart: 'Road Trip (2004)'
+        edition_key TEXT NOT NULL DEFAULT '',
+        favorite INTEGER NOT NULL DEFAULT 0,
         year TEXT, studio TEXT, director TEXT, description TEXT,
         cover BLOB, cover_mime TEXT, cover_source TEXT,          -- 'user' | 'ext'
         cover_video_id TEXT,
         ext_source TEXT, ext_id TEXT, ext_url TEXT, ext_raw_json TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''
+_OLD_COLUMNS = ('id, title, title_key, year, studio, director, description, cover, cover_mime, cover_source, cover_video_id, '
+                'ext_source, ext_id, ext_url, ext_raw_json, created_at, updated_at')
+
+
+def _migrate_names(conn):
+    """Once: the first movies table had title_key UNIQUE (one movie per name). Rebuild it with an edition
+    label and favorite, unique on (name, edition) instead. Every row and id is kept."""
+    try:
+        conn.execute('BEGIN')
+        conn.execute(_MOVIES_TABLE.format(name='movies_new'))
+        conn.execute(f'INSERT INTO movies_new ({_OLD_COLUMNS}) SELECT {_OLD_COLUMNS} FROM movies')
+        n = conn.execute('SELECT COUNT(*) FROM movies_new').fetchone()[0]
+        conn.execute('DROP TABLE movies')
+        conn.execute('ALTER TABLE movies_new RENAME TO movies')
+        conn.commit()
+        print(f"[movies] movies table updated for same-named movies and favorites ({n} movies kept)")
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def ensure_schema(conn):
+    if id(conn) in _schema_ready:
+        return
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE name IN "
+                                       "('movies', 'video_movie', 'idx_video_movie_movie', 'movie_tags', 'movie_ext_check', "
+                                       "'ux_movies_name')")}
+    if len(have) == 6:                       # already there: no commit (it could split a caller's transaction)
+        _schema_ready.add(id(conn))
+        return
+    conn.commit()
+    if 'movies' in have and 'edition' not in {r[1] for r in conn.execute('PRAGMA table_info(movies)')}:
+        _migrate_names(conn)
+    conn.execute(_MOVIES_TABLE.format(name='movies'))
+    conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS ux_movies_name ON movies(title_key, edition_key)')
     conn.execute('''CREATE TABLE IF NOT EXISTS video_movie (
         video_id TEXT PRIMARY KEY,
         movie_id INTEGER NOT NULL,
@@ -231,20 +261,54 @@ def _int_or_none(v):
         return None
 
 
-def find_movie(conn, title):
+def display_name(title, edition=''):
+    """'Road Trip' + '2004' -> 'Road Trip (2004)'."""
+    return f'{title} ({edition})' if edition else (title or '')
+
+
+_EDITION = re.compile(r'^(.*\S)\s*\(([^()]+)\)$')
+
+
+def resolve_name(conn, text):
+    """A typed movie name -> (movie id or None, title, edition).
+    'Road Trip (2004)' is the movie with that title and edition label, if there is one; otherwise the
+    whole text is the name ('Breakers (Disc 1)'). A bare name is the one without a label (else the
+    latest updated). A new label on an existing name ('Road Trip (2010)') makes a new same-named movie."""
     ensure_schema(conn)
-    r = conn.execute('SELECT id FROM movies WHERE title_key = ?', (title_key(title),)).fetchone()
-    return r[0] if r else None
+    t = clean_title(text)
+    m = _EDITION.match(t)
+    base, ed = (clean_title(m.group(1)), m.group(2).strip()) if m else (t, '')
+    if m:
+        r = conn.execute('SELECT id FROM movies WHERE title_key = ? AND edition_key = ?', (title_key(base), title_key(ed))).fetchone()
+        if r:
+            return r[0], base, ed
+    r = conn.execute("SELECT id, edition FROM movies WHERE title_key = ? ORDER BY edition_key = '' DESC, updated_at DESC, id DESC",
+                     (title_key(t),)).fetchone()
+    if r:
+        return r[0], t, r[1]
+    if m and conn.execute('SELECT 1 FROM movies WHERE title_key = ?', (title_key(base),)).fetchone():
+        return None, base, ed
+    return None, t, ''
 
 
-def get_or_create(conn, title):
-    title = clean_title(title)
+def find_movie(conn, title):
+    return resolve_name(conn, title)[0]
+
+
+def get_or_create(conn, title, edition=None):
+    """The movie with this name (see resolve_name), or a new one. edition: an explicit label."""
+    if edition is not None:
+        title, ed = clean_title(title), clean_title(edition)
+        r = conn.execute('SELECT id FROM movies WHERE title_key = ? AND edition_key = ?', (title_key(title), title_key(ed))).fetchone()
+        mid = r[0] if r else None
+    else:
+        mid, title, ed = resolve_name(conn, title)
     if not title_key(title):
         raise ValueError('A movie needs a name')
-    mid = find_movie(conn, title)
     if mid:
         return mid
-    return conn.execute('INSERT INTO movies (title, title_key) VALUES (?, ?)', (title, title_key(title))).lastrowid
+    return conn.execute('INSERT INTO movies (title, title_key, edition, edition_key) VALUES (?, ?, ?, ?)',
+                        (title, title_key(title), ed, title_key(ed))).lastrowid
 
 
 def set_video_movie(conn, video_id, title=_KEEP, scene=_KEEP, part=_KEEP, whole=_KEEP, source='manual', commit=True):
@@ -324,9 +388,9 @@ def info_map(conn, video_ids):
     ids, out = list({v for v in video_ids if v}), {}
     for k in range(0, len(ids), 500):
         chunk = ids[k:k + 500]
-        for r in conn.execute(f'SELECT vm.video_id, m.id, m.title, vm.scene, vm.part, vm.whole FROM video_movie vm '
+        for r in conn.execute(f'SELECT vm.video_id, m.id, m.title, vm.scene, vm.part, vm.whole, m.edition FROM video_movie vm '
                               f'JOIN movies m ON m.id = vm.movie_id WHERE vm.video_id IN ({",".join("?" * len(chunk))})', chunk):
-            out[r[0]] = tuple(r[1:])
+            out[r[0]] = (r[1], display_name(r[2], r[6]), r[3], r[4], r[5])     # 'Road Trip (2004)' when labelled
     return out
 
 
@@ -381,28 +445,44 @@ def autocomplete(conn, q, limit=15):
     q = (q or '').strip()
     if not q:
         return []
-    return [r[0] for r in conn.execute('SELECT title FROM movies WHERE title LIKE ? ORDER BY (title LIKE ?) DESC, title LIMIT ?',
-                                       (f'%{q}%', f'{q}%', limit))]
+    return [display_name(r[0], r[1]) for r in conn.execute(
+        'SELECT title, edition FROM movies WHERE title LIKE ? ORDER BY (title LIKE ?) DESC, title, edition LIMIT ?', (f'%{q}%', f'{q}%', limit))]
 
 
 # ---------------------------------------------------------------------------
 # the movie itself
 # ---------------------------------------------------------------------------
-_FIELDS = ('title', 'year', 'studio', 'director', 'description', 'cover_video_id')
+_FIELDS = ('title', 'edition', 'year', 'studio', 'director', 'description', 'cover_video_id')
 
 
 def get(conn, mid):
     ensure_schema(conn)
-    cur = conn.execute('SELECT id, title, year, studio, director, description, cover IS NOT NULL, cover_source, cover_video_id, '
-                       'ext_source, ext_id, ext_url, ext_raw_json, created_at, updated_at FROM movies WHERE id = ?', (mid,))
+    cur = conn.execute('SELECT id, title, edition, favorite, year, studio, director, description, cover IS NOT NULL, cover_source, '
+                       'cover_video_id, ext_source, ext_id, ext_url, ext_raw_json, created_at, updated_at FROM movies WHERE id = ?', (mid,))
     r = cur.fetchone()
     if not r:
         raise ValueError('That movie no longer exists')
     d = dict(zip([c[0] for c in cur.description], r))
     d['has_cover'] = bool(d.pop('cover IS NOT NULL'))
+    d['favorite'] = bool(d['favorite'])
+    d['display'] = display_name(d['title'], d['edition'])
     raw = d.pop('ext_raw_json')
     d['ext_scenes'] = _ext_scenes(raw)
+    try:
+        d['back_image_url'] = (json.loads(raw).get('back_image') or None) if raw else None
+    except (ValueError, AttributeError):
+        d['back_image_url'] = None
     return d
+
+
+def set_favorite(conn, ids, favorite=True):
+    ensure_schema(conn)
+    ids = [int(i) for i in ids or [] if i]
+    for k in range(0, len(ids), 500):
+        chunk = ids[k:k + 500]
+        conn.execute(f'UPDATE movies SET favorite = ? WHERE id IN ({",".join("?" * len(chunk))})', [1 if favorite else 0] + chunk)
+    conn.commit()
+    return len(ids)
 
 
 def _ext_scenes(raw):
@@ -427,27 +507,28 @@ def update(conn, mid, changes, merge=False):
     """Change a movie's own details. Renaming onto another movie's name -> {'conflict': {...}}
     unless merge=True, which moves this movie's videos into that one."""
     ensure_schema(conn)
-    get(conn, mid)
+    cur = get(conn, mid)
     sets, params = [], []
+    if 'title' in changes or 'edition' in changes:             # the name: title + edition label
+        t = clean_title(changes.get('title', cur['title']))
+        ed = clean_title(changes.get('edition', cur['edition']) or '')
+        if not title_key(t):
+            raise ValueError('A movie needs a name')
+        other = conn.execute('SELECT id, title, edition FROM movies WHERE title_key = ? AND edition_key = ? AND id != ?',
+                             (title_key(t), title_key(ed), mid)).fetchone()
+        if other:
+            if not merge:
+                return {'conflict': {'id': other[0], 'title': display_name(other[1], other[2])}}
+            merge_into(conn, [mid], other[0])
+            return {'merged_into': other[0]}
+        sets += ['title = ?', 'title_key = ?', 'edition = ?', 'edition_key = ?']
+        params += [t, title_key(t), ed, title_key(ed)]
     for k in _FIELDS:
-        if k not in changes:
+        if k not in changes or k in ('title', 'edition'):
             continue
         v = changes[k]
-        if k == 'title':
-            v = clean_title(v)
-            if not title_key(v):
-                raise ValueError('A movie needs a name')
-            other = conn.execute('SELECT id, title FROM movies WHERE title_key = ? AND id != ?', (title_key(v), mid)).fetchone()
-            if other:
-                if not merge:
-                    return {'conflict': {'id': other[0], 'title': other[1]}}
-                merge_into(conn, [mid], other[0])
-                return {'merged_into': other[0]}
-            sets += ['title = ?', 'title_key = ?']
-            params += [v, title_key(v)]
-        else:
-            sets.append(f'{k} = ?')
-            params.append((str(v).strip() or None) if v is not None else None)
+        sets.append(f'{k} = ?')
+        params.append((str(v).strip() or None) if v is not None else None)
     if sets:
         conn.execute(f"UPDATE movies SET {', '.join(sets)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?", params + [mid])
         conn.commit()
@@ -484,6 +565,44 @@ def delete(conn, mid):
         conn.execute(f'DELETE FROM {t} WHERE movie_id = ?', (mid,))
     conn.execute('DELETE FROM movies WHERE id = ?', (mid,))
     conn.commit()
+
+
+def split_off(conn, video_ids, edition):
+    """Move these videos to another movie with the same name, told apart by an edition label
+    ('Road Trip' -> 'Road Trip (2004)'). Returns the new (or existing) movie id."""
+    ensure_schema(conn)
+    ed = clean_title(edition or '')
+    if not title_key(ed):
+        raise ValueError('Give the new movie a label (like its year or studio) to tell it apart')
+    ids = [v for v in video_ids or [] if v]
+    r = conn.execute(f'SELECT m.id, m.title, m.edition_key FROM video_movie vm JOIN movies m ON m.id = vm.movie_id '
+                     f'WHERE vm.video_id IN ({",".join("?" * len(ids)) or "NULL"}) LIMIT 1', ids).fetchone()
+    if not r:
+        raise ValueError('Those videos are not in a movie')
+    if r[2] == title_key(ed):
+        raise ValueError('That is the label the movie already has')
+    mid = get_or_create(conn, r[1], edition=ed)
+    conn.execute(f'UPDATE video_movie SET movie_id = ? WHERE video_id IN ({",".join("?" * len(ids))})', [mid] + ids)
+    drop_empty(conn, [r[0]])
+    conn.commit()
+    return mid
+
+
+def set_cover_from_url(conn, mid, url):
+    """Your own cover from an image link (downloaded once and kept)."""
+    import ext_db
+    get(conn, mid)
+    url = (url or '').strip()
+    if not re.match(r'^https?://', url, re.I):
+        raise ValueError('Paste a link that starts with http:// or https://')
+    img = ext_db.download_image(url)
+    if not img:
+        raise ValueError('Could not download an image from that link')
+    mime = ext_db.image_mime(img[0], img[1])
+    if not mime:
+        raise ValueError('That link is not an image')
+    set_cover(conn, mid, img[0], mime)
+    return get(conn, mid)
 
 
 def set_cover(conn, mid, data, mime, source='user'):
@@ -540,9 +659,12 @@ def _scoped(model, conn, library):
                                      'has_cover': bool(r[5]), 'updated_at': r[6], 'count': 0, 'added': '',
                                      '_first': None, '_cover': None})
     checks = {r[0]: r[1] for r in conn.execute('SELECT movie_id, outcome FROM movie_ext_check')}
+    extra = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id, edition, favorite FROM movies WHERE edition != '' OR favorite = 1")}
     for m in movies.values():
         m['status'] = 'linked' if m['linked'] else ('review' if checks.get(m['id']) == 'review' else
                                                     'not_found' if checks.get(m['id']) == 'not_found' else 'unchecked')
+        ed, fav = extra.get(m['id'], ('', 0))
+        m['edition'], m['favorite'], m['display'] = ed, bool(fav), display_name(m['title'], ed)
     return movies
 
 
@@ -585,12 +707,14 @@ def _csv(v):
     return {x.strip().lower() for x in (v or '').split(',') if x.strip()} if isinstance(v, str) else {str(x).lower() for x in (v or [])}
 
 
-def _filtered(model, conn, library, q='', status='', tags=None, tags_exclude=None, sites=None, sites_exclude=None):
+def _filtered(model, conn, library, q='', status='', tags=None, tags_exclude=None, sites=None, sites_exclude=None, favorites=False):
     """The scoped movies after the search, link status and sidebar tag / site filters -> (list, tags, sites)."""
     movies = list(_scoped(model, conn, library).values())
     ql = title_key(q or '')
     if ql:
-        movies = [m for m in movies if ql in title_key(m['title']) or ql in title_key(m['studio'])]
+        movies = [m for m in movies if ql in title_key(m['display']) or ql in title_key(m['studio'])]
+    if favorites:
+        movies = [m for m in movies if m['favorite']]
     st = (status or '').lower()
     if st == 'unlinked':
         movies = [m for m in movies if m['status'] != 'linked']
@@ -610,13 +734,13 @@ _STATUS_ORDER = {'review': 0, 'unchecked': 1, 'not_found': 2, 'linked': 3}
 
 
 def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, status='', tags=None, tags_exclude=None,
-            sites=None, sites_exclude=None):
+            sites=None, sites_exclude=None, favorites=False):
     """Movies with at least one video in this library / group (every movie for All Videos), filtered and sorted."""
     import home
     ensure_schema(conn)
-    out, _t, _s = _filtered(model, conn, library, q, status, tags, tags_exclude, sites, sites_exclude)
+    out, _t, _s = _filtered(model, conn, library, q, status, tags, tags_exclude, sites, sites_exclude, favorites)
     s = (sort or 'title').lower()
-    out.sort(key=lambda m: _fold(m['title']).lower())
+    out.sort(key=lambda m: _fold(m['display']).lower())
     if s == 'year':
         out.sort(key=lambda m: m['year'] or '0000', reverse=True)
     elif s == 'count':
@@ -625,6 +749,8 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, st
         out.sort(key=lambda m: m['added'], reverse=True)
     elif s == 'status':
         out.sort(key=lambda m: _STATUS_ORDER.get(m['status'], 9))
+    elif s == 'favorites':
+        out.sort(key=lambda m: not m['favorite'])
     total = len(out)
     start = (max(1, page) - 1) * limit
     out = out[start:start + limit]
@@ -648,10 +774,11 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, st
     return {'movies': out, 'total': total}
 
 
-def filter_counts(model, conn, library=None, q='', status='', tags=None, tags_exclude=None, sites=None, sites_exclude=None):
+def filter_counts(model, conn, library=None, q='', status='', tags=None, tags_exclude=None, sites=None, sites_exclude=None,
+                  favorites=False):
     """The sidebar's tag / site lists for the Movies tab: how many of the shown movies have each one."""
     ensure_schema(conn)
-    movies, tsets, ssets = _filtered(model, conn, library, q, status, tags, tags_exclude, sites, sites_exclude)
+    movies, tsets, ssets = _filtered(model, conn, library, q, status, tags, tags_exclude, sites, sites_exclude, favorites)
     tc, sc, spell = Counter(), Counter(), {}
     for m in movies:
         tc.update(tsets.get(m['id'], set()))
@@ -993,6 +1120,13 @@ def detail(model, conn, mid, username=None, watch_history=None):
     items = [x for x in (home.card(model, r[0], username, watch_history, extra={'library': r[7]}) for r in rows) if x]
     library_stats.add_play_stats(conn, username, items)
     d['libraries'] = sorted({r[7] for r in rows if r[7]})
+    for i in items:                                    # the '2×' versions badge, as in the Library grid
+        try:
+            vs = model.db.get_file_versions(i['video_id'])
+            if vs and len(vs) > 1:
+                i['versions'] = vs
+        except Exception:
+            pass
     d['tags'] = movie_tags(conn, mid)
     d['check'] = None if d['ext_id'] else check_of(conn, mid)
     have = {r[1] for r in rows if r[1]}
@@ -1071,7 +1205,9 @@ def find(model, conn, library=None, whole=False):
         g['videos'].append({'video_id': vid, 'title': title or fbase, 'library': lib, 'scene': p['scene'], 'part': p['part'],
                             'whole': bool(p.get('whole')), 'sure': bool(p['sure']), 'how': p['how'],
                             'source': 'ext' if p['how'] == 'ThePornDB' else 'title'})
-    existing = {r[0]: (r[1], r[2]) for r in conn.execute('SELECT title_key, id, title FROM movies')}
+    existing = {}
+    for r in conn.execute("SELECT title_key, id, title, edition FROM movies ORDER BY edition_key = '' DESC, updated_at DESC"):
+        existing.setdefault(r[0], (r[1], display_name(r[2], r[3])))   # a bare name goes to the one without a label
     out = []
     for k, g in groups.items():
         vs = g['videos']

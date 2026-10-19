@@ -381,5 +381,102 @@ class BulkLinkTests(MovieBase):
         self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'not_found')
 
 
+
+class SameNameTests(MovieBase):
+    def test_old_table_is_migrated(self):
+        c = self.c
+        for t in ('movies', 'video_movie', 'movie_tags', 'movie_ext_check'):
+            c.execute(f'DROP TABLE IF EXISTS {t}')
+        c.execute("""CREATE TABLE movies (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, title_key TEXT NOT NULL UNIQUE,
+                     year TEXT, studio TEXT, director TEXT, description TEXT, cover BLOB, cover_mime TEXT, cover_source TEXT,
+                     cover_video_id TEXT, ext_source TEXT, ext_id TEXT, ext_url TEXT, ext_raw_json TEXT,
+                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        c.execute("INSERT INTO movies (id, title, title_key, year) VALUES (7, 'Road Trip', 'roadtrip', '2004')")
+        c.execute("CREATE TABLE video_movie (video_id TEXT PRIMARY KEY, movie_id INTEGER NOT NULL, scene INTEGER, part INTEGER, "
+                  "whole INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual')")
+        c.execute("INSERT INTO video_movie (video_id, movie_id, scene) VALUES ('v1', 7, 2)")
+        c.commit()
+        movies._schema_ready.clear()
+        movies.ensure_schema(c)
+        self.assertEqual(self.movie_of('v1'), ('Road Trip', 2, None, 0))
+        m = movies.get(c, 7)
+        self.assertEqual((m['year'], m['edition'], m['favorite']), ('2004', '', False))
+        movies.set_video_movie(c, 'v2', 'Road Trip (2010)')                       # now a second Road Trip can exist
+        self.assertEqual(c.execute("SELECT COUNT(*) FROM movies WHERE title_key = 'roadtrip'").fetchone()[0], 2)
+
+    def test_names_with_labels(self):
+        a = movies.set_video_movie(self.c, 'v1', 'Road Trip')
+        b = movies.set_video_movie(self.c, 'v2', 'Road Trip (2010)')           # a label on an existing name: new movie
+        self.assertNotEqual(a, b)
+        self.assertEqual(movies.get(self.c, b)['display'], 'Road Trip (2010)')
+        self.assertEqual(movies.find_movie(self.c, 'road trip'), a)            # the bare name: the unlabelled one
+        self.assertEqual(movies.find_movie(self.c, 'Road Trip (2010)'), b)
+        self.assertEqual(self.db.get_file(B)['movie'], 'Road Trip (2010)')     # shown (and saved back) with its label
+        self.assertEqual(sorted(movies.autocomplete(self.c, 'road')), ['Road Trip', 'Road Trip (2010)'])
+        c = movies.set_video_movie(self.c, 'v3', 'Harbor (Disc 1)')            # no 'Harbor' movie: the whole text is the name
+        self.assertEqual(movies.get(self.c, c)['title'], 'Harbor (Disc 1)')
+
+    def test_rename_clash_and_split_off(self):
+        a = movies.set_video_movie(self.c, 'v1', 'Road Trip', scene=1)
+        movies.set_video_movie(self.c, 'v2', 'Road Trip', scene=2)
+        b = movies.split_off(self.c, ['v2'], '2010')
+        self.assertEqual(self.movie_of('v2'), ('Road Trip', 2, None, 0))
+        self.assertEqual(movies.get(self.c, b)['edition'], '2010')
+        self.assertIn('conflict', movies.update(self.c, b, {'edition': ''}))     # would clash with the first
+        self.assertEqual(movies.update(self.c, b, {'edition': 'Studio X'})['movie']['display'], 'Road Trip (Studio X)')
+        with self.assertRaises(ValueError):
+            movies.split_off(self.c, ['v1'], '')
+        self.assertNotEqual(a, b)
+
+
+class FavoriteAndBatchTests(MovieBase):
+    def test_favorites(self):
+        a = movies.set_video_movie(self.c, 'v1', 'Alpha')
+        b = movies.set_video_movie(self.c, 'v2', 'Beta')
+        movies.set_favorite(self.c, [b])
+        self.assertTrue(movies.get(self.c, b)['favorite'])
+        names = lambda **kw: [m['title'] for m in movies.listing(self.model, self.c, 'Lib', **kw)['movies']]
+        self.assertEqual(names(favorites=True), ['Beta'])
+        self.assertEqual(names(sort='favorites'), ['Beta', 'Alpha'])
+        movies.set_favorite(self.c, [b], False)
+        self.assertEqual(names(favorites=True), [])
+        self.assertEqual(a, movies.find_movie(self.c, 'Alpha'))
+
+    def test_batch_targets_are_the_selected_unlinked_movies(self):
+        a = movies.set_video_movie(self.c, 'v1', 'Alpha')
+        b = movies.set_video_movie(self.c, 'v2', 'Beta')
+        c = movies.set_video_movie(self.c, 'v3', 'Gamma')
+        self.c.execute("UPDATE movies SET ext_id = 'x' WHERE id = ?", (c,))
+        movies._log_check(self.c, b, 'not_found', '', [])
+        self.assertEqual(movies.bulk_targets(self.model, self.c, movie_ids=[b, c], skip_checked=False), [b])
+        self.assertEqual(movies.bulk_targets(self.model, self.c, movie_ids=[a, b]), [a])
+
+    def test_cover_from_link(self):
+        import ext_db
+        mid = movies.set_video_movie(self.c, 'v1', 'Alpha')
+        saved = ext_db.download_image
+        try:
+            ext_db.download_image = lambda url: (b'\x89PNG...', 'image/png')
+            self.assertTrue(movies.set_cover_from_url(self.c, mid, 'https://example.com/a.png')['has_cover'])
+            self.assertEqual(self.c.execute('SELECT cover_source FROM movies WHERE id = ?', (mid,)).fetchone()[0], 'user')
+            with self.assertRaises(ValueError):
+                movies.set_cover_from_url(self.c, mid, 'file:///etc/passwd')
+            ext_db.download_image = lambda url: (b'<html>', 'text/html')
+            with self.assertRaises(ValueError):
+                movies.set_cover_from_url(self.c, mid, 'https://example.com/page')
+        finally:
+            ext_db.download_image = saved
+
+    def test_detail_versions_badge(self):
+        self.c.execute("INSERT INTO file_versions (path, video_id, filename, is_preferred, extension, codec) "
+                       "VALUES ('/media/Lib/a2.mkv', 'v1', 'a2.mkv', 0, '.mkv', 'hevc')")
+        self.c.commit()
+        mid = movies.set_video_movie(self.c, 'v1', 'Alpha')
+        self.model.db.get_file = self.db.get_file
+        self.model.db.get_file_versions = self.db.get_file_versions
+        det = movies.detail(self.model, self.c, mid)
+        self.assertEqual(len(det['items'][0]['versions']), 2)
+
+
 if __name__ == '__main__':
     unittest.main()

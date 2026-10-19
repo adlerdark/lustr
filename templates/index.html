@@ -599,7 +599,10 @@
                 mvTitles: [], mvTitlesTimer: null,
                 mvPick: { open: false, q: '', list: [], scene: '', busy: false, msg: '', paths: [], timer: null },   // right-click -> Add to movie…
                 mvStatus: '',                 // Movies tab: '' | linked | unlinked | review | not_found
-                mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '' },
+                mvSel: {}, mvSelLast: null,   // selected movie cards (id -> true)
+                mvMenu: { open: false, x: 0, y: 0, m: null },
+                mvPoster: { open: false, side: 'front' },
+                mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '', ids: null },
                 mvSug: { tags: [], details: [], loading: false }, mvTagInput: '',
                 
                 // Cast functionality
@@ -1640,7 +1643,7 @@
                     // Build file list for confirmation
                     const fileList = paths.map(p => {
                         const filename = p.split('/').pop();
-                        const video = this.videos.find(v => v.path === p);
+                        const video = this._videoByPath(p);
                         const res = video?.resolution || '';
                         const codec = video?.codec || '';
                         return `  • ${filename}${res ? ` (${res}` : ''}${codec ? `, ${codec})` : res ? ')' : ''}`;
@@ -1680,6 +1683,7 @@
                             // Refresh the entire video list to show updated metadata and badges
                             await this.loadMaleCast();
                             await this.fetchVideos('none');
+                            if (this.mvTabActive() && this.mv.view) this.mvLoad(this.mv.view.id);
                         } else {
                             const error = await response.json();
                             alert('Failed to merge files: ' + (error.error || 'Unknown error'));
@@ -1696,7 +1700,7 @@
                     if (this.selectedPaths.size !== 1) return;
                     
                     const path = Array.from(this.selectedPaths)[0];
-                    const video = this.videos.find(v => v.path === path);
+                    const video = this._videoByPath(path);
                     
                     if (!video || !video.video_id) return;
                     
@@ -6258,7 +6262,7 @@ No metadata is changed.`)) return;
                     if (this.currentLibrary === 'Home') return;
                     if (tab === 'recommended') { this.homeRows = []; this.loadHomeData(this.currentLibrary); }
                     if (tab === 'collections') { this.coll.view = null; this.loadCollections(); }
-                    if (tab === 'movies') { this.mv.view = null; this.mv.items = []; this.loadMovies(1); }
+                    if (tab === 'movies') { this.mv.view = null; this.mv.items = []; this.mvSel = {}; this.loadMovies(1); }
                 },
 
                 // the current Library view as /api/videos parameters (smart collections save these)
@@ -6313,7 +6317,7 @@ No metadata is changed.`)) return;
                 mvFilterParams() {
                     const pick = (obj, s) => Object.entries(obj || {}).filter(([, v]) => v === s).map(([k]) => k).join(',');
                     return { status: this.mvStatus || '', tags: pick(this.activeTags, 1), tags_exclude: pick(this.activeTags, -1),
-                             sites: pick(this.activeSites, 1), sites_exclude: pick(this.activeSites, -1) };
+                             sites: pick(this.activeSites, 1), sites_exclude: pick(this.activeSites, -1), favorites: this.favoritesOnly ? 'true' : 'false' };
                 },
 
                 async mvFetchFilters() {
@@ -6400,7 +6404,8 @@ No metadata is changed.`)) return;
 
                 mvStartEdit() {
                     const v = this.mv.view;
-                    this.mv.form = { title: v.title || '', year: v.year || '', studio: v.studio || '', director: v.director || '', description: v.description || '' };
+                    this.mv.form = { title: v.title || '', edition: v.edition || '', year: v.year || '', studio: v.studio || '', director: v.director || '',
+                                     description: v.description || '' };
                     this.mv.editing = true;
                 },
 
@@ -6416,7 +6421,9 @@ No metadata is changed.`)) return;
                     try {
                         const d = await this.mvPost(`/api/movies/${M.view.id}/update`, { changes: M.form, merge });
                         if (d.conflict) {
-                            if (confirm(`There is already a movie called "${d.conflict.title}".\n\nMove this movie's videos into it (one movie)?`)) return this.mvSave(true);
+                            if (confirm(`There is already a movie called "${d.conflict.title}".\n\nOK: they're the same movie - move this movie's videos into it.\n`
+                                        + `Cancel: they're different movies - keep them apart by giving this one an Edition label (like its year or studio).`)) return this.mvSave(true);
+                            M.msg = 'Two movies can share a name when one has an Edition label (like its year or studio) - fill it in and save again.';
                             return;
                         }
                         if (d.merged_into) return this.mvLoad(d.merged_into);
@@ -6501,8 +6508,9 @@ No metadata is changed.`)) return;
                 },
 
                 // ----- bulk link to ThePornDB -----
-                async mvBulkOpen() {
+                async mvBulkOpen(keepIds = false) {
                     const B = this.mvBulk;
+                    if (!keepIds) { B.ids = null; B.skip = true; }
                     Object.assign(B, { open: true, msg: '', preview: null });
                     await this.mvBulkStatus();
                     if (!B.status?.running) this.mvBulkPreview();
@@ -6510,7 +6518,7 @@ No metadata is changed.`)) return;
 
                 async mvBulkPreview() {
                     const B = this.mvBulk;
-                    try { B.preview = await this.mvPost('/api/movies/bulk/preview', { library: this.currentLibrary, skip_checked: B.skip }); }
+                    try { B.preview = await this.mvPost('/api/movies/bulk/preview', { library: this.currentLibrary, skip_checked: B.skip, movie_ids: B.ids }); }
                     catch (e) { B.msg = e.message; }
                 },
 
@@ -6518,7 +6526,7 @@ No metadata is changed.`)) return;
                     const B = this.mvBulk;
                     B.msg = '';
                     try {
-                        const d = await this.mvPost('/api/movies/bulk/start', { library: this.currentLibrary, skip_checked: B.skip,
+                        const d = await this.mvPost('/api/movies/bulk/start', { library: this.currentLibrary, skip_checked: B.skip, movie_ids: B.ids,
                                                                                 add_tags: B.addTags, delay: Number(B.delay) || 1 });
                         B.status = d.status;
                         this.mvBulkPoll();
@@ -6685,6 +6693,111 @@ No metadata is changed.`)) return;
                         else this.fetchVideos('none');
                     } catch (e) { P.msg = 'Not saved: ' + e.message; }
                     P.busy = false;
+                },
+
+                // video records shown anywhere (grid, movie page, collections, Home) - merge / split look them up here
+                _videoByPath(path) {
+                    return [...(this.videos || []), ...(this.mv.items || []), ...(this.coll.items || []), ...(this.continueWatching || []),
+                            ...(this.filteredCastBioVideos || [])].find(v => v && v.path === path);
+                },
+
+                get mvDupes() {
+                    // the movie's videos that share a scene (and part): probably copies of one scene to merge
+                    const groups = {};
+                    for (const v of this.mv.items || []) {
+                        if (v.movie_whole || !(v.movie_scene || v.movie_part)) continue;
+                        const k = (v.movie_scene || '-') + '|' + (v.movie_part || '-');
+                        (groups[k] = groups[k] || []).push(v);
+                    }
+                    return Object.values(groups).filter(g => g.length > 1).map(g => ({ label: this.mvPartLabel(g[0]), paths: g.map(v => v.path) }));
+                },
+
+                mvMergeDupes(paths) {
+                    this.selectedPaths = new Set(paths);
+                    this.openMergeDialog();
+                },
+
+                async mvSplitSelected() {
+                    const ids = this.selectedVideoIds();
+                    if (!ids.length) return;
+                    const label = prompt(`Move ${ids.length === 1 ? 'this video' : ids.length + ' videos'} to a different movie that is also called "${this.mv.view.title}".\n\n`
+                                         + 'Give it a label to tell the two apart (like its year or studio):', this.mv.view.year || '');
+                    if (label === null) return;
+                    try {
+                        const d = await this.mvPost('/api/movies/split', { video_ids: ids, edition: label });
+                        this.selectedPaths = new Set();
+                        await this.mvLoad(d.movie.id);
+                    } catch (e) { alert(e.message); }
+                },
+
+                async mvCoverFromLink() {
+                    const url = prompt('Link to the cover image (http:// or https://):');
+                    if (!url || !url.trim()) return;
+                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/cover/url`, { url: url.trim() }); await this.mvLoad(this.mv.view.id); }
+                    catch (e) { this.mv.msg = 'Cover not changed: ' + e.message; }
+                },
+
+                mvPosterSrc() {
+                    const v = this.mv.view;
+                    if (!v) return '';
+                    return this.mvPoster.side === 'back' && v.back_image_url ? v.back_image_url : v.cover;
+                },
+
+                // ----- favorites + selecting movie cards -----
+                async mvFavorite(ids, fav) {
+                    try {
+                        await this.mvPost('/api/movies/favorite', { ids, favorite: fav });
+                        for (const m of this.mv.list) if (ids.includes(m.id)) m.favorite = fav;
+                        if (this.mv.view && ids.includes(this.mv.view.id)) this.mv.view.favorite = fav;
+                        if (this.favoritesOnly && !fav) this.loadMovies(1);
+                    } catch (e) { this.mv.msg = e.message; }
+                },
+
+                get mvSelIds() { return Object.keys(this.mvSel).filter(k => this.mvSel[k]).map(Number); },
+
+                mvCardClick(m, idx, ev) {
+                    if (ev.shiftKey && this.mvSelLast !== null) {
+                        const [a, b] = [Math.min(this.mvSelLast, idx), Math.max(this.mvSelLast, idx)];
+                        for (const x of this.mv.list.slice(a, b + 1)) this.mvSel[x.id] = true;
+                        this.mvSel = { ...this.mvSel };
+                    } else if (ev.ctrlKey || ev.metaKey) {
+                        this.mvToggleSel(m, idx);
+                    } else {
+                        this.mvLoad(m.id);
+                    }
+                },
+
+                mvToggleSel(m, idx) {
+                    if (this.mvSel[m.id]) delete this.mvSel[m.id]; else this.mvSel[m.id] = true;
+                    this.mvSel = { ...this.mvSel };
+                    this.mvSelLast = idx;
+                },
+
+                mvSelectAllShown() { for (const m of this.mv.list) this.mvSel[m.id] = true; this.mvSel = { ...this.mvSel }; },
+
+                mvMenuOpen(ev, m) {
+                    const w = 220, h = 230;
+                    Object.assign(this.mvMenu, { open: true, m, x: Math.min(ev.clientX, window.innerWidth - w), y: Math.min(ev.clientY, window.innerHeight - h) });
+                },
+
+                mvMenuIds() {
+                    const m = this.mvMenu.m;
+                    return m && this.mvSel[m.id] && this.mvSelIds.length > 1 ? this.mvSelIds : (m ? [m.id] : []);
+                },
+
+                mvBulkSelected(ids) {
+                    this.mvBulk.ids = ids;
+                    this.mvBulk.skip = false;
+                    this.mvBulkOpen(true);
+                },
+
+                async mvDeleteMovies(ids) {
+                    if (!confirm(`Delete ${ids.length === 1 ? 'this movie' : ids.length + ' movies'}?\n\nTheir videos stay in your library; they just won't be in a movie any more.`)) return;
+                    try {
+                        for (const id of ids) await this.mvPost(`/api/movies/${id}/delete`);
+                        this.mvSel = {};
+                        this.loadMovies(1);
+                    } catch (e) { this.mv.msg = e.message; }
                 },
 
                 async mvCoverFromSelected() {
@@ -7050,7 +7163,10 @@ No metadata is changed.`)) return;
                         });
                     }
                 },
-                toggleFavoritesOnly() { this.favoritesOnly = !this.favoritesOnly; this.page = 1; this.fetchVideos('reset'); },
+                toggleFavoritesOnly() {
+                    this.favoritesOnly = !this.favoritesOnly; this.page = 1; this.fetchVideos('reset');
+                    if (this.mvTabActive()) this.mvFiltersChanged();          // Movies tab: favorite movies
+                },
                 
                 toggleTag(tag) {
                     // 3-state cycle: 0 (unselected) → 1 (include) → -1 (exclude) → 0
@@ -13029,12 +13145,20 @@ No metadata is changed.`)) return;
                                 </select>
                                 <select x-model="mv.sort" @change="loadMovies(1)" class="bg-gray-800 border border-gray-600 rounded px-1 py-1.5 text-sm">
                                     <option value="title">Title</option><option value="year">Year</option><option value="count">Most videos</option><option value="added">Recently added</option>
-                                    <option value="status">Link status</option>
+                                    <option value="status">Link status</option><option value="favorites">Favorites first</option>
                                 </select>
                                 <button @click="mvBulkOpen()" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-200"
                                         title="Look up every unlinked movie here on ThePornDB; sure matches are linked, the rest are kept for you to review">Link to ThePornDB…</button>
                                 <button @click="mvFindOpen()" class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-500 text-white"
                                         title="Find movies in your video titles, filenames and ThePornDB links, and review them before they're applied">Find movies…</button>
+                            </div>
+                            <div x-show="mvSelIds.length" class="flex flex-wrap items-center gap-2 mb-3 px-3 py-2 rounded bg-blue-900/40 border border-blue-800 text-sm">
+                                <b x-text="mvSelIds.length + ' selected'"></b>
+                                <button @click="mvBulkSelected(mvSelIds)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">Link to ThePornDB…</button>
+                                <button @click="mvFavorite(mvSelIds, true)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">★ Favorite</button>
+                                <button @click="mvFavorite(mvSelIds, false)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">Unfavorite</button>
+                                <button @click="mvSelectAllShown()" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs" x-text="'Select all shown (' + mv.list.length + ')'"></button>
+                                <button @click="mvSel = {}" class="px-2 py-1 rounded text-gray-300 hover:text-white text-xs">Clear</button>
                             </div>
                             <div x-show="mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center">Loading…</div>
                             <div x-show="!mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center text-sm">
@@ -13043,16 +13167,22 @@ No metadata is changed.`)) return;
                                     or set <b>Movie</b> on a video in Edit Metadata.</span>
                             </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                                <template x-for="m in mv.list" :key="m.id">
-                                    <div @click="mvLoad(m.id)" class="bg-gray-800 rounded-lg border border-gray-700 hover:border-blue-500 overflow-hidden cursor-pointer">
+                                <template x-for="(m, idx) in mv.list" :key="m.id">
+                                    <div @click="mvCardClick(m, idx, $event)" @contextmenu.prevent.stop="mvMenuOpen($event, m)"
+                                         class="bg-gray-800 rounded-lg border overflow-hidden cursor-pointer select-none group"
+                                         :class="mvSel[m.id] ? 'border-blue-400 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
                                         <div class="relative w-full bg-gray-900 overflow-hidden" style="aspect-ratio: 2 / 3">   <!-- portrait, like a DVD cover -->
                                             <img x-show="m.cover" :src="m.cover" loading="lazy" class="absolute inset-0 w-full h-full object-cover">
+                                            <button @click.stop="mvToggleSel(m, idx)" class="absolute top-1 left-1 w-6 h-6 rounded border-2 flex items-center justify-center text-xs z-10"
+                                                    :class="mvSel[m.id] ? 'bg-blue-600 border-blue-400 text-white opacity-100' : 'bg-black/50 border-gray-300 text-transparent ' + (mvSelIds.length ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')"
+                                                    title="Select (Ctrl-click / Shift-click work too)">✓</button>
+                                            <span x-show="m.favorite" class="absolute bottom-1 right-1 text-yellow-400 text-xl drop-shadow" title="Favorite">★</span>
                                             <div x-show="!m.cover" class="absolute inset-0 flex items-center justify-center text-4xl text-gray-600">🎞</div>
                                             <span x-show="m.linked" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-white" title="Linked to ThePornDB">TPDB</span>
                                             <span x-show="m.status === 'review'" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white" title="Possible ThePornDB matches to review">Review</span>
                                         </div>
                                         <div class="p-2">
-                                            <div class="font-bold text-sm truncate" :title="m.title" x-text="m.title"></div>
+                                            <div class="font-bold text-sm truncate" :title="m.display" x-text="m.display"></div>
                                             <div class="text-xs text-gray-400 truncate" x-text="[m.year, (currentLibrary !== 'All Videos' && m.count_all > m.count) ? m.count + ' here · ' + m.count_all + ' in all'
                                                 : m.count + ' video' + (m.count === 1 ? '' : 's'), m.studio].filter(Boolean).join(' · ')"></div>
                                         </div>
@@ -13071,12 +13201,14 @@ No metadata is changed.`)) return;
                             <div class="flex flex-wrap items-start gap-5 mb-6">
                                 <div class="w-44 shrink-0">
                                     <div class="w-44 h-64 bg-gray-900 rounded overflow-hidden flex items-center justify-center border border-gray-700">
-                                        <img x-show="mv.view?.cover" :src="mv.view?.cover" class="max-w-full max-h-full object-contain">
+                                        <img x-show="mv.view?.cover" :src="mv.view?.cover" @click="mvPoster = { open: true, side: 'front' }"
+                                             class="max-w-full max-h-full object-contain cursor-zoom-in" title="Click to enlarge">
                                         <span x-show="!mv.view?.cover" class="text-5xl text-gray-600">🎞</span>
                                     </div>
                                     <div class="flex flex-wrap gap-1 mt-2 text-[11px]">
                                         <label class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 cursor-pointer" title="Use an image of your own as the cover">
                                             Upload cover<input type="file" accept="image/*" class="hidden" @change="mvCoverUpload($event)"></label>
+                                        <button @click="mvCoverFromLink()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="Use an image from a web link as the cover">Cover from link…</button>
                                         <button x-show="mv.view?.has_cover || mv.view?.cover_video_id" @click="mvCoverFromVideo(null)"
                                                 class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400" title="Back to the first scene's thumbnail">Reset</button>
                                     </div>
@@ -13085,7 +13217,12 @@ No metadata is changed.`)) return;
                                 <div class="flex-1 min-w-[16rem]">
                                     <template x-if="!mv.editing">
                                         <div>
-                                            <h2 class="text-2xl font-bold text-gray-100" x-text="mv.view?.title"></h2>
+                                            <h2 class="text-2xl font-bold text-gray-100 flex items-center gap-2">
+                                                <span x-text="mv.view?.display"></span>
+                                                <button @click="mvFavorite([mv.view.id], !mv.view.favorite)" class="text-2xl leading-none"
+                                                        :class="mv.view?.favorite ? 'text-yellow-400' : 'text-gray-500 hover:text-yellow-300'"
+                                                        :title="mv.view?.favorite ? 'Favorite - click to remove' : 'Add to favorites'" x-text="mv.view?.favorite ? '★' : '☆'"></button>
+                                            </h2>
                                             <p class="text-sm text-gray-400 mt-1" x-text="[mv.view?.year, mv.view?.studio, mv.view?.director ? 'Directed by ' + mv.view.director : '',
                                                fmtRuntime(mv.view?.runtime), (mv.view?.count || 0) + ' video' + (mv.view?.count === 1 ? '' : 's')
                                                + ((mv.view?.libraries?.length || 0) > 1 ? ' from ' + mv.view.libraries.length + ' libraries' : '')].filter(Boolean).join(' · ')"
@@ -13164,6 +13301,8 @@ No metadata is changed.`)) return;
                                         <div class="space-y-2 max-w-xl text-sm">
                                             <label class="block"><span class="text-xs text-gray-400">Name</span>
                                                 <input type="text" x-model="mv.form.title" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></label>
+                                            <label class="block"><span class="text-xs text-gray-400">Edition label <span class="text-gray-500">(only to tell apart different movies with the same name, like its year or studio - shown as "Name (label)")</span></span>
+                                                <input type="text" x-model="mv.form.edition" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></label>
                                             <div class="grid grid-cols-3 gap-2">
                                                 <label class="block"><span class="text-xs text-gray-400">Year</span>
                                                     <input type="text" x-model="mv.form.year" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></label>
@@ -13191,6 +13330,16 @@ No metadata is changed.`)) return;
                                     <button @click="mvDelete()" class="px-2 py-1 rounded bg-gray-800 hover:bg-red-800 text-red-300">Delete movie</button>
                                 </div>
                             </div>
+                            <div x-show="mvDupes.length" class="mb-3 px-3 py-2 rounded bg-purple-900/30 border border-purple-800 text-sm flex flex-wrap items-center gap-2">
+                                <span class="text-purple-200">Possible duplicates:</span>
+                                <template x-for="g in mvDupes" :key="'dp' + g.label">
+                                    <span class="flex items-center gap-1">
+                                        <span x-text="g.label + ': ' + g.paths.length + ' videos'"></span>
+                                        <button @click="mvMergeDupes(g.paths)" class="px-2 py-0.5 rounded bg-purple-700 hover:bg-purple-600 text-white text-xs"
+                                                title="Merge these files into one video (the other copies become its versions)">Merge…</button>
+                                    </span>
+                                </template>
+                            </div>
                             <h3 class="text-sm font-semibold text-gray-300 mb-2">Your videos</h3>
                             <div x-show="!mv.items.length && !mv.loading" class="text-gray-500 text-sm mb-4">None of your videos are in this movie (any more).</div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
@@ -13202,6 +13351,9 @@ No metadata is changed.`)) return;
                                         <div class="video-card-thumb">
                                             <img :src="getThumb(video)" loading="lazy">
                                             <span x-show="mvPartLabel(video)" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white" x-text="mvPartLabel(video)"></span>
+                                            <span x-show="video.favorite" class="absolute top-1 right-1 text-yellow-400 text-xl drop-shadow pointer-events-none" title="Favorite">★</span>
+                                            <span x-show="video.versions && video.versions.length > 1" class="absolute top-7 left-1 bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none"
+                                                  x-text="(video.versions?.length || 0) + '×'" title="Merged versions"></span>
                                             <div x-show="video.watch_duration > 0 && video.watch_progress > 0" class="absolute bottom-0 left-0 right-0 h-1 bg-gray-700">
                                                 <div class="h-full bg-blue-500" :style="`width: ${video.watch_duration > 0 ? Math.min(100, video.watch_progress / video.watch_duration * 100) : 0}%`"></div>
                                             </div>
@@ -14152,7 +14304,12 @@ No metadata is changed.`)) return;
             </button>
             <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
                     @click="mvRemoveSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400 flex items-center gap-2">
-                <span>➖</span><span x-text="'Remove from ' + (mv.view?.title || 'movie')"></span>
+                <span>➖</span><span x-text="'Remove from ' + (mv.view?.display || 'movie')"></span>
+            </button>
+            <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
+                    @click="mvSplitSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2"
+                    title="For a different movie that has the same name: these videos go to a second movie told apart by a label">
+                <span>⑂</span><span>Move to a new movie with the same name…</span>
             </button>
 
             <!-- Remove from Playlist (only show when in playlist view) -->
@@ -14179,7 +14336,7 @@ No metadata is changed.`)) return;
             </button>
 
             <!-- Split option (when 1 file with multiple versions selected) -->
-            <template x-if="selectedPaths.size === 1 && (() => { const path = Array.from(selectedPaths)[0]; const video = videos.find(v => v.path === path); return video && video.versions && video.versions.length > 1; })()">
+            <template x-if="selectedPaths.size === 1 && (() => { const video = _videoByPath(Array.from(selectedPaths)[0]); return video && video.versions && video.versions.length > 1; })()">
                 <button 
                     @click="splitVideo()"
                     class="w-full text-left px-4 py-2 hover:bg-blue-600 text-orange-400 text-sm flex items-center gap-2">
@@ -14724,11 +14881,37 @@ No metadata is changed.`)) return;
             </div>
         </div>
 
+        <!-- MOVIE POSTER, BIG -->
+        <div x-show="mvPoster.open" x-cloak class="fixed inset-0 z-[95] bg-black/90 flex flex-col items-center justify-center p-4"
+             @click="mvPoster.open = false" @keydown.escape.window="mvPoster.open = false">
+            <img :src="mvPosterSrc()" referrerpolicy="no-referrer" class="max-w-full max-h-[88vh] object-contain shadow-2xl">
+            <div x-show="mv.view?.back_image_url" class="mt-3 flex gap-2" @click.stop>
+                <button @click="mvPoster.side = 'front'" class="px-3 py-1 rounded text-sm" :class="mvPoster.side === 'front' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'">Front</button>
+                <button @click="mvPoster.side = 'back'" class="px-3 py-1 rounded text-sm" :class="mvPoster.side === 'back' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'">Back</button>
+            </div>
+        </div>
+
+        <!-- RIGHT-CLICK ON A MOVIE CARD -->
+        <div x-show="mvMenu.open" x-cloak class="fixed z-[96] bg-gray-800 border border-gray-600 rounded shadow-2xl py-1 text-sm w-56"
+             :style="`left: ${mvMenu.x}px; top: ${mvMenu.y}px`" @click.outside="mvMenu.open = false" @keydown.escape.window="mvMenu.open = false">
+            <div class="px-3 py-1 text-xs text-gray-400 truncate" x-text="mvMenuIds().length > 1 ? mvMenuIds().length + ' movies' : (mvMenu.m?.display || '')"></div>
+            <button x-show="mvMenuIds().length === 1" @click="mvMenu.open = false; mvLoad(mvMenu.m.id)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Open</button>
+            <button @click="mvMenu.open = false; mvFavorite(mvMenuIds(), !(mvMenuIds().length === 1 && mvMenu.m?.favorite))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                    x-text="mvMenuIds().length === 1 && mvMenu.m?.favorite ? '☆ Remove from favorites' : '★ Add to favorites'"></button>
+            <button x-show="mvMenuIds().length > 1" @click="mvMenu.open = false; mvFavorite(mvMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
+            <button @click="mvMenu.open = false; mvBulkSelected(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Link to ThePornDB…</button>
+            <button @click="mvMenu.open = false; mvToggleSel(mvMenu.m, mv.list.indexOf(mvMenu.m))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                    x-text="mvSel[mvMenu.m?.id] ? 'Unselect' : 'Select'"></button>
+            <div class="border-t border-gray-700 my-1"></div>
+            <button @click="mvMenu.open = false; mvDeleteMovies(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-red-700 text-red-300"
+                    x-text="mvMenuIds().length > 1 ? 'Delete ' + mvMenuIds().length + ' movies' : 'Delete movie'"></button>
+        </div>
+
         <!-- BULK LINK MOVIES TO THEPORNDB (movies.py start_bulk) -->
         <div x-show="mvBulk.open" x-cloak class="fixed inset-0 z-[85] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvBulk.open = false">
             <div class="bg-gray-800 rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl" @click.outside="mvBulk.open = false">
                 <div class="p-4 border-b border-gray-700 flex items-center">
-                    <span class="font-bold flex-1" x-text="'Link movies to ThePornDB' + (currentLibrary !== 'All Videos' ? ' · ' + currentLibrary : '')"></span>
+                    <span class="font-bold flex-1" x-text="'Link movies to ThePornDB' + (mvBulk.ids ? ' · ' + mvBulk.ids.length + ' selected' : (currentLibrary !== 'All Videos' ? ' · ' + currentLibrary : ''))"></span>
                     <button @click="mvBulk.open = false" class="text-gray-400 hover:text-white">✕</button>
                 </div>
                 <div class="p-4 space-y-3 overflow-y-auto scroller text-sm">
