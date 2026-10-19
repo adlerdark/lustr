@@ -12904,11 +12904,11 @@ No metadata is changed.`)) return;
                                 <span x-show="!mv.q">No movies here yet. Click <b>Find movies…</b> to find them in your titles (like "Movie Name 2 Scene 3"),
                                     or set <b>Movie</b> on a video in Edit Metadata.</span>
                             </div>
-                            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-4">
+                            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                                 <template x-for="m in mv.list" :key="m.id">
                                     <div @click="mvLoad(m.id)" class="bg-gray-800 rounded-lg border border-gray-700 hover:border-blue-500 overflow-hidden cursor-pointer">
-                                        <div class="video-card-thumb">
-                                            <img x-show="m.cover" :src="m.cover" loading="lazy" :class="m.has_cover ? 'object-contain bg-gray-900' : ''">
+                                        <div class="relative w-full bg-gray-900 overflow-hidden" style="aspect-ratio: 2 / 3">   <!-- portrait, like a DVD cover -->
+                                            <img x-show="m.cover" :src="m.cover" loading="lazy" class="absolute inset-0 w-full h-full object-cover">
                                             <div x-show="!m.cover" class="absolute inset-0 flex items-center justify-center text-4xl text-gray-600">🎞</div>
                                             <span x-show="m.linked" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-white" title="Linked to ThePornDB">TPDB</span>
                                         </div>
