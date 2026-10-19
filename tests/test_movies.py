@@ -361,6 +361,9 @@ class BulkLinkTests(MovieBase):
         self.assertEqual(sug['details'], [])                                         # linking filled the empty details
         movies.update(self.c, self.mid, {'studio': 'My Own Studio'})
         self.assertEqual([(d['field'], d['value']) for d in movies.suggestions(self.c, self.mid)['details']], [('studio', 'Studio X')])
+        movies.update(self.c, self.mid, {'title': 'summer road trip 13'})              # spelled differently from ThePornDB
+        self.assertEqual([(d['field'], d['value'], d['current']) for d in movies.suggestions(self.c, self.mid)['details']][0],
+                         ('title', 'Summer Road Trip 13', 'summer road trip 13'))
 
     def test_two_with_the_same_title_need_review(self):
         self.results = [self.cand('t1', 'Summer Road Trip 13', '2011-05-01'), self.cand('t2', 'Summer Road Trip 13', '2011-02-01')]

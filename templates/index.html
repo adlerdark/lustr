@@ -6554,10 +6554,15 @@ No metadata is changed.`)) return;
                     return Object.keys(this.allTags || {}).filter(t => t.toLowerCase().includes(q) && !have.has(t)).slice(0, 40);
                 },
 
-                async mvUseDetail(field, value) {
+                async mvUseDetail(field, value, merge = false) {
                     try {
-                        await this.mvPost(`/api/movies/${this.mv.view.id}/update`, { changes: { [field]: value } });
-                        await this.mvLoad(this.mv.view.id);
+                        const d = await this.mvPost(`/api/movies/${this.mv.view.id}/update`, { changes: { [field]: value }, merge });
+                        if (d.conflict) {                         // renaming onto another movie's name
+                            if (confirm(`There is already a movie called "${d.conflict.title}".\n\nOK: they're the same movie - move this movie's videos into it.\n`
+                                        + `Cancel: keep them apart (give one an Edition label in Edit).`)) return this.mvUseDetail(field, value, true);
+                            return;
+                        }
+                        await this.mvLoad(d.merged_into || this.mv.view.id);
                     } catch (e) { this.mv.msg = e.message; }
                 },
 
@@ -13323,10 +13328,14 @@ No metadata is changed.`)) return;
                                                 <div class="mt-2 space-y-1 text-xs">
                                                     <template x-for="d in mvSug.details" :key="'sd' + d.field">
                                                         <div class="flex items-baseline gap-2">
-                                                            <span class="w-20 shrink-0 text-gray-400 capitalize" x-text="d.field"></span>
-                                                            <span class="flex-1 text-gray-200 line-clamp-2" x-text="d.value" :title="d.value"></span>
-                                                            <button @click="mvUseDetail(d.field, d.value)" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 shrink-0"
-                                                                    :title="d.current ? 'Now: ' + d.current : 'Empty now'">Use</button>
+                                                            <span class="w-20 shrink-0 text-gray-400 capitalize" x-text="d.field === 'title' ? 'Name' : d.field"></span>
+                                                            <span class="flex-1 text-gray-200 line-clamp-2" :title="d.value">
+                                                                <span x-text="d.value"></span>
+                                                                <span x-show="d.field === 'title'" class="text-gray-500" x-text="' (yours: ' + d.current + ')'"></span></span>
+                                                            <button @click="mvUseDetail(d.field, d.value)" class="px-2 py-0.5 rounded shrink-0"
+                                                                    :class="d.field === 'title' ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'"
+                                                                    :title="d.field === 'title' ? 'Rename the movie to its ThePornDB name (its videos keep their own titles)' : (d.current ? 'Now: ' + d.current : 'Empty now')"
+                                                                    x-text="d.field === 'title' ? 'Rename' : 'Use'"></button>
                                                         </div>
                                                     </template>
                                                 </div>

@@ -860,7 +860,8 @@ def suggestions(conn, mid):
     site = raw.get('site') or {}
     director = ', '.join(x.get('name', '') for x in (raw.get('directors') or []) if isinstance(x, dict) and x.get('name'))
     details = []
-    for field, val in (('year', (raw.get('date') or '')[:4]), ('studio', site.get('name') or ''),
+    for field, val in (('title', clean_title(raw.get('title') or '')),           # its name on ThePornDB, if spelled differently
+                       ('year', (raw.get('date') or '')[:4]), ('studio', site.get('name') or ''),
                        ('director', director), ('description', (raw.get('description') or '').strip())):
         if val and val != (d.get(field) or ''):
             details.append({'field': field, 'value': val, 'current': d.get(field) or ''})
