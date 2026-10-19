@@ -7060,10 +7060,11 @@ No metadata is changed.`)) return;
                 },
                 
                 // Make modal draggable - call with makeDraggable($refs.modalElement)
-                // Edit Metadata window: resizable from its corner; the size you choose is remembered
-                metaSizeInit(el) {
+                // Resizable windows (Edit Metadata, Choose Main Thumbnail): drag the edges or corner;
+                // the size you choose is remembered under `key`
+                metaSizeInit(el, key = 'metaModalSize') {
                     try {
-                        const s = JSON.parse(localStorage.getItem('metaModalSize') || 'null');
+                        const s = JSON.parse(localStorage.getItem(key) || 'null');
                         if (s && s.w) { el.style.width = s.w + 'px'; if (s.h) el.style.height = s.h + 'px'; }
                     } catch (e) { /* default size */ }
                     this.addResizeGrips(el);
@@ -7071,15 +7072,15 @@ No metadata is changed.`)) return;
                     el.addEventListener('pointerdown', () => { el._downInside = true; });
                     document.addEventListener('pointerdown', e => { if (!el.contains(e.target)) el._downInside = false; }, true);
                     let last = el.offsetWidth + 'x' + el.offsetHeight, timer = null;
-                    // the browser's resize handle sets an inline height; content changes alone don't
+                    // only a size you dragged is remembered (not the default, or the window just opening)
                     new ResizeObserver(() => {
-                        if (!el.offsetWidth || !el.style.height) return;
+                        if (!el.offsetWidth || !el._userSized) return;
                         const now = el.offsetWidth + 'x' + el.offsetHeight;
                         if (now === last) return;
                         last = now;
                         clearTimeout(timer);
                         timer = setTimeout(() => {
-                            try { localStorage.setItem('metaModalSize', JSON.stringify({ w: el.offsetWidth, h: el.offsetHeight })); } catch (e) { /* ignore */ }
+                            try { localStorage.setItem(key, JSON.stringify({ w: el.offsetWidth, h: el.offsetHeight })); } catch (e) { /* ignore */ }
                         }, 300);
                     }).observe(el);
                 },
@@ -7099,6 +7100,7 @@ No metadata is changed.`)) return;
                             e.preventDefault();
                             e.stopPropagation();
                             el._downInside = true;
+                            el._userSized = true;
                             const r = el.getBoundingClientRect();
                             if (el.style.position !== 'fixed') {        // pin it where it is, so it grows right / down
                                 Object.assign(el.style, { position: 'fixed', margin: '0', left: r.left + 'px', top: r.top + 'px' });
@@ -7124,10 +7126,11 @@ No metadata is changed.`)) return;
                         '<svg viewBox="0 0 18 18" width="18" height="18" style="display:block;opacity:.6"><path d="M16 6L6 16M16 11l-5 5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>');
                 },
 
-                metaSizeReset(el) {
-                    try { localStorage.removeItem('metaModalSize'); } catch (e) { /* ignore */ }
-                    el.style.width = 'min(1344px, 95vw)';
-                    el.style.height = '';
+                metaSizeReset(el, key = 'metaModalSize', width = 'min(1344px, 95vw)', height = '') {
+                    try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
+                    el._userSized = false;
+                    el.style.width = width;
+                    el.style.height = height;
                     Object.assign(el.style, { maxHeight: '', position: 'relative', left: '', top: '', margin: '' });   // back to the middle
                 },
 
@@ -15559,23 +15562,37 @@ No metadata is changed.`)) return;
 
         <!-- Choose Main Thumbnail -->
         <div x-show="thumbPick.open" x-cloak class="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
-            <div class="bg-gray-800 rounded-lg w-full max-w-3xl p-5 shadow-2xl" @click.outside="thumbPick.open = false" @keydown.escape.window="thumbPick.open = false">
-                <h2 class="text-lg font-bold mb-1">Choose Main Thumbnail</h2>
-                <p class="text-xs text-gray-400 mb-3 truncate" x-text="thumbPick.title"></p>
-                <div x-show="thumbPick.busy && !thumbPick.frames.length" class="text-sm text-gray-400 py-6 text-center">Loading…</div>
-                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-[65vh] overflow-y-auto">
-                    <template x-for="(f, i) in thumbPick.frames" :key="f">
-                        <button @click="thumbPickSet(i)" :disabled="thumbPick.busy"
-                                class="relative rounded overflow-hidden border-2 hover:border-blue-400 disabled:opacity-60"
-                                :class="i === thumbPick.cover ? 'border-blue-500' : 'border-transparent'">
-                            <img :src="f" class="w-full aspect-video object-cover bg-gray-900" loading="lazy" alt="">
-                            <span class="absolute top-1 left-1 text-[10px] bg-black/70 text-white px-1 rounded" x-text="i + 1"></span>
-                            <span x-show="i === thumbPick.cover" class="absolute top-1 right-1 text-[10px] bg-blue-600 text-white px-1 rounded">Main</span>
-                        </button>
-                    </template>
+            <div x-init="$nextTick(() => { makeDraggable($el); metaSizeInit($el, 'thumbPickSize'); })"
+                 class="bg-gray-800 rounded-lg p-5 shadow-2xl flex flex-col"
+                 style="width: min(1152px, 95vw); height: min(500px, 90vh); max-width: 98vw; min-width: 420px; min-height: 260px; overflow: hidden;"
+                 @click.outside="if (!$el._downInside) thumbPick.open = false" @keydown.escape.window="thumbPick.open = false">
+                <div class="flex items-start gap-3 shrink-0" data-drag-handle style="cursor: move">
+                    <div class="flex-1 min-w-0">
+                        <h2 class="text-lg font-bold mb-1">Choose Main Thumbnail</h2>
+                        <p class="text-xs text-gray-400 mb-3 truncate" x-text="thumbPick.title"></p>
+                    </div>
+                    <span class="text-xs text-gray-500 whitespace-nowrap">drag the edges to resize</span>
+                    <button @click.stop="metaSizeReset($el.closest('[data-drag-handle]').parentElement, 'thumbPickSize', 'min(1152px, 95vw)', 'min(500px, 90vh)')"
+                            class="text-gray-500 hover:text-white text-sm" title="Reset the size">↺</button>
                 </div>
-                <p x-show="thumbPick.error" class="text-sm text-red-400 mt-2" x-text="thumbPick.error"></p>
-                <div class="flex justify-end mt-4">
+                <div x-show="thumbPick.busy && !thumbPick.frames.length" class="text-sm text-gray-400 py-6 text-center">Loading…</div>
+                <!-- the frames: 4 across, as large as the window allows (16:9, fitting both its width and height) -->
+                <div class="flex-1 min-h-0" style="container-type: size;">
+                    <div class="grid gap-2 h-full content-center justify-center"
+                         :style="(() => { const rows = Math.max(1, Math.ceil(thumbPick.frames.length / 4)); return `grid-template-columns: repeat(4, min(calc((100cqw - 24px) / 4), calc((100cqh - ${(rows - 1) * 8}px) / ${rows} * 16 / 9)));`; })()">
+                        <template x-for="(f, i) in thumbPick.frames" :key="f">
+                            <button @click="thumbPickSet(i)" :disabled="thumbPick.busy"
+                                    class="relative rounded overflow-hidden border-2 hover:border-blue-400 disabled:opacity-60"
+                                    :class="i === thumbPick.cover ? 'border-blue-500' : 'border-transparent'">
+                                <img :src="f" class="block w-full aspect-video object-cover bg-gray-900" loading="lazy" alt="">
+                                <span class="absolute top-1 left-1 text-[10px] bg-black/70 text-white px-1 rounded" x-text="i + 1"></span>
+                                <span x-show="i === thumbPick.cover" class="absolute top-1 right-1 text-[10px] bg-blue-600 text-white px-1 rounded">Main</span>
+                            </button>
+                        </template>
+                    </div>
+                </div>
+                <p x-show="thumbPick.error" class="text-sm text-red-400 mt-2 shrink-0" x-text="thumbPick.error"></p>
+                <div class="flex justify-end mt-4 shrink-0">
                     <button @click="thumbPick.open = false" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Close</button>
                 </div>
             </div>
