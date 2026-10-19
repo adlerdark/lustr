@@ -3641,6 +3641,11 @@ def _store_tpdb(conn, video_id, kind, raw, clues, score=None, scene_number=None,
                   c['title'] if kind == 'movie' else None, n, scope,
                   old[1] if (same and keep_linked_at) else datetime_now_sql()))
     conn.commit()
+    try:                                 # a movie scene: the video goes in that movie (movies.py)
+        import movies
+        movies.on_video_linked(conn, video_id, kind, raw, n, image)
+    except Exception as e:
+        print(f"ext_db: movie for {video_id} not set: {e}")
 
 
 def datetime_now_sql():

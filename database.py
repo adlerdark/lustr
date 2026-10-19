@@ -891,6 +891,8 @@ class Database:
                 
                 rows = cursor.fetchall()
                 result[field_lower] = [row[0] for row in rows]
+            import movies                                   # Movie / Scene # / Part # (movies.py)
+            movies.add_movie_info(conn, [result])
         
         return result
     
@@ -950,6 +952,9 @@ class Database:
             values = self.list_values_by_video(field, vids)
             for rec in records.values():
                 rec[field] = list(values.get(rec['video_id'], []))
+        if list_fields is None:
+            import movies
+            movies.add_movie_info(self.get_connection(), list(records.values()))
         return records
 
     def get_all_tags(self, field_name=None):

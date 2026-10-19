@@ -74,7 +74,7 @@ def _merge_move_rows(conn, video_id, old_ids):
                          (video_id, ','.join(langs), ','.join(sources)))
             conn.execute(f'DELETE FROM video_captions WHERE video_id IN ({ph})', old)
     # one row per (key, video): keep the merged video's / the first one, drop the doubles
-    for table in ('playlist_items', 'marker_dismissed', 'video_ext_bulk_log'):
+    for table in ('playlist_items', 'marker_dismissed', 'video_ext_bulk_log', 'video_movie'):
         if _table_exists(conn, table):
             conn.execute(f'UPDATE OR IGNORE {table} SET video_id = ? WHERE video_id IN ({ph})', [video_id] + old)
             conn.execute(f'DELETE FROM {table} WHERE video_id IN ({ph})', old)
@@ -189,6 +189,12 @@ def _prepare_sort(conn, rows, field):
     elif field == 'male_cast' and _male_cast_for_video:
         for r in rows:
             r['male_cast'] = sorted(_male_cast_for_video(r.get('video_id')) or [])
+    elif field == 'movie':                                  # by movie, then scene / part (movies.py)
+        import movies
+        need = [r for r in rows if 'movie' not in r]
+        movies.add_movie_info(conn, need)
+        for r in rows:
+            r['_movie_sort'] = movies.sort_label(r)
 
 
 def _fold(text):
@@ -203,7 +209,7 @@ def _sort_key(field):
     to_num = _SORT_NUMBERS.get(field)
 
     def key(item):
-        val = item.get(field)
+        val = item.get('_movie_sort' if field == 'movie' else field)
         if field == 'cast':
             val = _without_male_cast(item, val)
         if to_num:
@@ -274,6 +280,16 @@ def _pop_scene_filter(field_filters):
     if isinstance(v, tuple):
         v = v[1]
     return str(v).strip().lower() or None
+
+
+def _pop_movie_filter(field_filters):
+    """movie:"Name" / movie:yes / movie:no -> its values, removed from the parsed filters (movies.py)."""
+    vals = field_filters.pop('movie', None)
+    for group in field_filters.get('__or_groups__') or []:
+        group.pop('movie', None)
+    if not vals:
+        return None
+    return vals if isinstance(vals, list) else [vals]
 
 
 def _pop_captions_filter(field_filters):
@@ -505,6 +521,7 @@ def _get_videos_sql_fast(
     base_query, field_filters, library_filters = SearchParser.parse_query(query)
     scene_kind = _pop_scene_filter(field_filters)
     cc_filter = _pop_captions_filter(field_filters)
+    movie_filter = _pop_movie_filter(field_filters)
     tag_fields = [f.lower() for f in LIST_FIELDS if f.lower() not in ['site', 'cast']]
     
     conn = model.db.get_connection()
@@ -578,6 +595,12 @@ def _get_videos_sql_fast(
     _add_scene_condition(scene_kind, conditions, params)
     if cc_filter is not None:
         conditions.append(_captions_sql(cc_filter))
+    if movie_filter:
+        import movies
+        msql, mparams = movies.filter_sql(movie_filter)
+        if msql:
+            conditions.append(msql)
+            params.extend(mparams)
 
     if 'path' in field_filters:
         conditions.append("fv.path LIKE ?")
@@ -831,6 +854,13 @@ def get_videos(
     scene_kind = _pop_scene_filter(field_filters)
     cc_filter = _pop_captions_filter(field_filters)
     cc_paths = None
+    movie_filter = _pop_movie_filter(field_filters)
+    movie_vids = None
+    if movie_filter:
+        import movies
+        msql, mparams = movies.filter_sql(movie_filter)
+        if msql:
+            movie_vids = {r[0] for r in model.db.get_connection().execute(f'SELECT v.video_id FROM videos v WHERE {msql}', mparams)}
     if cc_filter is not None:
         cond = _captions_sql(True, 'fv.video_id')
         cc_paths = {r[0] for r in model.db.get_connection().execute(f'SELECT fv.path FROM file_versions fv WHERE {cond}')}
@@ -1055,6 +1085,7 @@ def get_videos(
         # Query Filters
         if scene_paths is not None and (path in scene_paths) == scene_negate: continue
         if cc_paths is not None and (path in cc_paths) != cc_filter: continue
+        if movie_vids is not None and data.get('video_id') not in movie_vids: continue
         if field_filters:
             if 'path' in field_filters and not SearchParser.matches_path(path, field_filters['path']): continue
             other_filters = {k: v for k, v in field_filters.items() if k not in ('path', '__or_groups__')}
@@ -2011,7 +2042,9 @@ async def split_video(request: Request, model = Depends(get_model)):
         except Exception as e:
             print(f"Warning: Could not retrieve original metadata: {e}")
         
-        # Delete the combined video
+        # Delete the combined video (its movie goes to each split video, below)
+        import movies
+        movies.ensure_schema(model.db.get_connection())
         for version in versions:
             model.db.remove_file_version(version['path'])
         
@@ -2060,6 +2093,7 @@ async def split_video(request: Request, model = Depends(get_model)):
             }
             model.db.add_file_version(new_video_id, path, filename, version_metadata)
             model.db.set_preferred_version(new_video_id, path)
+            movies.copy_movie(model.db.get_connection(), video_id, new_video_id)
             
             # Apply original list metadata to this split video
             if original_metadata:

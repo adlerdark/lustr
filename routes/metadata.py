@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 from helpers import get_file_data
 from config import USE_SQLITE, DATA_FILE
+import movies
 
 router = APIRouter(prefix="/api", tags=["metadata"])
 
@@ -325,6 +326,8 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
                                     print(f"  Error: {e}")
                                     raise
                         
+                        if any(k in movies.UPDATE_KEYS for k in (req.updates or {})):
+                            movies.apply_updates(conn, video_id, req.updates)   # Movie / Scene # / Part #
                         conn.commit()
                         # performers added to this video bring their starred attributes (Settings)
                         added_cast = [c for c in (file_data.get('cast') or []) if str(c).lower() not in cast_before]

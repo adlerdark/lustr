@@ -593,6 +593,10 @@
                 coll: { list: [], loading: false, view: null, items: [], total: 0, page: 1, editing: false,
                         form: { name: '', description: '' }, msg: '' },
                 collModal: { open: false, list: [], name: '', busy: false },
+                mv: { list: [], total: 0, page: 1, loading: false, q: '', qTimer: null, sort: 'title', view: null, items: [], msg: '', editing: false,
+                      form: {}, ext: { open: false, query: '', paste: '', list: [], busy: false, msg: '' } },        // Movies tab (movies.py)
+                mvFind: { open: false, library: '', whole: false, loading: false, busy: false, groups: [], msg: '', done: '', filter: 'all', q: '', shown: 200 },
+                mvTitles: [], mvTitlesTimer: null,
                 
                 // Cast functionality
                 castBioMode: false,
@@ -2504,7 +2508,7 @@
                             .catch(e => console.error('Failed to load favorite cast:', e));
 
                         const dynamicCols = this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1)); 
-                        const baseCols = ["Fav", "CC", "Versions", "Filename", "Title", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
+                        const baseCols = ["Fav", "CC", "Versions", "Filename", "Title", "Movie", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
                         this.availableColumns = [...new Set([...baseCols, ...dynamicCols])];
 
                         // --- STARTUP FIX: Check for hidden 'All Videos' ---
@@ -6248,6 +6252,7 @@ No metadata is changed.`)) return;
                     if (this.currentLibrary === 'Home') return;
                     if (tab === 'recommended') { this.homeRows = []; this.loadHomeData(this.currentLibrary); }
                     if (tab === 'collections') { this.coll.view = null; this.loadCollections(); }
+                    if (tab === 'movies') { this.mv.view = null; this.mv.items = []; this.loadMovies(1); }
                 },
 
                 // the current Library view as /api/videos parameters (smart collections save these)
@@ -6293,6 +6298,238 @@ No metadata is changed.`)) return;
                 },
 
                 collBack() { this.coll.view = null; this.loadCollections(); },
+
+                // ----- Movies tab (movies.py): a movie's scenes / parts, its own details, cover, ThePornDB link -----
+                async loadMovies(page = 1) {
+                    const M = this.mv;
+                    M.loading = true;
+                    try {
+                        const qs = new URLSearchParams({ library: this.currentLibrary, q: M.q || '', sort: M.sort, page, limit: 120 });
+                        const d = await (await fetch('/api/movies?' + qs)).json();
+                        if (!d.success) throw new Error(d.error);
+                        M.list = page === 1 ? d.movies : [...M.list, ...d.movies];
+                        Object.assign(M, { total: d.total, page, msg: '' });
+                    } catch (e) { M.msg = 'Could not load movies: ' + e.message; }
+                    M.loading = false;
+                },
+
+                mvSearch() {
+                    clearTimeout(this.mv.qTimer);
+                    this.mv.qTimer = setTimeout(() => this.loadMovies(1), 300);
+                },
+
+                async mvOpen(id) {
+                    if (this.currentLibrary === 'Home') this.selectLibraryOrGroup({ type: 'library', name: 'All Videos' });
+                    this.libraryTab = 'movies';
+                    if (this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = 'movies';
+                    await this.mvLoad(id);
+                },
+
+                mvOpenFromVideo(v) {
+                    if (v && v.movie_id) { this.modals.fileInfo = false; this.mvOpen(v.movie_id); }
+                },
+
+                async mvLoad(id) {
+                    const M = this.mv;
+                    M.loading = true;
+                    try {
+                        const d = await (await fetch('/api/movies/' + id)).json();
+                        if (!d.success) throw new Error(d.error);
+                        Object.assign(M, { view: d.movie, items: d.items, editing: false, msg: '' });
+                        this.continueWatching = M.items;                 // right-click / edit lookups
+                        this.recentlyWatched = [];
+                    } catch (e) { M.msg = 'Could not open the movie: ' + e.message; }
+                    M.loading = false;
+                },
+
+                mvBack() { this.mv.view = null; this.mv.items = []; this.loadMovies(1); },
+
+                mvRefresh() { if (this.mv.view) this.mvLoad(this.mv.view.id); else this.loadMovies(1); },
+
+                mvPartLabel(v) {
+                    if (!v) return '';
+                    if (v.movie_whole) return 'Whole movie';
+                    return [v.movie_scene ? 'Scene ' + v.movie_scene : '', v.movie_part ? 'Part ' + v.movie_part : ''].filter(Boolean).join(' · ');
+                },
+
+                movieLabel(v) {
+                    if (!v || !v.movie) return '';
+                    const p = this.mvPartLabel(v);
+                    return v.movie + (p ? ' · ' + p : '');
+                },
+
+                fmtRuntime(sec) {
+                    sec = Math.round(sec || 0);
+                    if (!sec) return '';
+                    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+                    return h ? `${h} h ${m} min` : `${m} min`;
+                },
+
+                mvStartEdit() {
+                    const v = this.mv.view;
+                    this.mv.form = { title: v.title || '', year: v.year || '', studio: v.studio || '', director: v.director || '', description: v.description || '' };
+                    this.mv.editing = true;
+                },
+
+                async mvPost(url, body) {
+                    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+                    const d = await r.json();
+                    if (!d.success) throw new Error(d.error || 'Failed');
+                    return d;
+                },
+
+                async mvSave(merge = false) {
+                    const M = this.mv;
+                    try {
+                        const d = await this.mvPost(`/api/movies/${M.view.id}/update`, { changes: M.form, merge });
+                        if (d.conflict) {
+                            if (confirm(`There is already a movie called "${d.conflict.title}".\n\nMove this movie's videos into it (one movie)?`)) return this.mvSave(true);
+                            return;
+                        }
+                        if (d.merged_into) return this.mvLoad(d.merged_into);
+                        await this.mvLoad(M.view.id);
+                    } catch (e) { M.msg = e.message; }
+                },
+
+                async mvDelete() {
+                    const M = this.mv;
+                    if (!confirm(`Delete the movie "${M.view.title}"?\n\nIts videos stay in your library; they just won't be in a movie any more.`)) return;
+                    try { await this.mvPost(`/api/movies/${M.view.id}/delete`); this.mvBack(); }
+                    catch (e) { M.msg = e.message; }
+                },
+
+                async mvCoverUpload(ev) {
+                    const f = ev.target.files && ev.target.files[0];
+                    ev.target.value = '';
+                    if (!f) return;
+                    const fd = new FormData();
+                    fd.append('file', f);
+                    try {
+                        const d = await (await fetch(`/api/movies/${this.mv.view.id}/cover`, { method: 'POST', body: fd })).json();
+                        if (!d.success) throw new Error(d.error);
+                        await this.mvLoad(this.mv.view.id);
+                    } catch (e) { this.mv.msg = 'Cover not changed: ' + e.message; }
+                },
+
+                async mvCoverFromVideo(videoId) {
+                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/cover/video`, { video_id: videoId || null }); await this.mvLoad(this.mv.view.id); }
+                    catch (e) { this.mv.msg = e.message; }
+                },
+
+                mvExtOpen() {
+                    Object.assign(this.mv.ext, { open: true, query: this.mv.view.title, list: [], msg: '', paste: '' });
+                    this.mvExtSearch();
+                },
+
+                async mvExtSearch() {
+                    const X = this.mv.ext;
+                    X.busy = true; X.msg = '';
+                    try {
+                        const d = await this.mvPost(`/api/movies/${this.mv.view.id}/ext/search`, { query: X.query });
+                        X.list = d.candidates;
+                        if (!X.list.length) X.msg = 'Nothing found on ThePornDB. Try a shorter name, or paste the movie\'s link.';
+                    } catch (e) { X.msg = e.message; }
+                    X.busy = false;
+                },
+
+                async mvExtLink(extId) {
+                    const X = this.mv.ext;
+                    if (!extId) return;
+                    X.busy = true; X.msg = '';
+                    try {
+                        await this.mvPost(`/api/movies/${this.mv.view.id}/ext/link`, { ext_id: extId });
+                        X.open = false;
+                        await this.mvLoad(this.mv.view.id);
+                    } catch (e) { X.msg = e.message; }
+                    X.busy = false;
+                },
+
+                async mvExtRefresh() {
+                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/ext/refresh`); await this.mvLoad(this.mv.view.id); }
+                    catch (e) { this.mv.msg = e.message; }
+                },
+
+                async mvExtUnlink() {
+                    if (!confirm('Unlink this movie from ThePornDB? Its details stay; a cover that came from ThePornDB is removed.')) return;
+                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/ext/unlink`); await this.mvLoad(this.mv.view.id); }
+                    catch (e) { this.mv.msg = e.message; }
+                },
+
+                async mvTitlesFor(q) {
+                    clearTimeout(this.mvTitlesTimer);
+                    this.mvTitlesTimer = setTimeout(async () => {
+                        if (!(q || '').trim()) { this.mvTitles = []; return; }
+                        try {
+                            const d = await (await fetch('/api/movies/autocomplete?q=' + encodeURIComponent(q))).json();
+                            this.mvTitles = d.titles || [];
+                        } catch (e) { this.mvTitles = []; }
+                    }, 200);
+                },
+
+                // ----- Find Movies: review the movies read out of titles / filenames / ThePornDB links -----
+                async mvFindOpen() {
+                    Object.assign(this.mvFind, { open: true, library: this.currentLibrary, groups: [], msg: '', filter: 'all', q: '', shown: 200, done: '' });
+                    await this.mvFindLoad();
+                },
+
+                async mvFindLoad() {
+                    const F = this.mvFind;
+                    F.loading = true; F.msg = '';
+                    try {
+                        const qs = new URLSearchParams({ library: F.library, whole: F.whole ? 'true' : 'false' });
+                        const d = await (await fetch('/api/movies/find?' + qs)).json();
+                        if (!d.success) throw new Error(d.error);
+                        F.groups = d.groups.map(g => Object.assign(g, { on: g.sure, open: false, videos: g.videos.map(v => Object.assign(v, { on: true })) }));
+                        F.shown = 200;
+                    } catch (e) { F.msg = 'Could not look for movies: ' + e.message; }
+                    F.loading = false;
+                },
+
+                get mvFindRows() {
+                    const F = this.mvFind, q = (F.q || '').toLowerCase();
+                    return F.groups.filter(g => (F.filter === 'all' || (F.filter === 'on' ? g.on : F.filter === 'unsure' ? !g.sure : g.existing_id))
+                                               && (!q || g.name.toLowerCase().includes(q) || g.videos.some(v => (v.title || '').toLowerCase().includes(q))));
+                },
+
+                get mvFindCounts() {
+                    const on = this.mvFind.groups.filter(g => g.on);
+                    return { movies: on.length, videos: on.reduce((n, g) => n + g.videos.filter(v => v.on).length, 0) };
+                },
+
+                mvFindTickAll(val) { this.mvFindRows.forEach(g => g.on = val); },
+
+                async mvFindApply() {
+                    const F = this.mvFind;
+                    const groups = F.groups.filter(g => g.on && g.name.trim()).map(g => ({ name: g.name.trim(),
+                        videos: g.videos.filter(v => v.on).map(v => ({ video_id: v.video_id, scene: v.scene, part: v.part, whole: v.whole, source: v.source })) }))
+                        .filter(g => g.videos.length);
+                    if (!groups.length) return;
+                    F.busy = true; F.msg = '';
+                    try {
+                        const d = await this.mvPost('/api/movies/find/apply', { groups });
+                        F.done = `${d.videos} video${d.videos === 1 ? '' : 's'} put in ${groups.length} movie${groups.length === 1 ? '' : 's'} (${d.made} new).`;
+                        await this.mvFindLoad();
+                        this.loadMovies(1);
+                    } catch (e) { F.msg = 'Not applied: ' + e.message; }
+                    F.busy = false;
+                },
+
+                async mvCoverFromSelected() {
+                    const ids = this.selectedVideoIds();
+                    if (ids.length) this.mvCoverFromVideo(ids[0]);
+                },
+
+                async mvRemoveSelected() {
+                    const paths = Array.from(this.selectedPaths);
+                    if (!paths.length || !confirm(`Take ${paths.length === 1 ? 'this video' : paths.length + ' videos'} out of "${this.mv.view.title}"?`)) return;
+                    try {
+                        const r = await fetch('/api/metadata/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                         body: JSON.stringify({ paths, updates: { movie: '' } }) });
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        this.selectedPaths = new Set();
+                        this.mvLoad(this.mv.view.id);
+                    } catch (e) { alert('Not changed: ' + e.message); }
+                },
 
                 async collCreateManual() {
                     const name = (prompt('Name of the new collection:') || '').trim();
@@ -6717,6 +6954,7 @@ No metadata is changed.`)) return;
                     if (col === 'Plays') return video.plays || '';
                     if (col === 'Time Watched') return video.time_watched ? this.fmtWatched(video.time_watched) : '';
                     if (col === 'Last Played') return this.fmtWhen(video.last_played);
+                    if (col === 'Movie') return this.movieLabel(video);
                     
                     // Regular columns
                     const key = col.toLowerCase().replace(' ', '_');
@@ -8176,7 +8414,7 @@ No metadata is changed.`)) return;
                         
                         // Safety Check: Ensure editFields is an array before spreading
                         const safeEditFields = Array.isArray(this.editFields) ? this.editFields : [];
-                        const fields = ['title', 'year', 'rating', 'resolution', ...safeEditFields];
+                        const fields = ['title', 'year', 'rating', 'resolution', 'movie', 'movie_scene', 'movie_part', 'movie_whole', ...safeEditFields];
                         
                         if (visibleSelectedVideos.length === 0) {
                             fields.forEach(f => this.editData[f] = "");
@@ -8408,6 +8646,7 @@ No metadata is changed.`)) return;
                             } else {
                                 await this.fetchVideos('none');
                             }
+                            if (this.libraryTab === 'movies' && this.currentLibrary !== 'Home') this.mvRefresh();
                             
                             if (Object.keys(this.activeTags).length > 0 || Object.keys(this.activeSites).length > 0) {
                                 this.fetchAvailableFilters();
@@ -12491,7 +12730,7 @@ No metadata is changed.`)) return;
                 <div x-show="currentView === 'library'">
                     <!-- tabs for a library / group (roadmap #9) -->
                     <div x-show="currentLibrary !== 'Home' && !castBioMode" class="flex flex-wrap items-center gap-1 px-4 pt-3 border-b border-gray-800 text-sm">
-                        <template x-for="tb in [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections']]" :key="tb[0]">
+                        <template x-for="tb in [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections'], ['movies', 'Movies']]" :key="tb[0]">
                             <button @click="setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
                                     :class="libraryTab === tb[0] ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'" x-text="tb[1]"></button>
                         </template>
@@ -12599,6 +12838,190 @@ No metadata is changed.`)) return;
                     </div>
 
                     <!-- HOME LIBRARY VIEW (also a library's Recommended tab) -->
+                    <!-- MOVIES TAB (movies.py) -->
+                    <div x-show="currentLibrary !== 'Home' && libraryTab === 'movies' && !castBioMode" class="p-6">
+                        <p x-show="mv.msg" class="text-sm text-red-400 mb-3" x-text="mv.msg"></p>
+                        <!-- list -->
+                        <div x-show="!mv.view">
+                            <div class="flex flex-wrap items-center gap-3 mb-4">
+                                <h2 class="text-xl font-bold text-gray-200 flex-1" x-text="'Movies' + (currentLibrary === 'All Videos' ? '' : ' in ' + currentLibrary)"></h2>
+                                <input type="search" x-model="mv.q" @input="mvSearch()" placeholder="Search movies" class="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm w-48">
+                                <select x-model="mv.sort" @change="loadMovies(1)" class="bg-gray-800 border border-gray-600 rounded px-1 py-1.5 text-sm">
+                                    <option value="title">Title</option><option value="year">Year</option><option value="count">Most videos</option><option value="added">Recently added</option>
+                                </select>
+                                <button @click="mvFindOpen()" class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-500 text-white"
+                                        title="Find movies in your video titles, filenames and ThePornDB links, and review them before they're applied">Find movies…</button>
+                            </div>
+                            <div x-show="mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center">Loading…</div>
+                            <div x-show="!mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center text-sm">
+                                <span x-show="mv.q">No movies match.</span>
+                                <span x-show="!mv.q">No movies here yet. Click <b>Find movies…</b> to find them in your titles (like "Movie Name 2 Scene 3"),
+                                    or set <b>Movie</b> on a video in Edit Metadata.</span>
+                            </div>
+                            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-4">
+                                <template x-for="m in mv.list" :key="m.id">
+                                    <div @click="mvLoad(m.id)" class="bg-gray-800 rounded-lg border border-gray-700 hover:border-blue-500 overflow-hidden cursor-pointer">
+                                        <div class="video-card-thumb">
+                                            <img x-show="m.cover" :src="m.cover" loading="lazy" :class="m.has_cover ? 'object-contain bg-gray-900' : ''">
+                                            <div x-show="!m.cover" class="absolute inset-0 flex items-center justify-center text-4xl text-gray-600">🎞</div>
+                                            <span x-show="m.linked" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-white" title="Linked to ThePornDB">TPDB</span>
+                                        </div>
+                                        <div class="p-2">
+                                            <div class="font-bold text-sm truncate" :title="m.title" x-text="m.title"></div>
+                                            <div class="text-xs text-gray-400 truncate" x-text="[m.year, m.count + ' video' + (m.count === 1 ? '' : 's'), m.studio].filter(Boolean).join(' · ')"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                            <div class="text-center mt-4">
+                                <span class="text-xs text-gray-500 mr-3" x-show="mv.total" x-text="mv.list.length + ' of ' + mv.total + ' movies'"></span>
+                                <button x-show="mv.list.length < mv.total && !mv.loading" @click="loadMovies(mv.page + 1)"
+                                        class="px-4 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">Load more</button>
+                            </div>
+                        </div>
+                        <!-- one movie -->
+                        <div x-show="mv.view">
+                            <button @click="mvBack()" class="px-2 py-1 rounded text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 mb-4">‹ Movies</button>
+                            <div class="flex flex-wrap items-start gap-5 mb-6">
+                                <div class="w-44 shrink-0">
+                                    <div class="w-44 h-64 bg-gray-900 rounded overflow-hidden flex items-center justify-center border border-gray-700">
+                                        <img x-show="mv.view?.cover" :src="mv.view?.cover" class="max-w-full max-h-full object-contain">
+                                        <span x-show="!mv.view?.cover" class="text-5xl text-gray-600">🎞</span>
+                                    </div>
+                                    <div class="flex flex-wrap gap-1 mt-2 text-[11px]">
+                                        <label class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 cursor-pointer" title="Use an image of your own as the cover">
+                                            Upload cover<input type="file" accept="image/*" class="hidden" @change="mvCoverUpload($event)"></label>
+                                        <button x-show="mv.view?.has_cover || mv.view?.cover_video_id" @click="mvCoverFromVideo(null)"
+                                                class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400" title="Back to the first scene's thumbnail">Reset</button>
+                                    </div>
+                                    <p class="text-[10px] text-gray-500 mt-1">Or right-click a video below → Use as movie cover.</p>
+                                </div>
+                                <div class="flex-1 min-w-[16rem]">
+                                    <template x-if="!mv.editing">
+                                        <div>
+                                            <h2 class="text-2xl font-bold text-gray-100" x-text="mv.view?.title"></h2>
+                                            <p class="text-sm text-gray-400 mt-1" x-text="[mv.view?.year, mv.view?.studio, mv.view?.director ? 'Directed by ' + mv.view.director : '',
+                                               fmtRuntime(mv.view?.runtime), (mv.view?.count || 0) + ' video' + (mv.view?.count === 1 ? '' : 's')].filter(Boolean).join(' · ')"></p>
+                                            <p x-show="mv.view?.ext_id" class="text-xs mt-1">
+                                                <span class="px-1.5 py-0.5 rounded bg-emerald-700 text-white">ThePornDB</span>
+                                                <a :href="mv.view?.ext_url" target="_blank" rel="noopener noreferrer" class="text-blue-300 hover:underline ml-1">open on ThePornDB ↗</a>
+                                            </p>
+                                            <p x-show="mv.view?.description" class="text-sm text-gray-300 mt-3 whitespace-pre-line max-w-3xl" x-text="mv.view?.description"></p>
+                                            <p class="text-[11px] text-gray-500 mt-3">These are the movie's own details; they aren't copied to its scenes.</p>
+                                        </div>
+                                    </template>
+                                    <template x-if="mv.editing">
+                                        <div class="space-y-2 max-w-xl text-sm">
+                                            <label class="block"><span class="text-xs text-gray-400">Name</span>
+                                                <input type="text" x-model="mv.form.title" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></label>
+                                            <div class="grid grid-cols-3 gap-2">
+                                                <label class="block"><span class="text-xs text-gray-400">Year</span>
+                                                    <input type="text" x-model="mv.form.year" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></label>
+                                                <label class="block"><span class="text-xs text-gray-400">Studio</span>
+                                                    <input type="text" x-model="mv.form.studio" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></label>
+                                                <label class="block"><span class="text-xs text-gray-400">Director</span>
+                                                    <input type="text" x-model="mv.form.director" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></label>
+                                            </div>
+                                            <label class="block"><span class="text-xs text-gray-400">Description</span>
+                                                <textarea x-model="mv.form.description" rows="4" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5"></textarea></label>
+                                            <p class="text-[11px] text-gray-500">A new name renames the movie for all its videos. Using another movie's name joins the two.</p>
+                                            <div class="flex gap-2">
+                                                <button @click="mvSave()" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white">Save</button>
+                                                <button @click="mv.editing = false" class="px-3 py-1 text-gray-400 hover:text-white">Cancel</button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-2 text-xs">
+                                    <button @click="mvStartEdit()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Edit</button>
+                                    <button x-show="!mv.view?.ext_id" @click="mvExtOpen()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Link to ThePornDB…</button>
+                                    <button x-show="mv.view?.ext_id" @click="mvExtRefresh()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
+                                            title="Fetch the ThePornDB movie again (fills empty details, updates its cover unless you set your own)">Refresh from ThePornDB</button>
+                                    <button x-show="mv.view?.ext_id" @click="mvExtUnlink()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400">Unlink</button>
+                                    <button @click="mvDelete()" class="px-2 py-1 rounded bg-gray-800 hover:bg-red-800 text-red-300">Delete movie</button>
+                                </div>
+                            </div>
+                            <h3 class="text-sm font-semibold text-gray-300 mb-2">Your videos</h3>
+                            <div x-show="!mv.items.length && !mv.loading" class="text-gray-500 text-sm mb-4">None of your videos are in this movie (any more).</div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                                <template x-for="video in mv.items" :key="'mi|' + video.path">
+                                    <div class="bg-gray-800 rounded-lg border overflow-hidden relative group cursor-pointer select-none"
+                                         :class="isSelected(video.path) ? 'selected-card' : 'border-gray-700 hover:border-blue-500'"
+                                         @click="handleCardClick(video, $event)" @dblclick="openPlayer(video)" @contextmenu.prevent.stop="handleRightClick($event, video)"
+                                         @mouseenter="startHover(video)" @mouseleave="stopHover()">
+                                        <div class="video-card-thumb">
+                                            <img :src="getThumb(video)" loading="lazy">
+                                            <span x-show="mvPartLabel(video)" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white" x-text="mvPartLabel(video)"></span>
+                                            <div x-show="video.watch_duration > 0 && video.watch_progress > 0" class="absolute bottom-0 left-0 right-0 h-1 bg-gray-700">
+                                                <div class="h-full bg-blue-500" :style="`width: ${video.watch_duration > 0 ? Math.min(100, video.watch_progress / video.watch_duration * 100) : 0}%`"></div>
+                                            </div>
+                                            <div x-show="video.length" class="absolute bottom-2 right-1 bg-black/60 text-white text-[10px] px-1 rounded pointer-events-none" x-text="video.length"></div>
+                                        </div>
+                                        <div class="p-2">
+                                            <h3 class="font-bold text-sm truncate" :title="video.title || video.filename" x-text="video.title || video.filename"></h3>
+                                            <p class="text-xs text-gray-400 mt-0.5 truncate" x-text="orderedCast(video).map(c => castLabel(c)).join(', ')"></p>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                            <div x-show="mv.view?.ext_scenes?.length" class="mt-6">
+                                <h3 class="text-sm font-semibold text-gray-300 mb-2">Scenes on ThePornDB
+                                    <span class="text-xs font-normal text-gray-500" x-text="'· you have ' + (mv.view?.ext_scenes || []).filter(s => s.have).length + ' of ' + (mv.view?.ext_scenes || []).length"></span></h3>
+                                <div class="space-y-1 text-sm max-w-3xl">
+                                    <template x-for="s in mv.view?.ext_scenes || []" :key="'xs' + s.n">
+                                        <div class="flex items-baseline gap-2 px-2 py-1 rounded" :class="s.have ? 'bg-gray-800 text-gray-200' : 'text-gray-500'">
+                                            <span class="w-16 shrink-0 text-xs" x-text="'Scene ' + s.n"></span>
+                                            <span class="w-4 shrink-0" x-text="s.have ? '✓' : ''" :title="s.have ? 'You have this scene' : ''"></span>
+                                            <span class="truncate flex-1" x-text="s.performers.join(', ') || s.title"></span>
+                                            <span class="text-xs shrink-0" x-show="s.duration" x-text="fmtRuntime(s.duration)"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                                <p class="text-[11px] text-gray-500 mt-1">Matched by scene number. Set a video's scene number in Edit Metadata if one is wrong.</p>
+                            </div>
+                        </div>
+                        <!-- link to ThePornDB -->
+                        <div x-show="mv.ext.open" x-cloak class="fixed inset-0 z-[85] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mv.ext.open = false">
+                            <div class="bg-gray-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl" @click.outside="mv.ext.open = false">
+                                <div class="p-4 border-b border-gray-700 flex items-center gap-2">
+                                    <span class="font-bold flex-1" x-text="'Link “' + (mv.view?.title || '') + '” to a ThePornDB movie'"></span>
+                                    <button @click="mv.ext.open = false" class="text-gray-400 hover:text-white">✕</button>
+                                </div>
+                                <div class="p-4 space-y-3 overflow-y-auto scroller">
+                                    <div class="flex gap-2">
+                                        <input type="text" x-model="mv.ext.query" @keydown.enter="mvExtSearch()" class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                        <button @click="mvExtSearch()" :disabled="mv.ext.busy" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm disabled:opacity-50">Search</button>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <input type="text" x-model="mv.ext.paste" placeholder="…or paste a ThePornDB movie link / ID" class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                        <button @click="mvExtLink(mv.ext.paste)" :disabled="mv.ext.busy || !mv.ext.paste.trim()" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-50">Link</button>
+                                    </div>
+                                    <p x-show="mv.ext.busy" class="text-sm text-gray-400">Asking ThePornDB…</p>
+                                    <p x-show="mv.ext.msg" class="text-sm text-amber-300" x-text="mv.ext.msg"></p>
+                                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                                        <template x-for="c in mv.ext.list" :key="c.id">
+                                            <div class="bg-gray-900 rounded border border-gray-700 overflow-hidden flex flex-col">
+                                                <div class="h-48 bg-black flex items-center justify-center">
+                                                    <img x-show="c.image_url" :src="c.image_url" loading="lazy" referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain">
+                                                </div>
+                                                <div class="p-2 text-xs flex-1">
+                                                    <div class="font-bold text-sm" x-text="c.title"></div>
+                                                    <div class="text-gray-400" x-text="[c.date, c.studio, c.scenes ? c.scenes + ' scenes' : ''].filter(Boolean).join(' · ')"></div>
+                                                </div>
+                                                <div class="p-2 pt-0 flex gap-2 text-xs">
+                                                    <button @click="mvExtLink(c.id)" :disabled="mv.ext.busy" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50">Link</button>
+                                                    <a :href="c.page_url" target="_blank" rel="noopener noreferrer" class="px-2 py-1 text-blue-300 hover:underline">View ↗</a>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <p class="text-[11px] text-gray-500">Linking fills the movie's empty details and uses ThePornDB's front cover (unless you uploaded one). Your videos' own metadata isn't changed.
+                                        StashDB has no movies, so only ThePornDB can be used here.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div x-show="currentLibrary === 'Home' || (libraryTab === 'recommended' && !castBioMode)" class="p-6 w-full">
                     <div class="max-w-7xl mx-auto space-y-8">
 
@@ -13456,6 +13879,14 @@ No metadata is changed.`)) return;
                     @click="collSetCover(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2">
                 <span>🖼</span><span>Use as collection cover</span>
             </button>
+            <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
+                    @click="mvCoverFromSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2">
+                <span>🖼</span><span>Use as movie cover</span>
+            </button>
+            <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
+                    @click="mvRemoveSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400 flex items-center gap-2">
+                <span>➖</span><span x-text="'Remove from ' + (mv.view?.title || 'movie')"></span>
+            </button>
 
             <!-- Remove from Playlist (only show when in playlist view) -->
             <button 
@@ -14003,6 +14434,76 @@ No metadata is changed.`)) return;
             </div>
         </div>
 
+        <!-- FIND MOVIES (movies.py find / apply_found) -->
+        <div x-show="mvFind.open" x-cloak class="fixed inset-0 z-[85] bg-black/80 flex items-stretch justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-6xl flex flex-col shadow-2xl overflow-hidden">
+                <div class="p-4 border-b border-gray-700 flex flex-wrap items-center gap-3">
+                    <div class="flex-1 min-w-[14rem]">
+                        <div class="font-bold text-lg" x-text="'Find movies' + (mvFind.library && mvFind.library !== 'All Videos' ? ' in ' + mvFind.library : '')"></div>
+                        <div class="text-xs text-gray-400">From titles like "Movie Name 2 Scene 3", "… Part 2", "… Disc 1", filenames, and ThePornDB links.
+                            Videos already in a movie are left out. Clear "Scene N" matches start ticked; check the others.</div>
+                    </div>
+                    <button @click="mvFind.open = false" class="text-gray-400 hover:text-white text-xl">✕</button>
+                </div>
+                <div class="px-4 py-2 border-b border-gray-700 flex flex-wrap items-center gap-3 text-sm">
+                    <select x-model="mvFind.filter" @change="mvFind.shown = 200" class="bg-gray-900 border border-gray-600 rounded px-1 py-1">
+                        <option value="all">All</option><option value="on">Ticked</option><option value="unsure">Not sure</option><option value="existing">Adds to an existing movie</option>
+                    </select>
+                    <input type="search" x-model="mvFind.q" @input="mvFind.shown = 200" placeholder="Search names / titles" class="bg-gray-900 border border-gray-600 rounded px-2 py-1 w-56">
+                    <button @click="mvFindTickAll(true)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">Tick these</button>
+                    <button @click="mvFindTickAll(false)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">Untick these</button>
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer ml-auto"
+                           title="For a library of full DVDs: each video becomes its own movie (named after its title), marked as the whole movie. Titles with Part / Disc / Scene are still read as such.">
+                        <input type="checkbox" x-model="mvFind.whole" @change="mvFindLoad()" class="rounded"> Every video here is a whole movie</label>
+                </div>
+                <div class="flex-1 overflow-y-auto scroller p-4">
+                    <p x-show="mvFind.loading" class="text-gray-400 text-center py-10">Looking through your videos…</p>
+                    <p x-show="mvFind.msg" class="text-red-400 text-sm mb-2" x-text="mvFind.msg"></p>
+                    <p x-show="!mvFind.loading && !mvFind.groups.length && !mvFind.msg" class="text-gray-500 text-center py-10">No new movies found here.</p>
+                    <div class="space-y-1">
+                        <template x-for="g in mvFindRows.slice(0, mvFind.shown)" :key="g.key">
+                            <div class="rounded border" :class="g.on ? 'border-blue-700 bg-gray-900' : 'border-gray-700 bg-gray-900/40'">
+                                <div class="flex items-center gap-2 px-2 py-1.5 text-sm">
+                                    <input type="checkbox" x-model="g.on" class="rounded">
+                                    <button @click="g.open = !g.open" class="text-gray-400 hover:text-white w-4" x-text="g.open ? '▾' : '▸'"></button>
+                                    <input type="text" x-model="g.name" class="flex-1 min-w-0 bg-transparent border border-transparent hover:border-gray-600 focus:border-blue-500 rounded px-1 py-0.5"
+                                           title="The movie's name - edit it before applying">
+                                    <span x-show="g.existing_id" class="text-[10px] px-1.5 py-0.5 rounded bg-blue-800 text-blue-100" title="A movie with this name exists; these videos are added to it">existing</span>
+                                    <span x-show="g.ext_id" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-white" title="From a ThePornDB link">TPDB</span>
+                                    <span x-show="!g.sure" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-700 text-white" title="Read from a Part / Disc / S02 title or a filename - check it">not sure</span>
+                                    <span class="text-xs text-gray-400 w-20 text-right" x-text="g.videos.filter(v => v.on).length + ' video' + (g.videos.length === 1 ? '' : 's')"></span>
+                                    <span class="text-xs text-gray-500 truncate w-72 hidden md:block" :title="g.videos.map(v => v.title).join('\n')" x-text="g.videos[0]?.title"></span>
+                                </div>
+                                <div x-show="g.open" class="pl-12 pr-2 pb-2 space-y-0.5 text-xs">
+                                    <template x-for="v in g.videos" :key="v.video_id">
+                                        <label class="flex items-center gap-2 text-gray-300 cursor-pointer">
+                                            <input type="checkbox" x-model="v.on" class="rounded">
+                                            <span class="w-28 shrink-0 text-gray-400" x-text="v.whole ? 'Whole movie' : [v.scene ? 'Scene ' + v.scene : '', v.part ? 'Part ' + v.part : ''].filter(Boolean).join(' · ') || '—'"></span>
+                                            <span class="truncate flex-1" x-text="v.title"></span>
+                                            <span class="text-gray-500 shrink-0" x-text="v.library + (v.how === 'filename' ? ' · from filename' : '')"></span>
+                                        </label>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <div class="text-center mt-3" x-show="mvFindRows.length > mvFind.shown">
+                        <button @click="mvFind.shown += 300" class="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm"
+                                x-text="'Show more (' + (mvFindRows.length - mvFind.shown) + ' left)'"></button>
+                    </div>
+                </div>
+                <div class="p-4 border-t border-gray-700 flex flex-wrap items-center gap-3">
+                    <span class="text-sm text-gray-300" x-text="mvFindCounts.movies + ' movies ticked · ' + mvFindCounts.videos + ' videos'"></span>
+                    <span class="text-xs text-gray-500" x-text="mvFind.groups.length + ' found in all'"></span>
+                    <span x-show="mvFind.done" class="text-sm text-emerald-300" x-text="mvFind.done"></span>
+                    <span class="flex-1"></span>
+                    <button @click="mvFind.open = false" class="px-3 py-1.5 text-gray-400 hover:text-white text-sm">Close</button>
+                    <button @click="mvFindApply()" :disabled="mvFind.busy || !mvFindCounts.videos" class="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm disabled:opacity-50"
+                            x-text="mvFind.busy ? 'Applying…' : 'Apply ticked'"></button>
+                </div>
+            </div>
+        </div>
+
         <div x-show="modals.fileInfo" x-cloak class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4">
             <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" @click.outside="modals.fileInfo = false">
                 <h3 class="text-xl font-bold mb-4" data-drag-handle style="cursor: move">Video Information</h3>
@@ -14013,6 +14514,9 @@ No metadata is changed.`)) return;
                         <div class="grid grid-cols-2 gap-3">
                             <div><span class="text-gray-400 block text-xs uppercase">Title</span><span x-text="infoVideo?.title || infoVideo?.filename" class="font-mono"></span></div>
                             <div><span class="text-gray-400 block text-xs uppercase">Date Added</span><span x-text="infoVideo?.date_added || 'Unknown'" class="text-xs"></span></div>
+                            <div x-show="infoVideo?.movie" class="col-span-2"><span class="text-gray-400 block text-xs uppercase">Movie</span>
+                                <a href="#" @click.prevent="mvOpenFromVideo(infoVideo)" class="text-blue-300 hover:text-blue-200 hover:underline" title="Open the movie"
+                                   x-text="movieLabel(infoVideo)"></a></div>
                         </div>
                         <div class="grid grid-cols-3 gap-3 mt-3" x-effect="modals.fileInfo && infoVideo?.path && phLoadTotals(infoVideo.path)">
                             <div><span class="text-gray-400 block text-xs uppercase">Plays</span><span x-text="infoPlay ? infoPlay.plays : '…'"></span></div>
@@ -15885,6 +16389,17 @@ No metadata is changed.`)) return;
                             <div><label class="block text-xs text-gray-400 mb-1">Year</label><input type="text" x-model="editData.year" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
                             <div><label class="block text-xs text-gray-400 mb-1">Rating</label><input type="text" x-model="editData.rating" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
                         </div>
+                        <div class="grid grid-cols-2 sm:grid-cols-[minmax(0,1fr)_6rem_6rem_auto] gap-4 items-end">
+                            <div class="col-span-2 sm:col-span-1"><label class="block text-xs text-gray-400 mb-1">Movie <span class="text-gray-500">(a scene, part or the whole movie)</span></label>
+                                <input type="text" x-model="editData.movie" list="mv-titles" @input="mvTitlesFor(editData.movie)" autocomplete="off"
+                                       :placeholder="editPaths.length > 1 ? 'Leave empty to keep each video\'s movie' : 'Not in a movie'"
+                                       class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
+                            <div><label class="block text-xs text-gray-400 mb-1">Scene #</label><input type="number" min="1" x-model="editData.movie_scene" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
+                            <div><label class="block text-xs text-gray-400 mb-1">Part #</label><input type="number" min="1" x-model="editData.movie_part" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
+                            <label class="flex items-center gap-1.5 text-xs text-gray-300 pb-1.5 cursor-pointer col-span-2 sm:col-span-1" title="The whole movie is in this one file (an unsplit DVD)">
+                                <input type="checkbox" class="rounded" :checked="editData.movie_whole === '1'" @change="editData.movie_whole = $event.target.checked ? '1' : ''"> Whole movie in this file</label>
+                        </div>
+                        <datalist id="mv-titles"><template x-for="t in mvTitles" :key="t"><option :value="t"></option></template></datalist>
                         <template x-for="field in fieldGroups.General" :key="field">
                             <div x-show="editFields.includes(field)">
                                 <label class="block text-xs text-gray-400 mb-1" :class="field === 'male_cast' ? '' : 'capitalize'"

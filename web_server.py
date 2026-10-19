@@ -75,6 +75,7 @@ from routes.clips import router as clips_router
 # Home / Recommended rows (roadmap #9)
 from routes.home import router as home_router
 from routes.collections import router as collections_router
+from routes.movies import router as movies_router
 
 
 # --- BACKUP FUNCTION ---
@@ -285,6 +286,18 @@ def inject_dependencies():
     import routes.collections
     routes.collections.set_model(model)
     routes.collections.set_watch_history(watch_history_instance)
+    import routes.movies                    # full movies (movies.py)
+    routes.movies.set_model(model)
+    routes.movies.set_watch_history(watch_history_instance)
+    if getattr(model, 'db', None):
+        try:
+            import movies
+            movies.ensure_schema(model.db.get_connection())
+            n, m = movies.prune(model.db.get_connection())
+            if n or m:
+                print(f"[movies] {n} entries of deleted videos and {m} empty movies removed")
+        except Exception as e:
+            print(f"[movies] start-up check failed: {e}")
 
     # Play counts (Home rows, Most Played / Last Played sorts): table + one-off seed from history
     if getattr(model, 'db', None):
@@ -356,6 +369,7 @@ def register_routes():
     app.include_router(clips_router)
     app.include_router(home_router)
     app.include_router(collections_router)
+    app.include_router(movies_router)
 
 
 # --- STATUS ENDPOINT ---
