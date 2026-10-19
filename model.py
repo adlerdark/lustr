@@ -751,21 +751,44 @@ class LibraryModel:
         # PHASE 5: purging files deleted longer ago than the retention period, and flag
         # clean-up, run in db_maintenance after the scan (routes/scanning.py).
 
-        if fast and new_files:
-            # a fast scan skips the technical details (codec, length, resolution) of new files:
-            # read them in the background so the files play and sort right without a manual refresh
-            threading.Thread(target=self._fill_metadata_background, args=(list(new_files),),
-                             name='fill-metadata', daemon=True).start()
+        # a fast scan skips the technical details (codec, length, resolution) of new files, and older
+        # scans could leave some unread: read every file still missing them in the background, so the
+        # files play, sort and show up (length filters, Home rows) without a manual refresh
+        self.fill_missing_metadata(list(new_files) if fast else [])
 
         return new_files, removed_files
 
     _fill_lock = threading.Lock()
+    _fill_tried = set()            # files that still had no length after a read: tried once per run
+
+    def fill_missing_metadata(self, paths=()):
+        """In the background: read the technical details of these files and of every active file
+        that has no length yet."""
+        if not self.use_sqlite:
+            return
+        threading.Thread(target=self._fill_metadata_background, args=(list(paths),),
+                         name='fill-metadata', daemon=True).start()
 
     def _fill_metadata_background(self, paths):
         with self._fill_lock:
             try:
-                n = self.refresh_technical_metadata(paths=paths)
-                print(f"[Scan] read technical details for {n} new file(s)")
+                rows = self.db.get_connection().execute(
+                    "SELECT path FROM file_versions WHERE deleted_at IS NULL AND COALESCE(length, '') = ''").fetchall()
+                todo = list(dict.fromkeys(list(paths) + [r[0] for r in rows if r[0] not in self._fill_tried]))
+                todo = [p for p in todo if os.path.exists(p) and not self._still_writing(p)]
+                if not todo:
+                    return
+                n = self.refresh_technical_metadata(paths=todo)
+                left = {r[0] for r in self.db.get_connection().execute(
+                    "SELECT path FROM file_versions WHERE deleted_at IS NULL AND COALESCE(length, '') = ''")}
+                self._fill_tried.update(p for p in todo if p in left)
+                print(f"[Scan] read technical details for {n} file(s); {len(left & set(todo))} unreadable")
+                if n:
+                    try:
+                        import home
+                        home.invalidate()
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[Scan] reading technical details failed: {e}")
 

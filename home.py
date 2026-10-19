@@ -241,6 +241,7 @@ def build(model, username, library=None, watch_history=None, collections_rows=No
     where, params = scope_sql(model, conn, library)
     if hide_zero:
         where += ' AND ' + library_stats.nonzero_length_sql('fv')
+    where += " AND COALESCE(fv.length, '') != ''"     # not read yet: it would be a blank card
     rows = []
     mk = lambda p, extra=None: card(model, p, username, watch_history, extra)
 

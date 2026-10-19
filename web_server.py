@@ -302,6 +302,7 @@ def inject_dependencies():
                 print(f"[watch_stats] {n} Play History entries followed their files")
             library_stats.snapshot_videos(conn)        # what each played video is, should it be deleted
             conn.commit()
+            model.fill_missing_metadata()              # files whose length / codec were never read
         except Exception as e:
             print(f"[watch_stats] seed failed: {e}")
     
