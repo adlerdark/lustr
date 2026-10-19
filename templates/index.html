@@ -3062,6 +3062,7 @@
                         src = `/api/cast/photo/${encodeURIComponent(p)}?thumbnail=true`;
                         const img = new Image();
                         img.onload = () => { loaded = true; show(); };
+                        img.onerror = () => { src = ''; loaded = true; show(); };      // no photo: the bio's placeholder
                         img.src = src;
                     });
                     this.castPeek.timer = setTimeout(() => { waited = true; show(); }, this.castPeek.delay);
@@ -15644,7 +15645,8 @@ No metadata is changed.`)) return;
         <!-- Cast photo shown after resting on a name -->
         <div x-show="castPeek.show" x-cloak class="fixed z-[210] pointer-events-none bg-gray-900 border border-gray-600 rounded-lg shadow-2xl p-1.5"
              :style="`left:${castPeek.x}px; top:${castPeek.y}px`" @scroll.window.capture.passive="castPeek.name && castPeekEnd()">
-            <img :src="castPeek.src" class="w-[216px] h-[324px] object-cover rounded bg-gray-800" alt="">
+            <img x-show="castPeek.src" :src="castPeek.src" class="w-[216px] h-[324px] object-cover rounded bg-gray-800" alt="">
+            <div x-show="!castPeek.src" class="w-[216px] h-[324px] rounded bg-gray-700 flex items-center justify-center text-6xl text-gray-500">👤</div>
             <div class="text-sm text-gray-200 text-center truncate w-[216px] mt-1" x-text="castLabel(castPeek.primary || castPeek.name)"></div>
             <div x-show="castPeek.primary && castPeek.primary !== castPeek.name" class="text-xs text-gray-400 text-center truncate w-[216px]"
                  x-text="'as ' + castLabel(castPeek.name)"></div>
