@@ -6498,6 +6498,22 @@ No metadata is changed.`)) return;
                     const r = ev.currentTarget.getBoundingClientRect(), w = 320;
                     const x = r.right + w + 8 < window.innerWidth ? r.right + 8 : Math.max(8, r.left - w - 8);
                     Object.assign(this.mvHover, { c, x, y: Math.max(8, Math.min(r.top, window.innerHeight - 420)) });
+                    // mouseleave doesn't fire when the cards re-sort under the mouse or the panel closes:
+                    // also hide as soon as the mouse is over anything that isn't a candidate card, or on a click / scroll
+                    if (!this._mvHoverWatch) {
+                        this._mvHoverWatch = (e) => {
+                            if (e.type !== 'mousemove' || !(e.target.closest && e.target.closest('[data-mv-cand]'))) this.mvHoverHide();
+                        };
+                        for (const t of ['mousemove', 'mousedown', 'wheel', 'keydown']) document.addEventListener(t, this._mvHoverWatch, { passive: true, capture: true });
+                    }
+                },
+
+                mvHoverHide() {
+                    this.mvHover.c = null;
+                    if (this._mvHoverWatch) {
+                        for (const t of ['mousemove', 'mousedown', 'wheel', 'keydown']) document.removeEventListener(t, this._mvHoverWatch, { capture: true });
+                        this._mvHoverWatch = null;
+                    }
                 },
 
                 async mvExtDismiss() {
@@ -13320,7 +13336,7 @@ No metadata is changed.`)) return;
                                                     <template x-for="c in mv.view?.check?.candidates || []" :key="'rc' + c.id">
                                                         <div class="w-36 shrink-0 bg-gray-900 rounded border overflow-hidden text-xs"
                                                              :class="mvBestId(mv.view?.check?.candidates) === c.id ? 'border-emerald-500' : 'border-gray-700'"
-                                                             @mouseenter="mvHoverShow($event, c)" @mouseleave="mvHover.c = null">
+                                                             data-mv-cand @mouseenter="mvHoverShow($event, c)" @mouseleave="mvHoverHide()">
                                                             <div class="relative h-44 bg-black flex items-center justify-center">
                                                                 <img x-show="c.image_url" :src="c.image_url" loading="lazy" referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain">
                                                                 <span x-show="mvBestId(mv.view?.check?.candidates) === c.id" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-600 text-white font-bold"
@@ -13461,7 +13477,7 @@ No metadata is changed.`)) return;
                                     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                                         <template x-for="c in mv.ext.list" :key="c.id">
                                             <div class="bg-gray-900 rounded border overflow-hidden flex flex-col" :class="mvBestId(mv.ext.list) === c.id ? 'border-emerald-500' : 'border-gray-700'"
-                                                 @mouseenter="mvHoverShow($event, c)" @mouseleave="mvHover.c = null">
+                                                 data-mv-cand @mouseenter="mvHoverShow($event, c)" @mouseleave="mvHoverHide()">
                                                 <div class="relative h-48 bg-black flex items-center justify-center">
                                                     <img x-show="c.image_url" :src="c.image_url" loading="lazy" referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain">
                                                     <span x-show="mvBestId(mv.ext.list) === c.id" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-600 text-white font-bold"
