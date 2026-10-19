@@ -478,5 +478,54 @@ class FavoriteAndBatchTests(MovieBase):
         self.assertEqual(len(det['items'][0]['versions']), 2)
 
 
+
+class CandidateDetailTests(BulkLinkTests):
+    """Several ThePornDB movies with one name: the one whose scene list matches your scenes wins."""
+    def setUp(self):
+        super().setUp()
+        self.tag('v1', 'Jane Doe')
+        movies._raw_cache.clear()
+        scene = lambda *names: {'performers': [{'name': n} for n in names]}
+        self.raws = {
+            'with': {'id': 'with', 'title': 'Summer Road Trip 13', 'date': '2011-05-01', 'tags': [{'name': 'Outdoor'}],
+                     'scenes': [scene('John Roe'), scene('Jane Doe', 'John Roe'), scene('Mary Major')]},
+            'list': {'id': 'list', 'title': 'Summer Road Trip 13', 'date': '2011-05-01', 'scenes': [scene('Someone Else')]},
+            'bare': {'id': 'bare', 'title': 'Summer Road Trip 13', 'date': '2011-05-01', 'scenes': []},
+        }
+        older = self.ext.tpdb_find                         # BulkLinkTests' own stub for its tests
+        self.ext.tpdb_find = lambda kind, i: self.raws[i] if i in self.raws else older(kind, i)
+
+    def test_details_and_cache(self):
+        movies._log_check(self.c, self.mid, 'review', '', [{'id': 'bare', 'score': 75}, {'id': 'with', 'score': 75}])
+        d = movies.candidate_details(self.c, self.mid, ['with', 'bare'])
+        self.assertEqual((d['with']['scenes'], d['with']['matched']), (3, 1))
+        self.assertEqual([r['match'] for r in d['with']['scene_rows']], [False, True, False])
+        self.assertEqual(d['with']['tags'][0]['value'], 'outdoor')
+        self.assertEqual(d['bare']['scenes'], 0)
+        stored = movies.check_of(self.c, self.mid)['candidates']
+        self.assertEqual([c['id'] for c in stored], ['with', 'bare'])                  # matching scenes first
+        self.assertEqual(stored[0]['details']['matched'], 1)
+
+    def test_tie_is_settled_by_matching_scenes(self):
+        self.results = [self.cand('bare', 'Summer Road Trip 13', '2011-05-01'), self.cand('with', 'Summer Road Trip 13', '2011-05-01'),
+                        self.cand('list', 'Summer Road Trip 13', '2011-05-01')]
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'linked', detail)
+        self.assertIn('1 matching yours', detail)
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'with')
+
+    def test_only_one_with_a_scene_list(self):
+        self.results = [self.cand('bare', 'Summer Road Trip 13', '2011-05-01'), self.cand('list', 'Summer Road Trip 13', '2011-05-01')]
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'linked')
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'list')
+
+    def test_no_scene_lists_stays_in_review(self):
+        self.raws['bare2'] = dict(self.raws['bare'], id='bare2')
+        self.results = [self.cand('bare', 'Summer Road Trip 13', '2011-05-01'), self.cand('bare2', 'Summer Road Trip 13', '2011-05-01')]
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'review', detail)
+        self.assertEqual(cands[0]['details']['scenes'], 0)                              # stored with their details
+
+
 if __name__ == '__main__':
     unittest.main()

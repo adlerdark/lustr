@@ -890,7 +890,80 @@ def _movie_context(conn, mid):
             pass
     top_scene = conn.execute('SELECT MAX(scene) FROM video_movie WHERE movie_id = ?', (mid,)).fetchone()[0] or 0
     studios = {ext_db.norm_name(x) for x in ([m[2]] if m[2] else []) + [s for s, _n in sites.most_common(2)] if x}
-    return {'title': m[0], 'key': title_key(m[0]), 'year': (m[1] or '')[:4], 'studios': studios, 'cast': cast, 'top_scene': top_scene}
+    scene_cast = {}                                    # your scene number -> its performers (normalised)
+    for scene, name in conn.execute('SELECT vm.scene, t.value FROM video_movie vm JOIN video_cast_junction j ON j.video_id = vm.video_id '
+                                    'JOIN video_cast t ON t.id = j.cast_id WHERE vm.movie_id = ? AND vm.scene IS NOT NULL', (mid,)):
+        scene_cast.setdefault(scene, set()).add(ext_db.norm_name(name))
+    return {'title': m[0], 'key': title_key(m[0]), 'year': (m[1] or '')[:4], 'studios': studios, 'cast': cast, 'top_scene': top_scene,
+            'scene_cast': scene_cast}
+
+
+# ThePornDB's movie search leaves out scenes and tags; the full record (tpdb_find) has them.
+_raw_cache = {}
+
+
+def _tpdb_full(ext_id):
+    import ext_db
+    raw = _raw_cache.get(ext_id)
+    if raw is None:
+        raw = ext_db.tpdb_find('movie', ext_id)
+        if len(_raw_cache) > 500:
+            _raw_cache.clear()
+        _raw_cache[ext_id] = raw
+    return raw
+
+
+def _perf_name(p):
+    return ((p.get('parent') or {}).get('name') or p.get('name') or '').strip() if isinstance(p, dict) else ''
+
+
+def details_from_raw(conn, ctx, raw, vocab=None):
+    """A full ThePornDB movie against your movie: its scenes (which match yours), tags and performers."""
+    import ext_db
+    rows, matched = [], 0
+    for i, sc in enumerate([x for x in (raw.get('scenes') or []) if isinstance(x, dict)], 1):
+        perfs = [p for p in (sc.get('performers') or []) if isinstance(p, dict)]
+        names = {ext_db.norm_name(n) for p in perfs for n in (p.get('name'), (p.get('parent') or {}).get('name')) if n}
+        match = bool((ctx['scene_cast'].get(i, set()) | ctx['cast']) & names)
+        matched += match
+        rows.append({'n': i, 'performers': [n for n in (_perf_name(p) for p in perfs) if n][:6], 'match': match})
+    performers = [n for n in (_perf_name(p) for p in (raw.get('performers') or [])) if n][:8]
+    try:
+        tags = _tpdb_tag_values(conn, raw, vocab)
+    except Exception:
+        tags = [{'ext': t.get('name'), 'value': t.get('name'), 'mapped': False} for t in (raw.get('tags') or []) if isinstance(t, dict)]
+    return {'scenes': len(rows), 'matched': matched, 'scene_rows': rows, 'tags': tags, 'performers': performers,
+            'duration': raw.get('duration')}
+
+
+def _cand_order(c):
+    d = c.get('details') or {}
+    return (-c.get('score', 0), -d.get('matched', 0), -d.get('scenes', 0))
+
+
+def candidate_details(conn, mid, ext_ids):
+    """Scene counts / matches / tags for ThePornDB candidates (at most 10), also saved into the stored
+    review candidates so they're fetched once."""
+    import ext_db
+    ensure_schema(conn)
+    ctx = _movie_context(conn, mid)
+    vocab = ext_db._video_vocab(conn, ext_db._tag_fields())
+    out = {}
+    for i in [str(x) for x in (ext_ids or []) if x][:10]:
+        out[i] = details_from_raw(conn, ctx, _tpdb_full(i), vocab)
+    r = conn.execute('SELECT candidates_json FROM movie_ext_check WHERE movie_id = ?', (mid,)).fetchone()
+    if r and out:
+        try:
+            cands = json.loads(r[0] or '[]')
+        except ValueError:
+            cands = []
+        for c in cands:
+            if str(c.get('id')) in out:
+                c['details'] = out[str(c['id'])]
+        cands.sort(key=_cand_order)
+        conn.execute('UPDATE movie_ext_check SET candidates_json = ? WHERE movie_id = ?', (json.dumps(cands, ensure_ascii=False), mid))
+        conn.commit()
+    return out
 
 
 def score_candidate(ctx, cand):
@@ -946,10 +1019,24 @@ def bulk_one(conn, mid, add_tags=True):
     top = scored[0]
     same = [x for x in scored if 'same title' in x['reasons']]
     lead = top['score'] - (scored[1]['score'] if len(scored) > 1 else 0)
-    agrees = any(r in ('same year', 'same studio') or r.endswith(' in it') for r in top['reasons'])
-    if 'same title' in top['reasons'] and (len(same) == 1 or lead >= AUTO_LEAD) and agrees:
-        link_tpdb(conn, mid, top['id'])
-        detail = f"{top['title']} ({top['score']}: {', '.join(top['reasons'])})"
+    agrees = lambda c: any(r in ('same year', 'same studio') or r.endswith(' in it') for r in c['reasons'])
+    picked_note = ''
+    if 'same title' in top['reasons'] and len(same) > 1 and lead < AUTO_LEAD:
+        # several with this name: open them; the one whose scene list matches your scenes (or the only one with a list) wins
+        vocab = ext_db._video_vocab(conn, ext_db._tag_fields())
+        for c in same[:3]:
+            c['details'] = details_from_raw(conn, ctx, _tpdb_full(c['id']), vocab)
+        with_match = [c for c in same[:3] if c['details']['matched']]
+        with_list = [c for c in same[:3] if c['details']['scenes']]
+        win = with_match[0] if len(with_match) == 1 else (with_list[0] if not with_match and len(with_list) == 1 else None)
+        if win and (win['details']['matched'] or agrees(win)):
+            top = win
+            picked_note = (f" · picked the one with {win['details']['scenes']} scenes, {win['details']['matched']} matching yours")
+        scored.sort(key=_cand_order)
+        top5 = scored[:5]
+    if 'same title' in top['reasons'] and (len(same) == 1 or lead >= AUTO_LEAD or picked_note) and (agrees(top) or picked_note):
+        link_tpdb(conn, mid, top['id'], raw=_raw_cache.get(top['id']))
+        detail = f"{top['title']} ({top['score']}: {', '.join(top['reasons'])}){picked_note}"
         if add_tags:
             vals = [t['value'] for t in _tpdb_tag_values(conn, _raw(conn, mid), mapped_only=True)]
             if vals:
@@ -961,7 +1048,7 @@ def bulk_one(conn, mid, add_tags=True):
         why.append('title differs')
     elif not (len(same) == 1 or lead >= AUTO_LEAD):
         why.append(f'{len(same)} movies with this title')
-    if not agrees:
+    if not agrees(top):
         why.append('nothing else agrees')
     return 'review', f"{top['title']} ({top['score']}) - {'; '.join(why)}", top5
 
@@ -1349,7 +1436,7 @@ def _tpdb_id(text):
     return m.group(1) if m else t
 
 
-def link_tpdb(conn, mid, ext_id_or_url, keep_cover=None):
+def link_tpdb(conn, mid, ext_id_or_url, keep_cover=None, raw=None):
     """Link a movie to a ThePornDB movie (by id, slug or page link): its details fill the movie's
     empty ones and its front cover becomes the cover unless you set your own. Scenes aren't touched."""
     import ext_db
@@ -1357,7 +1444,7 @@ def link_tpdb(conn, mid, ext_id_or_url, keep_cover=None):
     ext_id = _tpdb_id(ext_id_or_url)
     if not ext_id:
         raise ValueError('Paste a ThePornDB movie link or ID')
-    raw = ext_db.tpdb_find('movie', ext_id)
+    raw = raw or _raw_cache.get(ext_id) or ext_db.tpdb_find('movie', ext_id)
     real_id = str(raw.get('id') or ext_id)
     other = conn.execute("SELECT id, title FROM movies WHERE ext_source = 'tpdb' AND ext_id = ? AND id != ?", (real_id, mid)).fetchone()
     if other:

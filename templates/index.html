@@ -602,6 +602,7 @@
                 mvSel: {}, mvSelLast: null,   // selected movie cards (id -> true)
                 mvMenu: { open: false, x: 0, y: 0, m: null },
                 mvPoster: { open: false, side: 'front' },
+                mvHover: { c: null, x: 0, y: 0 },   // ThePornDB candidate popover (tags, scenes)
                 mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '', ids: null },
                 mvSug: { tags: [], details: [], loading: false }, mvTagInput: '',
                 
@@ -6373,6 +6374,7 @@ No metadata is changed.`)) return;
                         Object.assign(M, { view: d.movie, items: d.items, editing: false, msg: '' });
                         this.mvSug = { tags: [], details: [], loading: !!d.movie.ext_id };
                         if (d.movie.ext_id) this.mvLoadSuggestions(d.movie.id);
+                        else if (d.movie.check?.candidates?.length) this.mvLoadDetails(d.movie.check.candidates);
                         this.continueWatching = M.items;                 // right-click / edit lookups
                         this.recentlyWatched = [];
                     } catch (e) { M.msg = 'Could not open the movie: ' + e.message; }
@@ -6460,6 +6462,42 @@ No metadata is changed.`)) return;
                     const stored = (this.mv.view.check?.candidates || []);
                     Object.assign(this.mv.ext, { open: true, query: this.mv.view.title, list: stored, msg: '', paste: '' });
                     if (!stored.length) this.mvExtSearch();
+                },
+
+                // ThePornDB search results lack scenes / tags: fetch them for the candidates shown
+                async mvLoadDetails(list) {
+                    const todo = (list || []).filter(c => c && !c.details && !c._loading).slice(0, 10);
+                    if (!todo.length || !this.mv.view) return;
+                    todo.forEach(c => c._loading = true);
+                    const mid = this.mv.view.id;
+                    for (const c of todo) {                          // one at a time, so each card fills in as it arrives
+                        try {
+                            const d = await this.mvPost(`/api/movies/${mid}/ext/details`, { ids: [String(c.id)] });
+                            c.details = d.details[String(c.id)] || null;
+                        } catch (e) { this.mv.msg = 'Could not get scene details: ' + e.message; }
+                        c._loading = false;
+                        if (this.mv.view?.id !== mid) break;          // you opened another movie
+                    }
+                    todo.forEach(c => c._loading = false);
+                    list.sort((a, b) => ((b.score || 0) - (a.score || 0)) || ((b.details?.matched || 0) - (a.details?.matched || 0))
+                                         || ((b.details?.scenes || 0) - (a.details?.scenes || 0)));
+                },
+
+                mvBestId(list) {
+                    // clearly the best: most scenes matching yours, else the only one with a scene list
+                    const done = (list || []).filter(c => c.details);
+                    if (done.length < 2) return null;
+                    const by = (f) => [...done].sort((a, b) => (b.details[f] || 0) - (a.details[f] || 0));
+                    const m = by('matched');
+                    if (m[0].details.matched && m[0].details.matched > (m[1].details.matched || 0)) return m[0].id;
+                    const withList = done.filter(c => c.details.scenes);
+                    return !m[0].details.matched && withList.length === 1 ? withList[0].id : null;
+                },
+
+                mvHoverShow(ev, c) {
+                    const r = ev.currentTarget.getBoundingClientRect(), w = 320;
+                    const x = r.right + w + 8 < window.innerWidth ? r.right + 8 : Math.max(8, r.left - w - 8);
+                    Object.assign(this.mvHover, { c, x, y: Math.max(8, Math.min(r.top, window.innerHeight - 420)) });
                 },
 
                 async mvExtDismiss() {
@@ -6563,6 +6601,7 @@ No metadata is changed.`)) return;
                     try {
                         const d = await this.mvPost(`/api/movies/${this.mv.view.id}/ext/search`, { query: X.query });
                         X.list = d.candidates;
+                        this.mvLoadDetails(X.list);
                         if (!X.list.length) X.msg = 'Nothing found on ThePornDB. Try a shorter name, or paste the movie\'s link.';
                     } catch (e) { X.msg = e.message; }
                     X.busy = false;
@@ -13279,12 +13318,19 @@ No metadata is changed.`)) return;
                                                 </div>
                                                 <div class="flex gap-2 overflow-x-auto scroller pb-1">
                                                     <template x-for="c in mv.view?.check?.candidates || []" :key="'rc' + c.id">
-                                                        <div class="w-36 shrink-0 bg-gray-900 rounded border border-gray-700 overflow-hidden text-xs">
-                                                            <div class="h-44 bg-black flex items-center justify-center">
-                                                                <img x-show="c.image_url" :src="c.image_url" loading="lazy" referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain"></div>
+                                                        <div class="w-36 shrink-0 bg-gray-900 rounded border overflow-hidden text-xs"
+                                                             :class="mvBestId(mv.view?.check?.candidates) === c.id ? 'border-emerald-500' : 'border-gray-700'"
+                                                             @mouseenter="mvHoverShow($event, c)" @mouseleave="mvHover.c = null">
+                                                            <div class="relative h-44 bg-black flex items-center justify-center">
+                                                                <img x-show="c.image_url" :src="c.image_url" loading="lazy" referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain">
+                                                                <span x-show="mvBestId(mv.view?.check?.candidates) === c.id" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-600 text-white font-bold"
+                                                                      title="The one whose scene list matches your videos best">★ Best</span></div>
                                                             <div class="p-1.5">
                                                                 <div class="font-bold truncate" :title="c.title" x-text="c.title"></div>
                                                                 <div class="text-gray-400 truncate" x-text="[c.date, c.studio].filter(Boolean).join(' · ')"></div>
+                                                                <div x-show="c._loading" class="text-gray-500 mt-0.5">checking its scenes…</div>
+                                                                <div x-show="c.details" class="mt-0.5 font-medium" :class="c.details?.matched ? 'text-emerald-300' : (c.details?.scenes ? 'text-gray-300' : 'text-gray-500')"
+                                                                     x-text="c.details ? (c.details.scenes ? c.details.scenes + ' scenes' + (c.details.matched ? ' · ' + c.details.matched + ' match yours' : '') : 'No scene list') : ''"></div>
                                                                 <div class="text-gray-500 truncate" :title="(c.reasons || []).join(', ')" x-text="'score ' + c.score + ' · ' + (c.reasons || []).join(', ')"></div>
                                                                 <div class="flex gap-1 mt-1">
                                                                     <button @click="mvExtLink(c.id)" class="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white">Link</button>
@@ -13414,13 +13460,19 @@ No metadata is changed.`)) return;
                                     <p x-show="mv.ext.msg" class="text-sm text-amber-300" x-text="mv.ext.msg"></p>
                                     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                                         <template x-for="c in mv.ext.list" :key="c.id">
-                                            <div class="bg-gray-900 rounded border border-gray-700 overflow-hidden flex flex-col">
-                                                <div class="h-48 bg-black flex items-center justify-center">
+                                            <div class="bg-gray-900 rounded border overflow-hidden flex flex-col" :class="mvBestId(mv.ext.list) === c.id ? 'border-emerald-500' : 'border-gray-700'"
+                                                 @mouseenter="mvHoverShow($event, c)" @mouseleave="mvHover.c = null">
+                                                <div class="relative h-48 bg-black flex items-center justify-center">
                                                     <img x-show="c.image_url" :src="c.image_url" loading="lazy" referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain">
+                                                    <span x-show="mvBestId(mv.ext.list) === c.id" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-600 text-white font-bold"
+                                                                      title="The one whose scene list matches your videos best">★ Best</span>
                                                 </div>
                                                 <div class="p-2 text-xs flex-1">
                                                     <div class="font-bold text-sm" x-text="c.title"></div>
-                                                    <div class="text-gray-400" x-text="[c.date, c.studio, c.scenes ? c.scenes + ' scenes' : ''].filter(Boolean).join(' · ')"></div>
+                                                    <div class="text-gray-400" x-text="[c.date, c.studio].filter(Boolean).join(' · ')"></div>
+                                                    <div x-show="c._loading" class="text-gray-500 mt-0.5">checking its scenes…</div>
+                                                                <div x-show="c.details" class="mt-0.5 font-medium" :class="c.details?.matched ? 'text-emerald-300' : (c.details?.scenes ? 'text-gray-300' : 'text-gray-500')"
+                                                                     x-text="c.details ? (c.details.scenes ? c.details.scenes + ' scenes' + (c.details.matched ? ' · ' + c.details.matched + ' match yours' : '') : 'No scene list') : ''"></div>
                                                 </div>
                                                 <div class="p-2 pt-0 flex gap-2 text-xs">
                                                     <button @click="mvExtLink(c.id)" :disabled="mv.ext.busy" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50">Link</button>
@@ -14879,6 +14931,39 @@ No metadata is changed.`)) return;
                 <p class="text-[11px] text-gray-500">Videos from any library can be in the same movie. A video already in another movie moves to this one, keeping its scene number unless you set one.</p>
                 <p x-show="mvPick.msg" class="text-sm text-red-400" x-text="mvPick.msg"></p>
             </div>
+        </div>
+
+        <!-- THEPORNDB CANDIDATE: tags and scene list on hover -->
+        <div x-show="mvHover.c && (mvHover.c.details || mvHover.c._loading)" x-cloak class="fixed z-[97] w-80 max-h-[420px] overflow-y-auto scroller bg-gray-900 border border-gray-600 rounded shadow-2xl p-3 text-xs pointer-events-none"
+             :style="`left: ${mvHover.x}px; top: ${mvHover.y}px`">
+            <div class="font-bold text-sm text-gray-100" x-text="mvHover.c?.title"></div>
+            <div class="text-gray-400 mb-2" x-text="[mvHover.c?.date, mvHover.c?.studio].filter(Boolean).join(' · ')"></div>
+            <div x-show="mvHover.c?._loading" class="text-gray-500">Checking its scenes and tags…</div>
+            <template x-if="mvHover.c?.details">
+                <div class="space-y-2">
+                    <div>
+                        <div class="text-gray-400 mb-1" x-text="mvHover.c.details.scenes ? 'Scenes (' + mvHover.c.details.matched + ' match yours)' : 'No scene list on ThePornDB'"></div>
+                        <template x-for="r in mvHover.c.details.scene_rows" :key="'hr' + r.n">
+                            <div class="flex gap-2" :class="r.match ? 'text-emerald-300' : 'text-gray-300'">
+                                <span class="w-14 shrink-0" x-text="'Scene ' + r.n"></span>
+                                <span class="w-3 shrink-0" x-text="r.match ? '✓' : ''"></span>
+                                <span class="truncate" x-text="r.performers.join(', ') || '—'"></span>
+                            </div>
+                        </template>
+                    </div>
+                    <div x-show="mvHover.c.details.tags.length">
+                        <div class="text-gray-400 mb-1">Tags <span class="text-gray-500">(blue: one of your tags)</span></div>
+                        <div class="flex flex-wrap gap-1">
+                            <template x-for="t in mvHover.c.details.tags" :key="'ht' + t.value">
+                                <span class="px-1.5 py-0.5 rounded" :class="t.mapped ? 'bg-blue-800 text-blue-100' : 'bg-gray-700 text-gray-300'" x-text="t.value"></span>
+                            </template>
+                        </div>
+                    </div>
+                    <div x-show="mvHover.c.details.performers.length" class="text-gray-400">
+                        Performers: <span class="text-gray-300" x-text="mvHover.c.details.performers.join(', ')"></span>
+                    </div>
+                </div>
+            </template>
         </div>
 
         <!-- MOVIE POSTER, BIG -->

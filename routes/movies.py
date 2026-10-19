@@ -306,6 +306,19 @@ def ext_search(mid: int, body: SearchBody, model=Depends(get_model)):
         return _err(e)
 
 
+class DetailsBody(BaseModel):
+    ids: List[str] = []
+
+
+@router.post('/{mid}/ext/details')
+def ext_details(mid: int, body: DetailsBody, model=Depends(get_model)):
+    """Scene counts, scenes matching yours, and tags for ThePornDB candidates (search results lack them)."""
+    try:
+        return {'success': True, 'details': movies.candidate_details(_conn(), mid, body.ids)}
+    except Exception as e:
+        return _err(e)
+
+
 class LinkBody(BaseModel):
     ext_id: str
 
@@ -324,6 +337,7 @@ def ext_refresh(mid: int, model=Depends(get_model)):
         m = movies.get(_conn(), mid)
         if not m['ext_id']:
             return _err('This movie is not linked to ThePornDB')
+        movies._raw_cache.pop(m['ext_id'], None)          # fetch it fresh
         return {'success': True, 'movie': movies.link_tpdb(_conn(), mid, m['ext_id'])}
     except Exception as e:
         return _err(e)
