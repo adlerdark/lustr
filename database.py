@@ -1988,7 +1988,12 @@ class Database:
         count = cursor.fetchone()[0]
         
         if count <= 1:
-            # Last version - delete entire video
+            # Last version - delete entire video (Play History keeps what it was)
+            try:
+                import library_stats
+                library_stats.snapshot_videos(conn, [video_id], deleted=True)
+            except Exception:
+                pass
             cursor.execute('DELETE FROM videos WHERE video_id = ?', (video_id,))
             # Cascade will delete file_versions and junction records
         else:

@@ -64,15 +64,7 @@ def _merge_move_rows(conn, video_id, old_ids):
     if not old:
         return
     ph = ','.join('?' * len(old))
-    if _table_exists(conn, 'watch_stats'):                 # plays add up; first / last played span both
-        conn.execute(f"""INSERT INTO watch_stats (username, video_id, plays, first_played, last_played)
-                         SELECT username, ?, SUM(plays), MIN(first_played), MAX(last_played) FROM watch_stats
-                         WHERE video_id IN ({ph}) GROUP BY username
-                         ON CONFLICT(username, video_id) DO UPDATE SET plays = plays + excluded.plays,
-                           first_played = MIN(COALESCE(first_played, excluded.first_played), COALESCE(excluded.first_played, first_played)),
-                           last_played = MAX(COALESCE(last_played, excluded.last_played), COALESCE(excluded.last_played, last_played))""",
-                     [video_id] + old)
-        conn.execute(f'DELETE FROM watch_stats WHERE video_id IN ({ph})', old)
+    # Play counts / time / the watch log: _relink_plays() after the files have moved
     if _table_exists(conn, 'video_captions'):              # the CC badge: every language either one had
         rows = conn.execute(f'SELECT langs, sources FROM video_captions WHERE video_id IN ({ph}, ?)', old + [video_id]).fetchall()
         if rows:
@@ -95,6 +87,26 @@ def _merge_move_rows(conn, video_id, old_ids):
                           GROUP BY seconds, COALESCE(end_seconds, -1), COALESCE(title, ''), COALESCE(tag, ''))""",
                      (video_id, video_id))
     conn.commit()
+
+
+def _relink_plays(model):
+    """Play History: plays of videos that are gone (merged, split, re-linked) follow their files."""
+    try:
+        import library_stats
+        if library_stats.relink_plays(model.db.get_connection()):
+            import home
+            home.invalidate()
+    except Exception as e:
+        print(f"[play history] relink failed: {e}")
+
+
+def _snapshot_deleted(conn, video_id):
+    """Play History: keep what a played video was (title / cast / library) before it's deleted."""
+    try:
+        import library_stats
+        library_stats.snapshot_videos(conn, [video_id], deleted=True)
+    except Exception as e:
+        print(f"[play history] snapshot failed: {e}")
 
 
 def _merge_carry_over(conn, video_id, link, men, old_ids):
@@ -1927,6 +1939,7 @@ async def merge_videos(request: Request, model = Depends(get_model)):
         if link_from == '' and _table_exists(conn, 'video_ext_link'):
             conn.execute('DELETE FROM video_ext_link WHERE video_id = ?', (video_id,))     # you chose no link
         _merge_carry_over(conn, video_id, link, men, old_ids)
+        _relink_plays(model)
         
         return JSONResponse({'success': True, 'video_id': video_id, 'linked': bool(link)})
         
@@ -2085,6 +2098,7 @@ async def split_video(request: Request, model = Depends(get_model)):
                         )
                 
                 conn.commit()
+        _relink_plays(model)
         
         return JSONResponse({
             'success': True, 
@@ -2439,6 +2453,7 @@ async def merge_file_change(request: Request, model = Depends(get_model)):
     # Clear file change flags
     model.db.clear_file_change(original_id)
     model.db.clear_file_change(replacement_id)
+    _relink_plays(model)
 
     return {"success": True}
 
@@ -2494,6 +2509,7 @@ async def delete_old_file(request: Request, model = Depends(get_model)):
         
         if video_id:
             # Delete the video and all its data
+            _snapshot_deleted(conn, video_id)
             cursor.execute('DELETE FROM videos WHERE video_id = ?', (video_id,))
             cursor.execute('DELETE FROM file_versions WHERE video_id = ?', (video_id,))
             

@@ -15,6 +15,8 @@ play_log(id, username, video_id, path, play_id, started_at, ended_at, played, po
   has played for the minimum (metadata play_log_min_seconds, default 15 s), and counts as a play
   (plays = 1) at 60 s as above. watch_stats.plays / total_played / last_played follow the log, and
   are worked out again when entries are deleted. Seeded once with one 'imported' entry per video.
+  Merges, splits and moved files: relink_plays() moves plays whose video is gone to the video their
+  file belongs to now. Deleted videos keep their plays; play_video_info keeps their title / cast / library.
 
 Date added: when lustr first recorded the video (videos.date_added), else when the file was
 added (file_versions.added_at), else the file's own date.
@@ -85,6 +87,13 @@ def ensure_schema(conn):
         UNIQUE (username, play_id))''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_play_log_started ON play_log(username, started_at)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_play_log_video ON play_log(username, video_id)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS play_video_info (
+        video_id TEXT PRIMARY KEY,
+        title TEXT,
+        library TEXT,
+        cast TEXT,
+        path TEXT,
+        deleted_at TEXT)''')
     # "who else has this cast member / site / tag" lookups (recommendations)
     for field in ('cast', 'site', 'tags'):
         try:
@@ -191,6 +200,7 @@ def record_progress(conn, username, path, current, duration, now=None, play_id=N
                          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                          (username, vid, path, play_id, _ts(min(first, now - played)), when, played, current, duration, plays))
             d_played, d_plays = played, plays
+            snapshot_videos(conn, [vid])                   # what it was, should it be deleted later
         else:
             old_played, old_plays = float(row[1] or 0), int(row[2] or 0)
             played = max(played, old_played)
@@ -349,11 +359,33 @@ def _order(sorts, sort, desc, default):
     return f'{expr} IS NULL, {expr} {d}' if not desc else f'{expr} {d}'
 
 
+# What a log entry / stats row shows. A video that's gone (deleted) shows what was saved in
+# play_video_info when it was last played or deleted; live videos always show their current data.
+def _shown_cols(vid_col, played_path):
+    gone = 'v.video_id IS NULL'
+    cur_path = (f"(SELECT fx.path FROM file_versions fx WHERE fx.video_id = {vid_col} AND fx.deleted_at IS NULL "
+                f"ORDER BY fx.is_preferred DESC LIMIT 1)")
+    if played_path:                  # the file that was played while it's there, else the video's file now
+        path = (f"CASE WHEN EXISTS (SELECT 1 FROM file_versions fp WHERE fp.path = {played_path} AND fp.deleted_at IS NULL) "
+                f"THEN {played_path} ELSE COALESCE({cur_path}, {played_path}) END")
+    else:
+        path = (f"COALESCE((SELECT fx.path FROM file_versions fx WHERE fx.video_id = {vid_col} "
+                f"ORDER BY fx.deleted_at IS NOT NULL, fx.is_preferred DESC LIMIT 1), pvi.path)")
+    return {
+        'path': path,
+        'title': f"CASE WHEN {gone} THEN COALESCE(NULLIF(pvi.title, ''), {path}) ELSE COALESCE(NULLIF(v.title, ''), {path}) END",
+        'library': f"CASE WHEN {gone} THEN pvi.library ELSE v.library END",
+        'cast': f"CASE WHEN {gone} THEN pvi.cast ELSE {_cast_sql(vid_col)} END",
+        'deleted': f"({gone})",
+    }
+
+
+_LOG = _shown_cols('pl.video_id', 'pl.path')
 _LOG_SORTS = {
-    'cast': f"LOWER(COALESCE({_cast_sql('pl.video_id')}, ''))",
-    'title': "LOWER(COALESCE(NULLIF(v.title, ''), pl.path))",
-    'library': "LOWER(COALESCE(v.library, ''))",
-    'path': 'LOWER(pl.path)',
+    'cast': f"LOWER(COALESCE({_LOG['cast']}, ''))",
+    'title': f"LOWER({_LOG['title']})",
+    'library': f"LOWER(COALESCE({_LOG['library']}, ''))",
+    'path': f"LOWER({_LOG['path']})",
     'watched_at': 'pl.started_at',
     'played': 'pl.played',
     'progress': 'pl.position',
@@ -361,7 +393,14 @@ _LOG_SORTS = {
 }
 
 
-def _log_where(username, q, date_from, date_to, counted_only, shown):
+def _search(cols, q):
+    like = _like(q)
+    return (f"(LOWER(COALESCE({cols['title']}, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE({cols['path']}, '')) LIKE ? ESCAPE '\\' "
+            f"OR LOWER(COALESCE({cols['library']}, '')) LIKE ? ESCAPE '\\' "
+            f"OR LOWER(COALESCE({cols['cast']}, '')) LIKE ? ESCAPE '\\')"), [like] * 4
+
+
+def _log_where(username, q, date_from, date_to, counted_only, shown, include_deleted=True):
     where, params = ['pl.username = ?'], [username or '']
     if date_from and _DATE.match(date_from):
         where.append('substr(pl.started_at, 1, 10) >= ?')
@@ -371,12 +410,12 @@ def _log_where(username, q, date_from, date_to, counted_only, shown):
         params.append(date_to)
     if counted_only:
         where.append('pl.plays > 0')
+    if not include_deleted:
+        where.append('v.video_id IS NOT NULL')
     if q and q.strip():
-        like = _like(q)
-        where.append(f"(LOWER(COALESCE(v.title, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(pl.path, '')) LIKE ? ESCAPE '\\' "
-                     f"OR LOWER(COALESCE(v.library, '')) LIKE ? ESCAPE '\\' "
-                     f"OR LOWER(COALESCE({_cast_sql('pl.video_id')}, '')) LIKE ? ESCAPE '\\')")
-        params += [like] * 4
+        sql, p = _search(_LOG, q)
+        where.append(sql)
+        params += p
     if shown and shown[0]:
         where.append(shown[0])
         params += list(shown[1])
@@ -384,32 +423,34 @@ def _log_where(username, q, date_from, date_to, counted_only, shown):
 
 
 def log_page(conn, username, q='', date_from=None, date_to=None, counted_only=False,
-             sort='watched_at', desc=True, limit=100, offset=0, shown=None):
+             sort='watched_at', desc=True, limit=100, offset=0, shown=None, include_deleted=True):
     """The watch log, newest first by default. shown: (sql, params) on pl.video_id / v.library
     from display_filter.shown_sql. -> {items, total, summary}"""
     ensure_schema(conn)
-    where, params = _log_where(username, q, date_from, date_to, counted_only, shown)
-    base = f'FROM play_log pl LEFT JOIN videos v ON v.video_id = pl.video_id WHERE {where}'
+    where, params = _log_where(username, q, date_from, date_to, counted_only, shown, include_deleted)
+    base = (f'FROM play_log pl LEFT JOIN videos v ON v.video_id = pl.video_id '
+            f'LEFT JOIN play_video_info pvi ON pvi.video_id = pl.video_id WHERE {where}')
     total, plays, played = conn.execute(
         f'SELECT COUNT(*), COALESCE(SUM(pl.plays), 0), COALESCE(SUM(pl.played), 0) {base}', params).fetchone()
     rows = conn.execute(
-        f"SELECT pl.id, pl.video_id, pl.path, pl.started_at, pl.ended_at, pl.played, pl.position, pl.duration, "
-        f"pl.plays, pl.imported, v.title, v.library, {_cast_sql('pl.video_id')} {base} "
+        f"SELECT pl.id, pl.video_id, {_LOG['path']}, pl.started_at, pl.ended_at, pl.played, pl.position, pl.duration, "
+        f"pl.plays, pl.imported, {_LOG['title']}, {_LOG['library']}, {_LOG['cast']}, {_LOG['deleted']} {base} "
         f"ORDER BY {_order(_LOG_SORTS, sort, desc, 'watched_at')}, pl.id DESC LIMIT ? OFFSET ?",
         params + [max(1, min(int(limit), 1000)), max(0, int(offset))]).fetchall()
     keys = ('id', 'video_id', 'path', 'started_at', 'ended_at', 'played', 'position', 'duration',
-            'plays', 'imported', 'title', 'library', 'cast')
-    return {'items': [dict(zip(keys, r)) for r in rows], 'total': total,
-            'summary': {'entries': total, 'plays': plays, 'played': played}}
+            'plays', 'imported', 'title', 'library', 'cast', 'deleted')
+    items = [dict(zip(keys, r)) for r in rows]
+    for i in items:
+        i['deleted'] = bool(i['deleted'])
+    return {'items': items, 'total': total, 'summary': {'entries': total, 'plays': plays, 'played': played}}
 
 
-_PATH_OF = ("(SELECT fv.path FROM file_versions fv WHERE fv.video_id = ws.video_id "
-            "ORDER BY fv.deleted_at IS NOT NULL, fv.is_preferred DESC LIMIT 1)")
+_STATS = _shown_cols('ws.video_id', None)
 _STATS_SORTS = {
-    'cast': f"LOWER(COALESCE({_cast_sql('ws.video_id')}, ''))",
-    'title': f"LOWER(COALESCE(NULLIF(v.title, ''), {_PATH_OF}))",
-    'library': "LOWER(COALESCE(v.library, ''))",
-    'path': f'LOWER({_PATH_OF})',
+    'cast': f"LOWER(COALESCE({_STATS['cast']}, ''))",
+    'title': f"LOWER({_STATS['title']})",
+    'library': f"LOWER(COALESCE({_STATS['library']}, ''))",
+    'path': f"LOWER({_STATS['path']})",
     'plays': 'ws.plays',
     'total_played': 'ws.total_played',
     'last_played': 'ws.last_played',
@@ -417,31 +458,95 @@ _STATS_SORTS = {
 }
 
 
-def video_stats_page(conn, username, q='', sort='plays', desc=True, limit=100, offset=0, shown=None):
+def video_stats_page(conn, username, q='', sort='plays', desc=True, limit=100, offset=0, shown=None, include_deleted=True):
     """Plays and total time per video. -> {items, total, summary}"""
     ensure_schema(conn)
     where, params = ['ws.username = ?'], [username or '']
+    if not include_deleted:
+        where.append('v.video_id IS NOT NULL')
     if q and q.strip():
-        like = _like(q)
-        where.append(f"(LOWER(COALESCE(v.title, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE({_PATH_OF}, '')) LIKE ? ESCAPE '\\' "
-                     f"OR LOWER(COALESCE(v.library, '')) LIKE ? ESCAPE '\\' "
-                     f"OR LOWER(COALESCE({_cast_sql('ws.video_id')}, '')) LIKE ? ESCAPE '\\')")
-        params += [like] * 4
+        sql, p = _search(_STATS, q)
+        where.append(sql)
+        params += p
     if shown and shown[0]:
         where.append(shown[0])
         params += list(shown[1])
-    base = f"FROM watch_stats ws LEFT JOIN videos v ON v.video_id = ws.video_id WHERE {' AND '.join(where)}"
+    base = (f"FROM watch_stats ws LEFT JOIN videos v ON v.video_id = ws.video_id "
+            f"LEFT JOIN play_video_info pvi ON pvi.video_id = ws.video_id WHERE {' AND '.join(where)}")
     total, plays, played = conn.execute(
         f'SELECT COUNT(*), COALESCE(SUM(ws.plays), 0), COALESCE(SUM(ws.total_played), 0) {base}', params).fetchone()
     tie = 'ws.last_played DESC' if sort != 'last_played' else 'ws.video_id'
     rows = conn.execute(
-        f"SELECT ws.video_id, {_PATH_OF}, ws.plays, ws.total_played, ws.first_played, ws.last_played, "
-        f"v.title, v.library, {_cast_sql('ws.video_id')} {base} "
+        f"SELECT ws.video_id, {_STATS['path']}, ws.plays, ws.total_played, ws.first_played, ws.last_played, "
+        f"{_STATS['title']}, {_STATS['library']}, {_STATS['cast']}, {_STATS['deleted']} {base} "
         f"ORDER BY {_order(_STATS_SORTS, sort, desc, 'plays')}, {tie} LIMIT ? OFFSET ?",
         params + [max(1, min(int(limit), 1000)), max(0, int(offset))]).fetchall()
-    keys = ('video_id', 'path', 'plays', 'total_played', 'first_played', 'last_played', 'title', 'library', 'cast')
-    return {'items': [dict(zip(keys, r)) for r in rows], 'total': total,
-            'summary': {'videos': total, 'plays': plays, 'played': played}}
+    keys = ('video_id', 'path', 'plays', 'total_played', 'first_played', 'last_played', 'title', 'library', 'cast', 'deleted')
+    items = [dict(zip(keys, r)) for r in rows]
+    for i in items:
+        i['deleted'] = bool(i['deleted'])
+    return {'items': items, 'total': total, 'summary': {'videos': total, 'plays': plays, 'played': played}}
+
+
+# ---------------------------------------------------------------------------
+# merges, splits, moves, deletions
+# ---------------------------------------------------------------------------
+def _has_table(conn, name):
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone())
+
+
+def snapshot_videos(conn, video_ids=None, deleted=False):
+    """Remember the title / library / cast / file of played videos (all of them, or these), so a deleted
+    video's plays still say what it was. Doesn't commit (runs inside other changes). -> rows saved"""
+    if not _has_table(conn, 'play_video_info'):
+        return 0
+    where, params = ['v.video_id IN (SELECT video_id FROM play_log)'], []
+    if video_ids is not None:
+        ids = sorted({v for v in video_ids if v})
+        if not ids:
+            return 0
+    n = 0
+    for k in range(0, len(ids) if video_ids is not None else 1, 500):
+        w, p = list(where), list(params)
+        if video_ids is not None:
+            chunk = ids[k:k + 500]
+            w.append(f'v.video_id IN ({",".join("?" * len(chunk))})')
+            p += chunk
+        rows = conn.execute(
+            f"SELECT v.video_id, v.title, v.library, {_cast_sql('v.video_id')}, "
+            f"(SELECT fx.path FROM file_versions fx WHERE fx.video_id = v.video_id "
+            f"ORDER BY fx.deleted_at IS NOT NULL, fx.is_preferred DESC LIMIT 1) FROM videos v WHERE {' AND '.join(w)}", p).fetchall()
+        for vid, title, lib, cast, path in rows:
+            conn.execute('INSERT INTO play_video_info (video_id, title, library, cast, path, deleted_at) VALUES (?, ?, ?, ?, ?, ?) '
+                         'ON CONFLICT(video_id) DO UPDATE SET title = excluded.title, library = excluded.library, '
+                         'cast = excluded.cast, path = COALESCE(excluded.path, path), deleted_at = excluded.deleted_at',
+                         (vid, title, lib, cast, path, _now() if deleted else None))
+            n += 1
+    return n
+
+
+def relink_plays(conn):
+    """Plays whose video is gone follow their file to the video it belongs to now: a merge (old videos
+    removed, files under the merged one), a split, or a moved file re-linked to its old video. Totals
+    are worked out again for every video involved. Plays of files that are gone for good stay where
+    they are (shown as deleted). -> entries moved"""
+    ensure_schema(conn)
+    rows = conn.execute(
+        'SELECT pl.id, pl.username, pl.video_id, fv.video_id FROM play_log pl JOIN file_versions fv ON fv.path = pl.path '
+        'WHERE fv.video_id != pl.video_id AND NOT EXISTS (SELECT 1 FROM videos v WHERE v.video_id = pl.video_id)').fetchall()
+    if not rows:
+        return 0
+    with _lock:
+        touched = set()
+        for pid, user, old, new in rows:
+            conn.execute('UPDATE play_log SET video_id = ? WHERE id = ?', (new, pid))
+            touched |= {(user, old), (user, new)}
+        for user, vid in touched:
+            _recompute(conn, user, vid)
+            _sessions.pop((user, vid), None)
+        snapshot_videos(conn, {v for _u, v in touched})
+        conn.commit()
+    return len(rows)
 
 
 def video_totals(conn, username, video_id):

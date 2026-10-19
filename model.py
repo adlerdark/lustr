@@ -1422,6 +1422,11 @@ class LibraryModel:
                         cursor.execute('DELETE FROM file_changes WHERE id = ?', (deleted_file['id'],))
                         
                         conn.commit()
+                        try:                       # Play History: plays of the new copy follow it
+                            import library_stats
+                            library_stats.relink_plays(conn)
+                        except Exception as e:
+                            print(f"[play history] relink failed: {e}")
                         print(f"Auto-merged: retained metadata for {filename}")
                     
                 else:

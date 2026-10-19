@@ -177,7 +177,13 @@ def _cast_with_profile(conn):
 # deleting
 # ---------------------------------------------------------------------------
 def delete_video_completely(conn, video_id, fields=None):
-    """Remove a video and every row that refers to it (no reliance on foreign keys)."""
+    """Remove a video and every row that refers to it (no reliance on foreign keys).
+    Its plays stay (Play History), with its title / cast / library saved first."""
+    try:
+        import library_stats
+        library_stats.snapshot_videos(conn, [video_id], deleted=True)
+    except Exception:
+        pass
     for f in fields or list_fields(conn):
         conn.execute(f'DELETE FROM video_{f}_junction WHERE video_id = ?', (video_id,))
     for t in VIDEO_TABLES:

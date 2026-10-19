@@ -186,8 +186,8 @@ def _with_video(model, items):
     """Add 'video' (the same shape as /api/videos items, for playing) to each row; None when the file is gone."""
     import home
     for it in items:
-        it['video'] = home.card(model, it['path']) if it.get('path') else None
-        if it['video'] is None and it.get('video_id'):
+        it['video'] = home.card(model, it['path']) if it.get('path') and not it.get('deleted') else None
+        if it['video'] is None and it.get('video_id') and not it.get('deleted'):
             row = model.db.get_connection().execute(
                 'SELECT path FROM file_versions WHERE video_id = ? AND deleted_at IS NULL ORDER BY is_preferred DESC LIMIT 1',
                 (it['video_id'],)).fetchone()
@@ -199,26 +199,26 @@ def _with_video(model, items):
 @router.get("/log")
 def play_log(request: Request, q: str = '', date_from: Optional[str] = None, date_to: Optional[str] = None,
              counted_only: bool = False, sort: str = 'watched_at', desc: bool = True, limit: int = 100, offset: int = 0,
-             model = Depends(get_model)):
-    """The watch log: one entry per play."""
+             include_deleted: bool = True, model = Depends(get_model)):
+    """The watch log: one entry per play (deleted videos' plays too, unless include_deleted=false)."""
     username = _user(request)
     import library_stats
     conn = model.db.get_connection()
     page = library_stats.log_page(conn, username, q, date_from, date_to, counted_only, sort, desc, limit, offset,
-                                  shown=_shown(model, conn, 'pl.video_id'))
+                                  shown=_shown(model, conn, 'pl.video_id'), include_deleted=include_deleted)
     _with_video(model, page['items'])
     return page
 
 
 @router.get("/stats")
 def play_stats(request: Request, q: str = '', sort: str = 'plays', desc: bool = True, limit: int = 100, offset: int = 0,
-               model = Depends(get_model)):
+               include_deleted: bool = True, model = Depends(get_model)):
     """Plays and total time watched per video."""
     username = _user(request)
     import library_stats
     conn = model.db.get_connection()
     page = library_stats.video_stats_page(conn, username, q, sort, desc, limit, offset,
-                                          shown=_shown(model, conn, 'ws.video_id'))
+                                          shown=_shown(model, conn, 'ws.video_id'), include_deleted=include_deleted)
     _with_video(model, page['items'])
     return page
 

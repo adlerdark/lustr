@@ -153,5 +153,108 @@ class PagesTests(PlayHistoryBase):
         self.assertEqual([i['path'] for i in items], [B, A, C])
 
 
+class LifecycleTests(PlayHistoryBase):
+    """Merges, splits, moves and deletions keep plays with the right video."""
+    def video(self, vid, title=None):
+        self.c.execute("INSERT INTO videos (video_id, filename_base, library, title) VALUES (?, ?, 'Lib', ?)", (vid, vid, title))
+
+    def move_files(self, vid, *paths):
+        for p in paths:
+            self.c.execute('UPDATE file_versions SET video_id = ? WHERE path = ?', (vid, p))
+
+    def drop(self, *vids):
+        for v in vids:
+            self.c.execute('DELETE FROM videos WHERE video_id = ?', (v,))
+        self.c.commit()
+
+    def test_merge(self):
+        self.play(A, 70, 'p1', t0=1000)
+        self.play(B, 100, 'p2', t0=2000)
+        self.play(B, 20, 'p3', t0=3000)
+        self.video('m', 'Merged')                    # like merge_videos: new id, files move, old videos go
+        self.move_files('m', A, B)
+        self.drop('v1', 'v2')
+        self.assertEqual(ls.relink_plays(self.c), 3)
+        self.assertEqual(self.stats('m')[:2], (2, 190))
+        self.assertIsNone(self.stats('v1'))
+        self.assertIsNone(self.stats('v2'))
+        st = ls.video_stats_page(self.c, 'alice')['items']
+        self.assertEqual([(i['video_id'], i['plays'], i['total_played']) for i in st], [('m', 2, 190)])
+        ls.delete_entries(self.c, 'alice', ids=[r[0] for r in self.c.execute("SELECT id FROM play_log WHERE play_id = 'p2'")])
+        self.assertEqual(self.stats('m')[:2], (1, 90))
+        self.assertEqual(ls.relink_plays(self.c), 0)  # nothing left to do
+
+    def test_merge_then_delete_the_older_file(self):
+        import db_maintenance
+        self.play(A, 70, 'p1', t0=1000)
+        self.play(B, 70, 'p2', t0=2000)
+        self.video('m', 'Merged')
+        self.move_files('m', A, B)
+        self.drop('v1', 'v2')
+        ls.relink_plays(self.c)
+        db_maintenance.purge_versions(self.c, [A])   # the old copy is deleted for good
+        self.c.commit()
+        ls.relink_plays(self.c)
+        self.assertEqual(self.stats('m')[:2], (2, 140))
+        d = ls.log_page(self.c, 'alice')['items']
+        self.assertEqual({i['path'] for i in d}, {B})  # the old copy's play shows the file the video has now
+        self.assertFalse(any(i['deleted'] for i in d))
+
+    def test_split(self):
+        self.move_files('v1', C)                     # v1 has two files
+        self.drop('v3')
+        self.play(A, 70, 'p1', t0=1000)
+        self.play(C, 30, 'p2', t0=2000)
+        self.video('sa')
+        self.video('sc')
+        self.move_files('sa', A)
+        self.move_files('sc', C)
+        self.drop('v1')
+        ls.relink_plays(self.c)
+        self.assertEqual(self.stats('sa')[:2], (1, 70))
+        self.assertEqual(self.stats('sc')[:2], (0, 30))
+        self.assertIsNone(self.stats('v1'))
+
+    def test_moved_copy_played_before_relink(self):
+        D = '/media/Other/a.mp4'
+        self.play(A, 70, 'p1', t0=1000)
+        self.video('n')                              # the scan first sees the moved file as new
+        self.c.execute("INSERT INTO file_versions (path, video_id, filename, is_preferred) VALUES (?, 'n', 'a.mp4', 1)", (D,))
+        self.c.commit()
+        self.play(D, 40, 'p2', t0=2000)
+        self.c.execute('DELETE FROM file_versions WHERE path = ?', (A,))   # ... then re-links it to the old video
+        self.move_files('v1', D)
+        self.drop('n')
+        ls.relink_plays(self.c)
+        self.assertEqual(self.stats('v1')[:2], (1, 110))
+        self.assertEqual({i['path'] for i in ls.log_page(self.c, 'alice')['items']}, {D})
+
+    def test_deleted_video_keeps_its_plays(self):
+        import db_maintenance
+        self.play(A, 70, 'p1', t0=1000)
+        self.c.execute("UPDATE videos SET title = 'Alpha Renamed' WHERE video_id = 'v1'")
+        db_maintenance.delete_video_completely(self.c, 'v1')
+        self.c.commit()
+        ls.relink_plays(self.c)
+        self.assertEqual(self.stats('v1')[:2], (1, 70))
+        i = ls.log_page(self.c, 'alice')['items'][0]
+        self.assertEqual((i['title'], i['cast'], i['library'], i['deleted']), ('Alpha Renamed', 'Jane Doe', 'Lib', True))
+        s = ls.video_stats_page(self.c, 'alice')['items'][0]
+        self.assertEqual((s['title'], s['plays'], s['deleted']), ('Alpha Renamed', 1, True))
+        self.assertEqual(ls.log_page(self.c, 'alice', include_deleted=False)['total'], 0)
+        self.assertEqual(ls.video_stats_page(self.c, 'alice', include_deleted=False)['total'], 0)
+        self.assertEqual(ls.log_page(self.c, 'alice', q='jane')['total'], 1)     # still searchable
+
+    def test_dry_run_maintenance_changes_nothing(self):
+        import db_maintenance
+        self.play(A, 70, 'p1', t0=1000)
+        self.c.commit()
+        self.c.execute('SAVEPOINT t')
+        db_maintenance.delete_video_completely(self.c, 'v1')
+        self.c.execute('ROLLBACK TO t')
+        self.c.execute('RELEASE t')
+        self.assertIsNone(self.c.execute("SELECT deleted_at FROM play_video_info WHERE video_id = 'v1'").fetchone()[0])
+
+
 if __name__ == '__main__':
     unittest.main()

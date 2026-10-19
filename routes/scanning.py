@@ -67,6 +67,11 @@ def _scan_library(req, model):
                 print(f"[Maintenance] after scan: {db_maintenance._short(result)}")
         except Exception as e:
             print(f"[Maintenance] after scan failed: {e}")
+        try:                                       # Play History: plays follow moved / merged files
+            import library_stats
+            library_stats.relink_plays(model.db.get_connection())
+        except Exception as e:
+            print(f"[play history] relink failed: {e}")
     
     model.save()
     

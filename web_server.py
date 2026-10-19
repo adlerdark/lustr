@@ -296,6 +296,12 @@ def inject_dependencies():
             n = library_stats.seed_play_log(model.db.get_connection(), watch_history_instance.history)
             if n:
                 print(f"[watch_stats] seeded {n} imported Play History entries")
+            conn = model.db.get_connection()
+            n = library_stats.relink_plays(conn)       # merges / moves since the last start
+            if n:
+                print(f"[watch_stats] {n} Play History entries followed their files")
+            library_stats.snapshot_videos(conn)        # what each played video is, should it be deleted
+            conn.commit()
         except Exception as e:
             print(f"[watch_stats] seed failed: {e}")
     

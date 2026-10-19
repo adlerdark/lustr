@@ -902,7 +902,7 @@
                 libraryManagementTab: 'libraries', // 'libraries', 'groups', or 'settings'
                 settingsTab: 'general', // 'general', 'thumbnails', 'vlc', 'tools', 'extdb', 'appearance'
                 // Settings -> General -> Play History (library_stats.py: play_log, watch_stats)
-                ph: { tab: 'log', q: '', from: '', to: '', countedOnly: false, loading: false, error: '', seq: 0,
+                ph: { tab: 'log', q: '', from: '', to: '', countedOnly: false, showDeleted: true, loading: false, error: '', seq: 0,
                       minSeconds: 15, colMenu: null, selected: [],
                       log: { items: [], total: 0, summary: {}, sort: 'watched_at', desc: true, hidden: [] },
                       stats: { items: [], total: 0, summary: {}, sort: 'plays', desc: true, hidden: [] } },
@@ -6413,6 +6413,7 @@ No metadata is changed.`)) return;
                         if (ph.to) params.set('date_to', ph.to);
                         if (ph.countedOnly) params.set('counted_only', 'true');
                     }
+                    if (!ph.showDeleted) params.set('include_deleted', 'false');
                     const seq = ++ph.seq;
                     ph.loading = true;
                     ph.error = '';
@@ -16292,6 +16293,8 @@ No metadata is changed.`)) return;
                     </template>
                     <label class="flex items-center gap-1 text-gray-300 cursor-pointer ml-1"><input type="checkbox" x-model="ph.countedOnly" @change="phLoad()"> Counted plays only</label>
                 </div>
+                <label class="flex items-center gap-1 text-gray-300 cursor-pointer" title="Videos deleted from the library keep their play stats (shown greyed out)">
+                    <input type="checkbox" x-model="ph.showDeleted" @change="phLoad()"> Show deleted videos</label>
                 <div class="flex-1"></div>
                 <div x-show="ph.tab === 'log'" class="flex items-center gap-2">
                     <button x-show="ph.selected.length" @click="phDelete(ph.selected)" class="px-2 py-1 rounded bg-red-700 hover:bg-red-600 text-xs" x-text="`Delete selected (${ph.selected.length})`"></button>
@@ -16319,7 +16322,7 @@ No metadata is changed.`)) return;
                     <tbody class="divide-y divide-gray-800">
                         <template x-for="r in ph[ph.tab].items" :key="ph.tab + (r.id || r.video_id)">
                             <tr class="hover:bg-gray-800" :class="r.missing ? 'opacity-50' : 'cursor-pointer'" @dblclick="phPlay(r, false)"
-                                :title="r.missing ? 'This file is no longer in the library' : ''">
+                                :title="r.deleted ? 'Deleted from the library - its plays are kept' : (r.missing ? 'This file is no longer in the library' : '')">
                                 <td x-show="ph.tab === 'log'" class="p-2"><input type="checkbox" :checked="ph.selected.includes(r.id)" @click.stop="phSelect(r.id)"></td>
                                 <template x-for="[k] in phVisible()" :key="k">
                                     <td class="p-2 truncate" :class="k === 'path' ? 'font-mono text-xs text-gray-400 max-w-md' : (k === 'progress' ? '' : 'max-w-xs')" :title="phCell(r, k)">
@@ -16329,7 +16332,9 @@ No metadata is changed.`)) return;
                                                 <span class="text-xs text-gray-400" x-text="phCell(r, k)"></span>
                                             </div>
                                         </template>
-                                        <template x-if="k !== 'progress'"><span x-text="phCell(r, k)"></span></template>
+                                        <template x-if="k !== 'progress'"><span>
+                                            <span x-show="k === 'title' && r.deleted" class="mr-1 px-1.5 py-0.5 rounded bg-gray-700 text-gray-300 text-[10px] uppercase tracking-wide">Deleted</span><span x-text="phCell(r, k)"></span>
+                                        </span></template>
                                     </td>
                                 </template>
                                 <td class="p-2 whitespace-nowrap text-right">
