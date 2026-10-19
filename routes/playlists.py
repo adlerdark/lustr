@@ -372,6 +372,8 @@ def get_playlist_items(
         
         items.append(video_data)
     
+    import library_stats
+    library_stats.add_play_stats(conn, username, items)   # Plays / Time Watched columns
     return {
         'playlist_id': playlist_id,
         'playlist_name': playlist_name,

@@ -177,6 +177,7 @@ def items(model, conn, cid, request=None, username=None, watch_history=None, pag
     paths = _manual_paths(model, conn, c, None, username)
     start = (max(1, page) - 1) * limit
     cards = [x for x in (home.card(model, p, username, watch_history) for p in paths[start:start + limit]) if x]
+    library_stats.add_play_stats(conn, username, cards)
     return {'collection': c, 'items': cards, 'total': len(paths)}
 
 

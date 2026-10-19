@@ -725,6 +725,7 @@ def _get_videos_sql_fast(
                 item['watch_duration'] = progress.get('duration', 0)
         
         paginated_items.append(item)
+    library_stats.add_play_stats(cursor.connection, username, paginated_items)   # Plays / Time Watched columns
     
     # Add version info
     for item in paginated_items:
@@ -1096,6 +1097,9 @@ def get_videos(
     total = len(items)
     start = (page - 1) * limit
     paginated_items = items[start:start + limit]
+    if getattr(model, 'db', None):                   # Plays / Time Watched columns
+        library_stats.add_play_stats(model.db.get_connection(), username,
+                                     [i for i in paginated_items if i.get('type') == 'file'])
 
     # Enrich file items with version data
     for item in paginated_items:

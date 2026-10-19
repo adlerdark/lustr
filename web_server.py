@@ -293,6 +293,9 @@ def inject_dependencies():
             n = library_stats.seed_from_history(model.db.get_connection(), watch_history_instance.history)
             if n:
                 print(f"[watch_stats] seeded {n} play counts from watch history")
+            n = library_stats.seed_play_log(model.db.get_connection(), watch_history_instance.history)
+            if n:
+                print(f"[watch_stats] seeded {n} imported Play History entries")
         except Exception as e:
             print(f"[watch_stats] seed failed: {e}")
     
@@ -395,7 +398,7 @@ if __name__ == "__main__":
     print(f"📦 Active Modules:")
     print(f"   ✅ routes/auth.py (6 endpoints)")
     print(f"   ✅ routes/streaming.py (4 endpoints)")
-    print(f"   ✅ routes/watch_history_routes.py (5 endpoints)")
+    print(f"   ✅ routes/watch_history_routes.py (13 endpoints)")
     print(f"   ✅ routes/cast.py (3 endpoints)")
     print(f"   ✅ routes/ui.py (4 endpoints)")
     print(f"   ✅ routes/library.py (9 endpoints)")
