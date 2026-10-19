@@ -575,7 +575,7 @@
                 jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1,   // # A-Z jump bar (Title / Cast / Filename sorts)
                 castPeek: { name: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
                 thumbPick: { open: false, path: '', title: '', frames: [], cover: 0, busy: false, error: '' },   // choose the main thumbnail
-                forceThumbs: { open: false, count: 0, offset: '', error: '', resolve: null },   // Force New: optional start offset
+                forceThumbs: { open: false, count: 0, offset: '', error: '', resolve: null, dur: 0, frames: 8 },   // Force New: optional start offset
                 loginUsername: '',
                 loginPassword: '',
                 loginError: '',
@@ -2485,6 +2485,7 @@
                             } catch(e){}
                         }
                         if (!savedSettings || !JSON.parse(savedSettings).hideZeroLength) {
+                            if (initData.thumbnail_frames) this.forceThumbs.frames = initData.thumbnail_frames;
                             if (initData.hide_zero_length_default) {
                                 this.appSettings.hideZeroLength = initData.hide_zero_length_default;
                             }
@@ -3064,15 +3065,32 @@
                     Object.assign(this.castPeek, { name: '', show: false, timer: null });
                 },
 
-                // Force New dialog: "90", "1:30" or "1:02:03" -> seconds; blank = no offset
+                // Force New dialog: "90", "1:30", "1:02:03", or with a minus to move the frames earlier
+                // -> seconds; blank = no offset; null = can't read it
+                forceThumbsSecs(text) {
+                    const t = String(text ?? '').trim();
+                    const neg = t.startsWith('-'), u = neg ? t.slice(1).trim() : t;
+                    let secs;
+                    if (!u) return neg ? null : 0;
+                    if (/^\d+(\.\d+)?$/.test(u)) secs = parseFloat(u);
+                    else if (/^\d+(:\d{1,2}){1,2}$/.test(u)) secs = u.split(':').reduce((a, n) => a * 60 + parseInt(n, 10), 0);
+                    else return null;
+                    return neg ? -secs : secs;
+                },
+                // one video: where the first frame lands with what's typed (same rule as the server)
+                forceThumbsFirst() {
+                    const F = this.forceThumbs, d = F.dur, n = F.frames || 8;
+                    const s0 = this.forceThumbsSecs(F.offset);
+                    if (!d || s0 === null) return null;
+                    const s = Math.min(Math.max(s0, -d / n), d * 0.9);
+                    return { first: Math.max(0, s + (d - s) / (n + 1)), base: d / (n + 1), min: d / n };
+                },
                 forceThumbsDone(go) {
                     const F = this.forceThumbs;
                     let secs = 0;
                     if (go) {
-                        const t = String(F.offset ?? '').trim();
-                        if (/^\d+(\.\d+)?$/.test(t)) secs = parseFloat(t);
-                        else if (/^\d+(:\d{1,2}){1,2}$/.test(t)) secs = t.split(':').reduce((a, n) => a * 60 + parseInt(n, 10), 0);
-                        else if (t) { F.error = 'Use seconds (90) or minutes:seconds (1:30).'; return; }
+                        secs = this.forceThumbsSecs(F.offset);
+                        if (secs === null) { F.error = 'Use seconds (90) or minutes:seconds (1:30); a minus (-30) moves the frames earlier.'; return; }
                     }
                     const r = F.resolve;
                     Object.assign(F, { open: false, resolve: null });
@@ -8414,8 +8432,10 @@ No metadata is changed.`)) return;
                     if (paths.length === 0) return;
 
                     // the dialog asks for an optional start offset (skip a title card); null = cancelled
+                    const one = paths.length === 1 ? this.videos.find(v => v.path === paths[0]) : null;
+                    const dur = one ? (Number(one.length_seconds) || this.parseDuration(one.length || '')) : 0;
                     const offset = await new Promise(resolve =>
-                        Object.assign(this.forceThumbs, { open: true, count: paths.length, offset: '', error: '', resolve }));
+                        Object.assign(this.forceThumbs, { open: true, count: paths.length, offset: '', error: '', resolve, dur }));
                     if (offset === null) return;
 
                     // /api/cache/regenerate handles single AND multiple paths,
@@ -8429,7 +8449,7 @@ No metadata is changed.`)) return;
                         })).json();
                         const capped = (d.results || []).filter(r => r.capped);
                         let msg = d.message || 'Thumbnails regenerated';
-                        if (capped.length) msg += ` · offset shortened for ${capped.length} short video(s): `
+                        if (capped.length) msg += ` · offset shortened for ${capped.length} video(s): `
                             + capped.slice(0, 3).map(r => r.path.split('/').pop()).join(', ') + (capped.length > 3 ? '…' : '');
                         const box = document.getElementById('messageBox');
                         box.textContent = msg;
@@ -15566,12 +15586,20 @@ No metadata is changed.`)) return;
             <div class="bg-gray-800 rounded-lg w-full max-w-md p-5 shadow-2xl" @click.outside="forceThumbsDone(false)"
                  @keydown.escape.window="forceThumbs.open && forceThumbsDone(false)">
                 <h2 class="text-lg font-bold mb-1" x-text="forceThumbs.count === 1 ? 'Force new thumbnails' : `Force new thumbnails for ${forceThumbs.count} videos`"></h2>
-                <p class="text-xs text-gray-400 mb-3">Makes a brand-new thumbnail set. To get different frames (or skip a title card),
-                    skip the start: the frames are spread over the rest of the video.</p>
-                <label class="block text-sm text-gray-300 mb-1">Skip the first … (optional)</label>
-                <input type="text" x-model="forceThumbs.offset" @keydown.enter="forceThumbsDone(true)" placeholder="seconds, e.g. 30 or 1:30"
+                <p class="text-xs text-gray-400 mb-3">Makes a brand-new thumbnail set. The frames are spread evenly over the video;
+                    by default the first one is at <span x-text="'1/' + ((forceThumbs.frames || 8) + 1)"></span> of its length.
+                    A positive offset skips the start (a title card); a negative one moves every frame earlier.</p>
+                <label class="block text-sm text-gray-300 mb-1">Offset (optional)</label>
+                <input type="text" x-model="forceThumbs.offset" @keydown.enter="forceThumbsDone(true)" placeholder="seconds or m:ss, e.g. 30, 1:30 or -45"
                        class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm" x-effect="forceThumbs.open && $nextTick(() => $el.focus())">
-                <p class="text-xs text-gray-500 mt-1">Too long for a video? It's shortened so every frame stays inside the video.</p>
+                <template x-if="forceThumbsFirst()">
+                    <p class="text-xs text-gray-400 mt-1">
+                        First frame at <span class="text-gray-200" x-text="formatTime(forceThumbsFirst().first)"></span>
+                        (default <span x-text="formatTime(forceThumbsFirst().base)"></span>; the earliest possible offset is
+                        <span x-text="'-' + formatTime(forceThumbsFirst().min)"></span>, which puts it at 0:00).</p>
+                </template>
+                <p class="text-xs text-gray-500 mt-1">Too far for a video? It's shortened so every frame stays inside the video
+                    (a negative offset stops when the first frame reaches 0:00).</p>
                 <p x-show="forceThumbs.error" class="text-sm text-red-400 mt-2" x-text="forceThumbs.error"></p>
                 <div class="flex justify-end gap-2 mt-4">
                     <button @click="forceThumbsDone(false)" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel</button>

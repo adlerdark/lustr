@@ -203,12 +203,14 @@ class MediaHandler:
     def thumb_times(duration, num_frames, start=0):
         """(times, start used): num_frames times spread evenly over the part after `start`.
         A start that would leave less than 10% of the video is cut to 90% of the length, and
-        no time is later than half a second before the end."""
-        start = max(0.0, float(start or 0))
+        no time is later than half a second before the end. A negative start moves the frames
+        earlier (the spread reaches back before 0:00), at most until the first frame is at 0:00."""
+        n = max(1, int(num_frames))
+        start = max(float(start or 0), -duration / n)
         start = min(start, duration * 0.9)
-        step = (duration - start) / (num_frames + 1)
+        step = (duration - start) / (n + 1)
         last = max(0.0, duration - 0.5)
-        return [min(start + step * i, last) for i in range(1, num_frames + 1)], start
+        return [max(0.0, min(start + step * i, last)) for i in range(1, n + 1)], start
 
     @staticmethod
     def generate_thumbnails(path, num_frames=None, force=False, quality=None, video_id=None, cache_id=None, start=0):
@@ -274,7 +276,7 @@ class MediaHandler:
         if len(cur) != num_frames:
             cur, start = MediaHandler.thumb_times(duration, num_frames, 0)
         k = min(range(num_frames), key=lambda i: abs(cur[i] - at))
-        lo = start if start < at else 0.0
+        lo = max(0.0, start) if start < at else 0.0      # a negative start (frames moved earlier) is 0:00 here
         before = [lo + (at - lo) * (i + 1) / (k + 1) for i in range(k)]
         after_n = num_frames - k - 1
         after = [min(at + (duration - at) * (i + 1) / (after_n + 1), last) for i in range(after_n)]

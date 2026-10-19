@@ -182,7 +182,7 @@ class LibrarySettingRequest(BaseModel):
 @api_router.get("/init")
 def get_initial_data(model = Depends(get_model)):
     """Get initial application data for UI initialization."""
-    from config import LIST_FIELDS, HIDE_ZERO_LENGTH_DEFAULT, USE_SQLITE
+    from config import LIST_FIELDS, HIDE_ZERO_LENGTH_DEFAULT, USE_SQLITE, THUMBNAIL_FRAMES
     
     # Load UI config from database if using SQLite, otherwise from files
     if USE_SQLITE:
@@ -201,6 +201,7 @@ def get_initial_data(model = Depends(get_model)):
         "config": ui_config,
         "all_columns": ["Fav", "Title", "Cast", "Date Created", "File Size", "Length", "Rating", "Site", "Tags", "Path", "Resolution", "Codec", "Extension", "Date Added", "Date Edited"],
         "hide_zero_length_default": HIDE_ZERO_LENGTH_DEFAULT,
+        "thumbnail_frames": THUMBNAIL_FRAMES,
         "library_settings": model.library_settings,
         **_display_filter_init(model),
     }

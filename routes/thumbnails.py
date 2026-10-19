@@ -403,9 +403,10 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
     if not paths:
         raise HTTPException(400, "No paths provided")
 
-    # optional: skip this many seconds at the start (title cards); the frames spread over the rest
+    # optional: skip this many seconds at the start (title cards); the frames spread over the rest.
+    # Negative: the frames move earlier, at most until the first one is at 0:00.
     try:
-        offset = max(0.0, float(data.get('offset') or 0))
+        offset = float(data.get('offset') or 0)
     except (TypeError, ValueError):
         raise HTTPException(400, "offset must be a number of seconds")
 
@@ -472,8 +473,9 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
                                          start=offset)
         offset_used = offset
         if offset:
+            from config import THUMBNAIL_FRAMES
             duration = MediaHandler.get_extended_metadata(primary_path).get('duration', 0) or 0
-            offset_used = MediaHandler.thumb_times(duration, 1, offset)[1] if duration else 0
+            offset_used = MediaHandler.thumb_times(duration, THUMBNAIL_FRAMES, offset)[1] if duration else 0
 
         # Clean up the old cache folder - unless another file still uses it (same filename, no
         # cache_id of its own). This file's captions move to the new folder first.
@@ -494,7 +496,7 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
             'cache_id': new_cache_id,
             'thumbnails': thumb_count,
             'offset_used': round(offset_used, 1),
-            'capped': bool(offset) and offset_used < offset,
+            'capped': bool(offset) and abs(offset_used) < abs(offset) - 0.05,
             'message': f'{thumb_count} thumbnails generated' if success else 'No thumbnails generated'
         })
 
