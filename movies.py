@@ -74,11 +74,39 @@ def clean_title(title):
     return t.strip(' -,:;_.(').strip()
 
 
+_SMALL = {'a', 'an', 'the', 'and', 'or', 'nor', 'but', 'of', 'in', 'on', 'at', 'to', 'for', 'by', 'with'}
+_PRONOUNS = {'i', 'you', 'we', 'they', 'he', 'she', 'it', 'who', 'there', 'that', 'what', 'here', 'where'}
+
+
+def _apostrophes(t):
+    """Apostrophes that filenames lose: 'Neighbor s a tease' -> "Neighbor's a tease", 'It s' -> "It's",
+    'Ain t' -> "Ain't", 'I m' -> "I'm", 'you re' -> "you're"."""
+    out = []
+    for tok in (t or '').split(' '):
+        low, prev = tok.lower(), (out[-1].lower() if out else '')
+        if out and ((low == 's' and re.fullmatch(r"[a-z]{2,}", prev))
+                    or (low == 't' and re.fullmatch(r"[a-z]*n", prev))
+                    or (low == 'm' and prev == 'i')
+                    or (low in ('re', 've', 'll', 'd') and prev in _PRONOUNS)):
+            out[-1] += "'" + tok.lower()
+        else:
+            out.append(tok)
+    return ' '.join(out)
+
+
 def _nice(t):
-    """ALL CAPS or all lowercase -> Title Case; mixed case is kept as typed."""
-    if t and (t == t.lower() or t == t.upper()):
-        return ' '.join(w[:1].upper() + w[1:].lower() for w in t.split(' '))
-    return t
+    """Apostrophes back, then: ALL CAPS, all lowercase or only a first capital -> Title Case, and in
+    Title Case small words like 'a', 'of', 'the' are lowercase after the first. Other mixed case
+    ('POV', 'McKenzie') is kept as typed."""
+    t = _apostrophes(t)
+    if not t:
+        return t
+    words = t.split(' ')
+    if t == t.upper() or t[1:] == t[1:].lower():
+        words = [w[:1].upper() + w[1:].lower() for w in words]
+    elif not all(w[:1].isupper() or not w[:1].isalpha() for w in words):
+        return t
+    return ' '.join(w.lower() if i and w.lower() in _SMALL else w for i, w in enumerate(words))
 
 
 def _tidy(name):
@@ -131,7 +159,7 @@ def _valid_movie(m):
 def parse_movie(title):
     """'Summer Road Trip 13 Scene 1' -> {'movie': 'Summer Road Trip 13', 'scene': 1, 'part': None, 'sure': True}, or None.
     sure=False for the forms that are often something else (Part N, S02, Disc N, extra words after)."""
-    t = re.sub(r'\s+', ' ', (title or '').strip())
+    t = re.sub(r'[\s_]+', ' ', (title or '')).strip()
     if not t:
         return None
     m = _SCENE.match(t)
@@ -175,7 +203,7 @@ def parse_video(title, filename_base):
         return dict(p, movie=_tidy(p['movie']), how='title')
     m = _FALCON.match(filename_base.split(' - ', 1)[-1] if filename_base else '')
     if m:
-        return {'movie': _camel_words(m.group('m')), 'scene': int(m.group('n')), 'part': None, 'sure': False, 'how': 'filename'}
+        return {'movie': _nice(_camel_words(m.group('m'))), 'scene': int(m.group('n')), 'part': None, 'sure': False, 'how': 'filename'}
     p = parse_movie(filename_text(filename_base))
     if p:
         return dict(p, movie=_nice(p['movie']), sure=False, how='filename')
@@ -513,7 +541,18 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120):
     total = len(out)
     start = (max(1, page) - 1) * limit
     out = out[start:start + limit]
+    every = {}                                         # videos in all libraries ("2 here · 5 in all")
+    ids = [m['id'] for m in out]
+    if ids:
+        w_all, p_all = home.scope_sql(model, conn, None)
+        for k in range(0, len(ids), 500):
+            chunk = ids[k:k + 500]
+            every.update(conn.execute(f'SELECT vm.movie_id, COUNT(DISTINCT vm.video_id) FROM video_movie vm '
+                                      f'JOIN videos v ON v.video_id = vm.video_id JOIN file_versions fv ON fv.video_id = v.video_id '
+                                      f'WHERE vm.movie_id IN ({",".join("?" * len(chunk))}) AND {w_all} GROUP BY vm.movie_id',
+                                      chunk + p_all).fetchall())
     for m in out:
+        m['count_all'] = every.get(m['id'], m['count'])
         pick = m.pop('_cover') or (m['_first'][1:] if m['_first'] else None)
         m.pop('_first')
         m.pop('cover_video_id', None)
@@ -528,12 +567,13 @@ def detail(model, conn, mid, username=None, watch_history=None):
     import library_stats
     d = get(conn, mid)
     where, params = home.scope_sql(model, conn, None)
-    rows = conn.execute(f'SELECT fv.path, vm.scene, vm.part, vm.whole, v.title, fv.length_seconds, v.video_id FROM video_movie vm '
+    rows = conn.execute(f'SELECT fv.path, vm.scene, vm.part, vm.whole, v.title, fv.length_seconds, v.video_id, v.library FROM video_movie vm '
                         f'JOIN videos v ON v.video_id = vm.video_id JOIN file_versions fv ON fv.video_id = v.video_id '
                         f'WHERE vm.movie_id = ? AND {where}', [mid] + params).fetchall()
     rows = sorted(rows, key=lambda r: _order(r[1], r[2], r[3], r[4]))
-    items = [x for x in (home.card(model, r[0], username, watch_history) for r in rows) if x]
+    items = [x for x in (home.card(model, r[0], username, watch_history, extra={'library': r[7]}) for r in rows) if x]
     library_stats.add_play_stats(conn, username, items)
+    d['libraries'] = sorted({r[7] for r in rows if r[7]})
     have = {r[1] for r in rows if r[1]}
     for sc in d['ext_scenes']:
         sc['have'] = sc['n'] in have
@@ -595,7 +635,7 @@ def find(model, conn, library=None, whole=False):
                 p = dict(p, scene=own['scene'], part=own['part'])
         p = p or parse_video(title, fbase)
         if not p and whole:
-            name = clean_title(title) or _nice(filename_text(fbase))
+            name = _nice(clean_title(title) or filename_text(fbase))
             if title_key(name):
                 p = {'movie': name, 'scene': None, 'part': None, 'whole': True, 'sure': True, 'how': 'whole'}
         if not p:

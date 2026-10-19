@@ -29,7 +29,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(self.p('Summer Road Trip 13 Scene 1'), ('Summer Road Trip 13', 1, None, True))
         self.assertEqual(self.p('Sun & Sand, Scene 4'), ('Sun & Sand', 4, None, True))
         self.assertEqual(self.p('Beach Days 24 Scene 03'), ('Beach Days 24', 3, None, True))
-        self.assertEqual(self.p('Lost In The City 7 Scene2'), ('Lost In The City 7', 2, None, True))
+        self.assertEqual(self.p('Lost In The City 7 Scene2'), ('Lost in the City 7', 2, None, True))
         self.assertEqual(self.p('Road Show 4: Jane Doe - Scene 2'), ('Road Show 4: Jane Doe', 2, None, True))
         self.assertEqual(self.p('Velocity - Part 1, Scene 2'), ('Velocity - Part 1', 2, None, True))
 
@@ -43,9 +43,21 @@ class ParseTests(unittest.TestCase):
     def test_names_and_filenames(self):
         self.assertEqual(self.p('BIG CITY 8 - SCENE 2'), ('Big City 8', 2, None, True))
         self.assertEqual(self.p('JaneDoeGetsDP_s01')[0], 'Jane Doe Gets DP')
-        self.assertEqual(self.p('', 'Jane Doe - ANightAtTheDPOverdose_s02_JaneDoe')[0], 'A Night At The DP Overdose')
+        self.assertEqual(self.p('', 'Jane Doe - ANightAtTheDPOverdose_s02_JaneDoe')[0], 'A Night at the DP Overdose')
         self.assertEqual(self.p('', 'Jane Doe - Some_Movie_2_Scene_3'), ('Some Movie 2', 3, None, False))
         self.assertEqual(self.p('Harbor', 'Jane Doe - Harbor_s02_JaneDoe_720p'), ('Harbor', 2, None, False))
+
+    def test_apostrophes_and_capitals(self):
+        self.assertEqual(self.p('Neighbor_s_a_tease Scene 2'), ("Neighbor's a Tease", 2, None, True))
+        self.assertEqual(self.p('It_s_Party_Time_Scene_1'), ("It's Party Time", 1, None, True))
+        self.assertEqual(self.p('There_s_No_Place Scene 4')[0], "There's No Place")
+        self.assertEqual(self.p('Jane Ain t Done 2 Scene 3')[0], "Jane Ain't Done 2")
+        self.assertEqual(self.p('you re mine i m yours scene 1')[0], "You're Mine I'm Yours")
+        self.assertEqual(self.p('Jane S Big Day S A Hit Scene 1')[0], "Jane's Big Day's a Hit")
+        self.assertEqual(self.p("Jane s Fucking POV 5 Scene 1")[0], "Jane's Fucking POV 5")      # typed capitals kept
+        self.assertEqual(self.p('', 'Jane Doe - It_s_Party_Time_Scene_1')[0], "It's Party Time")
+        self.assertEqual(self.p('Plan B 2 Scene 1')[0], 'Plan B 2')
+        self.assertEqual(movies.title_key("Neighbor's a Tease"), movies.title_key('Neighbor s a tease'))
 
     def test_not_movies(self):
         for t in ('SCENE 1 - JANE DOE, JOHN ROE', 'Jane Doe solo', 'Obscene 2', ''):
@@ -167,6 +179,19 @@ class MovieTests(MovieBase):
         self.assertEqual(movies.listing(self.model, self.c, 'Other')['total'], 0)
         det = movies.detail(self.model, self.c, d['movies'][0]['id'])
         self.assertEqual([i['path'] for i in det['items']], [A, B])
+        self.assertEqual(det['movie']['libraries'], ['Lib'])
+
+    def test_scenes_from_two_libraries(self):
+        self.c.execute("UPDATE videos SET library = 'Other' WHERE video_id = 'v2'")
+        movies.set_video_movie(self.c, 'v1', 'Movie', scene=1)
+        movies.set_video_movie(self.c, 'v2', 'Movie', scene=2)
+        self.model.db.get_file = self.db.get_file
+        here = movies.listing(self.model, self.c, 'Lib')['movies']
+        self.assertEqual([(m['count'], m['count_all']) for m in here], [(1, 2)])
+        self.assertEqual(movies.listing(self.model, self.c, 'Other')['movies'][0]['count'], 1)
+        det = movies.detail(self.model, self.c, here[0]['id'])
+        self.assertEqual([(i['path'], i['library']) for i in det['items']], [(A, 'Lib'), (B, 'Other')])
+        self.assertEqual(det['movie']['libraries'], ['Lib', 'Other'])
 
 
 class FindTests(MovieBase):

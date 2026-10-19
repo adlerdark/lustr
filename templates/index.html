@@ -597,6 +597,7 @@
                       form: {}, ext: { open: false, query: '', paste: '', list: [], busy: false, msg: '' } },        // Movies tab (movies.py)
                 mvFind: { open: false, library: '', whole: false, loading: false, busy: false, groups: [], msg: '', done: '', filter: 'all', q: '', shown: 200 },
                 mvTitles: [], mvTitlesTimer: null,
+                mvPick: { open: false, q: '', list: [], scene: '', busy: false, msg: '', paths: [], timer: null },   // right-click -> Add to movie…
                 
                 // Cast functionality
                 castBioMode: false,
@@ -6512,6 +6513,51 @@ No metadata is changed.`)) return;
                         this.loadMovies(1);
                     } catch (e) { F.msg = 'Not applied: ' + e.message; }
                     F.busy = false;
+                },
+
+                async mvSetNumber(video, key, value) {
+                    try {
+                        const r = await fetch('/api/metadata/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                         body: JSON.stringify({ paths: [video.path], updates: { [key]: String(value || '') } }) });
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        await this.mvLoad(this.mv.view.id);           // re-sorts by scene / part
+                    } catch (e) { this.mv.msg = 'Not saved: ' + e.message; }
+                },
+
+                mvPickOpen() {
+                    const paths = Array.from(this.selectedPaths);
+                    if (!paths.length) return;
+                    Object.assign(this.mvPick, { open: true, q: '', list: [], scene: '', busy: false, msg: '', paths });
+                    this.$nextTick(() => document.getElementById('mv-pick-q')?.focus());
+                },
+
+                mvPickSearch() {
+                    const P = this.mvPick;
+                    clearTimeout(P.timer);
+                    P.timer = setTimeout(async () => {
+                        if (!P.q.trim()) { P.list = []; return; }
+                        try { P.list = (await (await fetch('/api/movies/autocomplete?q=' + encodeURIComponent(P.q.trim()))).json()).titles || []; }
+                        catch (e) { P.list = []; }
+                    }, 200);
+                },
+
+                async mvPickSave(name) {
+                    const P = this.mvPick;
+                    name = (name || '').trim();
+                    if (!name) return;
+                    const updates = { movie: name };
+                    if (P.paths.length === 1 && String(P.scene).trim()) updates.movie_scene = String(P.scene).trim();
+                    P.busy = true; P.msg = '';
+                    try {
+                        const r = await fetch('/api/metadata/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                         body: JSON.stringify({ paths: P.paths, updates }) });
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        P.open = false;
+                        if (this.libraryTab === 'movies' && this.currentLibrary !== 'Home') this.mvRefresh();
+                        else if (this.castBioMode && this.currentCastMember) this.loadCastBio(this.currentCastMember);
+                        else this.fetchVideos('none');
+                    } catch (e) { P.msg = 'Not saved: ' + e.message; }
+                    P.busy = false;
                 },
 
                 async mvCoverFromSelected() {
@@ -12868,7 +12914,8 @@ No metadata is changed.`)) return;
                                         </div>
                                         <div class="p-2">
                                             <div class="font-bold text-sm truncate" :title="m.title" x-text="m.title"></div>
-                                            <div class="text-xs text-gray-400 truncate" x-text="[m.year, m.count + ' video' + (m.count === 1 ? '' : 's'), m.studio].filter(Boolean).join(' · ')"></div>
+                                            <div class="text-xs text-gray-400 truncate" x-text="[m.year, (currentLibrary !== 'All Videos' && m.count_all > m.count) ? m.count + ' here · ' + m.count_all + ' in all'
+                                                : m.count + ' video' + (m.count === 1 ? '' : 's'), m.studio].filter(Boolean).join(' · ')"></div>
                                         </div>
                                     </div>
                                 </template>
@@ -12901,7 +12948,9 @@ No metadata is changed.`)) return;
                                         <div>
                                             <h2 class="text-2xl font-bold text-gray-100" x-text="mv.view?.title"></h2>
                                             <p class="text-sm text-gray-400 mt-1" x-text="[mv.view?.year, mv.view?.studio, mv.view?.director ? 'Directed by ' + mv.view.director : '',
-                                               fmtRuntime(mv.view?.runtime), (mv.view?.count || 0) + ' video' + (mv.view?.count === 1 ? '' : 's')].filter(Boolean).join(' · ')"></p>
+                                               fmtRuntime(mv.view?.runtime), (mv.view?.count || 0) + ' video' + (mv.view?.count === 1 ? '' : 's')
+                                               + ((mv.view?.libraries?.length || 0) > 1 ? ' from ' + mv.view.libraries.length + ' libraries' : '')].filter(Boolean).join(' · ')"
+                                               :title="(mv.view?.libraries || []).join(', ')"></p>
                                             <p x-show="mv.view?.ext_id" class="text-xs mt-1">
                                                 <span class="px-1.5 py-0.5 rounded bg-emerald-700 text-white">ThePornDB</span>
                                                 <a :href="mv.view?.ext_url" target="_blank" rel="noopener noreferrer" class="text-blue-300 hover:underline ml-1">open on ThePornDB ↗</a>
@@ -12960,6 +13009,18 @@ No metadata is changed.`)) return;
                                         <div class="p-2">
                                             <h3 class="font-bold text-sm truncate" :title="video.title || video.filename" x-text="video.title || video.filename"></h3>
                                             <p class="text-xs text-gray-400 mt-0.5 truncate" x-text="orderedCast(video).map(c => castLabel(c)).join(', ')"></p>
+                                            <p class="text-[11px] text-gray-500 truncate" x-text="video.library"></p>
+                                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[11px] text-gray-400 cursor-default" @click.stop @dblclick.stop>
+                                                <label class="flex items-center gap-1">Scene
+                                                    <input type="number" min="1" :value="video.movie_scene" @change="mvSetNumber(video, 'movie_scene', $event.target.value)"
+                                                           class="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-200"></label>
+                                                <label class="flex items-center gap-1">Part
+                                                    <input type="number" min="1" :value="video.movie_part" @change="mvSetNumber(video, 'movie_part', $event.target.value)"
+                                                           class="w-12 bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-200"></label>
+                                                <label class="flex items-center gap-1 cursor-pointer" title="The whole movie is in this one file">
+                                                    <input type="checkbox" class="rounded" :checked="!!video.movie_whole"
+                                                           @change="mvSetNumber(video, 'movie_whole', $event.target.checked ? '1' : '')"> Whole</label>
+                                            </div>
                                         </div>
                                     </div>
                                 </template>
@@ -13144,6 +13205,8 @@ No metadata is changed.`)) return;
 
                             <div class="p-3">
                                 <h3 class="font-bold text-sm truncate" :title="video.title" x-text="video.title || video.filename"></h3>
+                                <p x-show="video.movie" class="text-[11px] text-blue-300/80 truncate hover:underline cursor-pointer" @click.stop="mvOpenFromVideo(video)"
+                                   :title="'Open the movie ' + video.movie" x-text="'🎞 ' + movieLabel(video)"></p>
                                 <p x-show="video.type !== 'folder'" class="text-xs text-gray-400 mt-0.5 truncate">
                                     <template x-for="(member, idx) in orderedCast(video)" :key="idx">
                                         <span>
@@ -13871,6 +13934,9 @@ No metadata is changed.`)) return;
             <button @click="collModalOpen(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2">
                 <span>▤</span><span>Add to collection...</span>
             </button>
+            <button @click="mvPickOpen(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2">
+                <span>🎞</span><span>Add to movie...</span>
+            </button>
             <button x-show="libraryTab === 'collections' && coll.view && coll.view.kind === 'collection' && currentLibrary !== 'Home'"
                     @click="collRemoveSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400 flex items-center gap-2">
                 <span>➖</span><span x-text="'Remove from ' + (coll.view?.name || 'collection')"></span>
@@ -14431,6 +14497,29 @@ No metadata is changed.`)) return;
                         <span class="text-xs text-gray-400">Find sites, performers, years and titles in this library's filenames (review, then add)</span>
                     </button>
                 </div>
+            </div>
+        </div>
+
+        <!-- ADD TO MOVIE (right-click) -->
+        <div x-show="mvPick.open" x-cloak class="fixed inset-0 z-[85] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvPick.open = false">
+            <div class="bg-gray-800 rounded-lg w-full max-w-md shadow-2xl p-4 space-y-3" @click.outside="mvPick.open = false">
+                <div class="flex items-center">
+                    <span class="font-bold flex-1" x-text="'Add ' + (mvPick.paths.length === 1 ? 'this video' : mvPick.paths.length + ' videos') + ' to a movie'"></span>
+                    <button @click="mvPick.open = false" class="text-gray-400 hover:text-white">✕</button>
+                </div>
+                <input id="mv-pick-q" type="text" x-model="mvPick.q" @input="mvPickSearch()" @keydown.enter="mvPickSave(mvPick.list[0] || mvPick.q)"
+                       placeholder="Movie name - type to search" autocomplete="off" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
+                <div class="max-h-64 overflow-y-auto scroller space-y-0.5">
+                    <template x-for="t in mvPick.list" :key="t">
+                        <button @click="mvPickSave(t)" :disabled="mvPick.busy" class="w-full text-left px-2 py-1 rounded hover:bg-blue-600 text-sm truncate" x-text="t"></button>
+                    </template>
+                    <button x-show="mvPick.q.trim() && !mvPick.list.some(t => t.toLowerCase() === mvPick.q.trim().toLowerCase())" @click="mvPickSave(mvPick.q)" :disabled="mvPick.busy"
+                            class="w-full text-left px-2 py-1 rounded hover:bg-blue-600 text-sm text-emerald-300 truncate" x-text="'+ New movie: ' + mvPick.q.trim()"></button>
+                </div>
+                <label x-show="mvPick.paths.length === 1" class="flex items-center gap-2 text-sm text-gray-300">Scene #
+                    <input type="number" min="1" x-model="mvPick.scene" class="w-20 bg-gray-900 border border-gray-600 rounded px-2 py-1"></label>
+                <p class="text-[11px] text-gray-500">Videos from any library can be in the same movie. A video already in another movie moves to this one, keeping its scene number unless you set one.</p>
+                <p x-show="mvPick.msg" class="text-sm text-red-400" x-text="mvPick.msg"></p>
             </div>
         </div>
 
