@@ -8444,8 +8444,7 @@ No metadata is changed.`)) return;
                     if (event.ctrlKey || event.metaKey) this.toggleSelection(path);
                     else if (event.shiftKey && this.lastSelectedPath) {
                         this.selectedPaths.clear();
-                        // Determine which array to use - cast bio or main videos
-                        const videoList = this.castBioMode ? this.castBioData.exact_matches : this.videos;
+                        const videoList = this._selectionList();      // the cards on screen, in their order
                         const idx1 = videoList.findIndex(v => v.path === this.lastSelectedPath);
                         const idx2 = videoList.findIndex(v => v.path === path);
                         if (idx1 !== -1 && idx2 !== -1) {
@@ -8464,13 +8463,20 @@ No metadata is changed.`)) return;
                     if (this.selectedPaths.size > 0) {
                         this.selectedPaths.clear();
                     } else {
-                        // Select all from current context - cast bio or main videos
-                        const videoList = this.castBioMode ? this.castBioData.exact_matches : this.videos;
-                        videoList.forEach(v => this.selectedPaths.add(v.path));
+                        this._selectionList().forEach(v => this.selectedPaths.add(v.path));
                     }
                     this.selectedPaths = new Set(this.selectedPaths);
                 },
                 isSelected(path) { return this.selectedPaths.has(path); },
+                _selectionList() {
+                    // the videos on screen (Shift-click ranges, select all): cast bio, a movie page, a collection, or the grid
+                    if (this.castBioMode) return this.castBioData.exact_matches || [];
+                    if (this.mvTabActive() && this.mv.view) return this.mv.items || [];
+                    if (this.currentView === 'library' && this.currentLibrary !== 'Home' && this.libraryTab === 'collections' && this.coll.view) return this.coll.items || [];
+                    return this.videos || [];
+                },
+                get mvSelCount() { return (this.mv.items || []).filter(v => this.selectedPaths.has(v.path)).length; },
+                mvSelectAllScenes() { this.selectedPaths = new Set((this.mv.items || []).map(v => v.path)); },
                 
                 async handleRightClick(event, video) {
                     this.activeMenu = null; // Reset first
@@ -13402,7 +13408,20 @@ No metadata is changed.`)) return;
                                     </span>
                                 </template>
                             </div>
-                            <h3 class="text-sm font-semibold text-gray-300 mb-2">Your videos</h3>
+                            <div class="flex flex-wrap items-center gap-2 mb-2">
+                                <h3 class="text-sm font-semibold text-gray-300">Your videos</h3>
+                                <button x-show="mv.items.length > 1 && !mvSelCount" @click="mvSelectAllScenes()" class="text-xs text-blue-300 hover:underline"
+                                        title="Or Ctrl-click / Shift-click the videos, or tick them">Select all</button>
+                                <template x-if="mvSelCount">
+                                    <div class="flex flex-wrap items-center gap-2 px-2 py-1 rounded bg-blue-900/40 border border-blue-800 text-xs">
+                                        <b x-text="mvSelCount + ' selected'"></b>
+                                        <button @click="openMetadataEditor()" class="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white">Edit metadata…</button>
+                                        <button x-show="mvSelCount < mv.items.length" @click="mvSelectAllScenes()" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600">Select all</button>
+                                        <button @click="selectedPaths = new Set()" class="px-2 py-0.5 text-gray-300 hover:text-white">Clear</button>
+                                        <span class="text-gray-400">Right-click for more (merge, add to collection…)</span>
+                                    </div>
+                                </template>
+                            </div>
                             <div x-show="!mv.items.length && !mv.loading" class="text-gray-500 text-sm mb-4">None of your videos are in this movie (any more).</div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                                 <template x-for="video in mv.items" :key="'mi|' + video.path">
@@ -13412,6 +13431,10 @@ No metadata is changed.`)) return;
                                          @mouseenter="startHover(video)" @mouseleave="stopHover()">
                                         <div class="video-card-thumb">
                                             <img :src="getThumb(video)" loading="lazy">
+                                            <div class="check-overlay" style="top: auto; bottom: 0.75rem" :class="isSelected(video.path) ? 'checked opacity-100' : (mvSelCount ? 'opacity-100' : 'opacity-0')"
+                                                 @click.stop="toggleSelection(video.path)" title="Select (Ctrl-click / Shift-click work too)">
+                                                <svg x-show="isSelected(video.path)" class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                            </div>
                                             <span x-show="mvPartLabel(video)" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white" x-text="mvPartLabel(video)"></span>
                                             <span x-show="video.favorite" class="absolute top-1 right-1 text-yellow-400 text-xl drop-shadow pointer-events-none" title="Favorite">★</span>
                                             <span x-show="video.versions && video.versions.length > 1" class="absolute top-7 left-1 bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none"
