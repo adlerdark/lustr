@@ -110,8 +110,22 @@ def _file_row(conn, path):
                         'WHERE path = ? AND deleted_at IS NULL', (path,)).fetchone()
 
 
-def hls_url(path, res, name='index.m3u8'):
-    return f'/api/player/hls/{res}/{name}?path={quote(path, safe="")}'
+def hls_url(path, res, name='index.m3u8', audio=None, max_kbps=None):
+    url = f'/api/player/hls/{res}/{name}?path={quote(path, safe="")}'
+    if audio and audio != 'stereo':                  # the defaults stay out of the URL
+        url += f'&audio={audio}'
+    if max_kbps:
+        url += f'&max_kbps={int(max_kbps)}'
+    return url
+
+
+def _hls_opts(audio, max_kbps):
+    """Checked HLS options: audio = stereo | surround | copy, max_kbps = a cap on the video bitrate."""
+    if audio not in transcoder.AUDIO_MODES:
+        raise ValueError(f'Unknown audio: {audio}')
+    if max_kbps is not None and max_kbps <= 0:
+        raise ValueError('max_kbps must be positive')
+    return audio, (max(transcoder.MIN_K, max_kbps) if max_kbps else None)
 
 
 def stream_list(conn, path, settings=None):
@@ -132,7 +146,8 @@ def stream_list(conn, path, settings=None):
                         'res': r, 'likely': True, 'type': 'application/x-mpegURL', 'src': hls_url(path, r)})
     cache_id = MediaHandler._get_cache_key(path, row[0], row[1])
     return {'video_id': row[0], 'path': path, 'duration': duration, 'width': info['width'], 'height': info['height'],
-            'codec': codec, 'audio': info['audio'], 'cache_id': cache_id, 'sources': sources,
+            'codec': codec, 'audio': info['audio'], 'audio_channels': info.get('audio_channels', 0),
+            'audio_codec': info.get('audio_codec', ''), 'bit_rate': info.get('bit_rate', 0), 'cache_id': cache_id, 'sources': sources,
             'start_source': pick_source(sources, s['default_source']), 'sprite': sprite_info(cache_id)}
 
 
@@ -236,22 +251,29 @@ def _check(path, res):
 
 
 @router.get('/hls/{res}/index.m3u8')
-def hls_playlist(res: str, path: str = Query(...), model=Depends(get_model)):
+def hls_playlist(res: str, path: str = Query(...), audio: str = 'stereo', max_kbps: Optional[int] = None,
+                 model=Depends(get_model)):
+    try:
+        audio, max_kbps = _hls_opts(audio, max_kbps)
+    except ValueError as e:
+        return PlainTextResponse(str(e), status_code=400)
     try:
         _check(path, res)
     except Exception as e:
         return PlainTextResponse(str(e), status_code=404)
     info = transcoder.probe(path)
-    text = transcoder.playlist(info['duration'], lambda n: hls_url(path, res, f'{n}.ts'))
+    text = transcoder.playlist(info['duration'], lambda n: hls_url(path, res, f'{n}.ts', audio, max_kbps))
     return PlainTextResponse(text, media_type='application/vnd.apple.mpegurl', headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/hls/{res}/{segment}.ts')
-def hls_segment(res: str, segment: int, path: str = Query(...), model=Depends(get_model)):
+def hls_segment(res: str, segment: int, path: str = Query(...), audio: str = 'stereo', max_kbps: Optional[int] = None,
+                model=Depends(get_model)):
     try:
+        audio, max_kbps = _hls_opts(audio, max_kbps)
         _check(path, res)
         hw = get_settings(_conn())['hw']
-        f = transcoder.manager.segment(path, res, segment, hw=hw)
+        f = transcoder.manager.segment(path, res, segment, hw=hw, audio=audio, max_kbps=max_kbps)
     except FileNotFoundError as e:
         return PlainTextResponse(str(e), status_code=404)
     except transcoder.SegmentError as e:

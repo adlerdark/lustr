@@ -43,6 +43,10 @@ MAX_PROCS = 3            # ffmpeg processes at once; the longest-idle one gives 
 # name -> short side in pixels (0 = as is). 'original' is always offered.
 RESOLUTIONS = (('original', 0), ('1080', 1080), ('720', 720), ('480', 480), ('240', 240))
 BITRATE_K = {'original': 8000, '1080': 8000, '720': 4000, '480': 2000, '240': 600}
+ORIGINAL_K = ((2160, 25000), (1440, 16000))   # 'original' of a big source: by its height (else BITRATE_K)
+MIN_K = 300                                   # the lowest max_kbps cap
+AUDIO_MODES = ('stereo', 'surround', 'copy')  # HLS audio: 2 ch AAC (default) | 5.1 AAC | the source's own
+COPY_AUDIO = ('aac', 'ac3', 'eac3')           # codecs MPEG-TS carries as they are
 MODES = ('full', 'hwupload', 'software')
 
 DRI = os.environ.get('LUSTR_DRI_DEVICE', '/dev/dri/renderD128')
@@ -60,7 +64,8 @@ _probes = {}             # (path, size, mtime) -> info
 # probing
 # ---------------------------------------------------------------------------
 def probe(path):
-    """-> {duration, width, height, codec, audio, rotation} (cached per file version)."""
+    """-> {duration, width, height, codec, audio, audio_channels, audio_codec, bit_rate (kbps, 0 = unknown),
+    rotation} (cached per file version)."""
     try:
         st = os.stat(path)
         key = (path, st.st_size, int(st.st_mtime))
@@ -68,13 +73,18 @@ def probe(path):
         key = (path, 0, 0)
     if key in _probes:
         return _probes[key]
-    info = {'duration': 0.0, 'width': 0, 'height': 0, 'codec': '', 'audio': False, 'rotation': 0}
+    info = {'duration': 0.0, 'width': 0, 'height': 0, 'codec': '', 'audio': False, 'audio_channels': 0,
+            'audio_codec': '', 'bit_rate': 0, 'rotation': 0}
     try:
         out = subprocess.run(['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', path],
                              capture_output=True, timeout=30, env=ENV).stdout
         data = json.loads(out or b'{}')
         try:
             info['duration'] = float((data.get('format') or {}).get('duration') or 0)
+        except ValueError:
+            pass
+        try:
+            info['bit_rate'] = int(int((data.get('format') or {}).get('bit_rate') or 0) / 1000)
         except ValueError:
             pass
         for s in data.get('streams') or []:
@@ -93,8 +103,8 @@ def probe(path):
                         info['duration'] = float(s.get('duration') or 0)
                     except ValueError:
                         pass
-            elif s.get('codec_type') == 'audio':
-                info['audio'] = True
+            elif s.get('codec_type') == 'audio' and not info['audio']:     # the first audio track (what HLS maps)
+                info.update(audio=True, audio_channels=int(s.get('channels') or 0), audio_codec=s.get('codec_name') or '')
     except Exception:
         pass
     _probes[key] = info
@@ -186,10 +196,35 @@ def playlist(duration, segment_url):
     return '\n'.join(lines) + '\n'
 
 
-def build_args(path, info, res, start_seg, mode, out_dir):
+def video_rate(res, info, max_kbps=None):
+    """Video bitrate in kbps. 'original' of a 4K / 1440p source gets more, but never more than the file itself."""
+    rate = BITRATE_K.get(res, 8000)
+    if res == 'original':
+        h = min(info.get('width', 0), info.get('height', 0)) or info.get('height', 0)
+        rate = next((k for side, k in ORIGINAL_K if h >= side), rate)
+        if info.get('bit_rate') and rate > BITRATE_K['original']:
+            rate = max(BITRATE_K['original'], min(rate, info['bit_rate']))
+    if max_kbps:
+        rate = min(rate, max(MIN_K, int(max_kbps)))
+    return rate
+
+
+def audio_args(info, audio='stereo'):
+    """ffmpeg audio arguments: stereo AAC; surround = 5.1 AAC when the source has 6+ channels;
+    copy = the source's own audio when MPEG-TS can carry it (else surround)."""
+    if not info.get('audio'):
+        return ['-an']
+    if audio == 'copy' and (info.get('audio_codec') or '').lower() in COPY_AUDIO:
+        return ['-map', '0:a:0', '-c:a', 'copy']
+    if audio in ('surround', 'copy') and info.get('audio_channels', 0) >= 6:
+        return ['-map', '0:a:0', '-c:a', 'aac', '-ac', '6', '-b:a', '384k']
+    return ['-map', '0:a:0', '-c:a', 'aac', '-ac', '2', '-b:a', '160k']
+
+
+def build_args(path, info, res, start_seg, mode, out_dir, audio='stereo', max_kbps=None):
     """ffmpeg arguments for one HLS run. mode: full | hwupload | software."""
     dims = scale_dims(info.get('width', 0), info.get('height', 0), res)
-    rate = BITRATE_K.get(res, 8000)
+    rate = video_rate(res, info, max_kbps)
     args = ['ffmpeg', '-hide_banner', '-v', 'error', '-nostdin']
     if mode == 'full':
         args += ['-vaapi_device', DRI, '-hwaccel', 'vaapi', '-hwaccel_output_format', 'vaapi']
@@ -212,10 +247,7 @@ def build_args(path, info, res, start_seg, mode, out_dir):
     args += ['-flags', '+cgop', '-force_key_frames', f'expr:gte(t,n_forced*{SEGMENT})']
     if vf:
         args += ['-vf', vf]
-    if info.get('audio'):
-        args += ['-map', '0:a:0', '-c:a', 'aac', '-ac', '2', '-b:a', '160k']
-    else:
-        args += ['-an']
+    args += audio_args(info, audio)
     args += ['-sn', '-copyts', '-avoid_negative_ts', 'disabled', '-f', 'hls', '-start_number', str(start_seg),
              '-hls_time', str(SEGMENT), '-hls_flags', 'split_by_time', '-hls_segment_type', 'mpegts',
              '-hls_playlist_type', 'vod', '-hls_segment_filename', os.path.join(out_dir, '.%d.ts'),
@@ -231,8 +263,9 @@ class SegmentError(Exception):
 
 
 class _Stream:
-    def __init__(self, key, path, info, res, folder, modes):
+    def __init__(self, key, path, info, res, folder, modes, audio='stereo', max_kbps=None):
         self.key, self.path, self.info, self.res, self.dir = key, path, info, res, folder
+        self.audio, self.max_kbps = audio, max_kbps
         self.modes = list(modes)               # still to try, best first
         self.mode = None
         self.proc = None
@@ -268,21 +301,24 @@ class SegmentManager:
             self.streams.clear()
 
     # ----- requests -----
-    def segment(self, path, res, n, hw=True, wait=WAIT):
-        """-> the finished segment file, waiting for ffmpeg to make it."""
+    def segment(self, path, res, n, hw=True, wait=WAIT, audio='stereo', max_kbps=None):
+        """-> the finished segment file, waiting for ffmpeg to make it. audio / max_kbps: see build_args;
+        each combination is its own stream (a change starts a new ffmpeg)."""
+        audio = audio if audio in AUDIO_MODES else 'stereo'
+        max_kbps = max(MIN_K, int(max_kbps)) if max_kbps else None
         info = probe(path)
         count = segment_count(info['duration'])
         if n < 0 or n >= count:
             raise SegmentError(f'No segment {n}')
         modes = self._modes(path, hw)
-        key = (path, res)
+        key = (path, res, audio, max_kbps)
         deadline = time.monotonic() + wait
         with self.cond:
             st = self.streams.get(key)
             if st is None:
                 folder = os.path.join(self.root, f'{abs(hash(key)) & 0xffffffffffff:x}_{res}')
                 os.makedirs(folder, exist_ok=True)
-                st = self.streams[key] = _Stream(key, path, info, res, folder, modes)
+                st = self.streams[key] = _Stream(key, path, info, res, folder, modes, audio, max_kbps)
             st.waiting += 1
             try:
                 while True:
@@ -335,7 +371,7 @@ class SegmentManager:
                 os.remove(os.path.join(st.dir, f))
         st.mode = st.modes[0]
         st.start_seg, st.made = n, n - 1
-        args = build_args(st.path, st.info, st.res, n, st.mode, st.dir)
+        args = build_args(st.path, st.info, st.res, n, st.mode, st.dir, st.audio, st.max_kbps)
         try:
             st.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                        env=ENV, start_new_session=True)
