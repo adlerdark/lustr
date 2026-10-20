@@ -149,7 +149,7 @@ class LibraryModel:
             for lib in current_libs:
                 if lib not in self.library_order:
                     self.library_order.append(lib)
-            self.library_order = [l for l in self.library_order if l in self.libraries]
+            self.library_order = self._known_order(self.library_order)
             
             # Note: We don't load all files into memory immediately for performance
             # Files will be loaded on-demand from SQLite
@@ -160,6 +160,12 @@ class LibraryModel:
             print(f"Error loading from SQLite: {e}")
             import traceback
             traceback.print_exc()
+
+    def _known_order(self, order):
+        """The saved order minus names that no longer exist. Top-level groups stay (with their
+        position among the libraries); sub-groups never sit at the top level."""
+        groups = self.library_groups or {}
+        return [l for l in order if l in self.libraries or (l in groups and not groups[l].get('parent'))]
 
     def _load_from_json(self):
         """Load data from JSON file (legacy method)."""
@@ -182,7 +188,7 @@ class LibraryModel:
                 for lib in current_libs:
                     if lib not in self.library_order:
                         self.library_order.append(lib)
-                self.library_order = [l for l in self.library_order if l in self.libraries]
+                self.library_order = self._known_order(self.library_order)
 
                 self._migrate_metadata_format()
                 threading.Thread(target=self.rebuild_search_index, daemon=True).start()
