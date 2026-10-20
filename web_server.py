@@ -45,7 +45,7 @@ from search_parser import SearchParser
 from cast_manager import CastManager
 
 # Import helper utilities
-from helpers import check_auth, load_json_file, same_origin
+from helpers import check_auth, check_session, load_json_file, same_origin
 
 # Import all route modules
 from routes import (
@@ -207,11 +207,13 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     
     # All other API endpoints require auth
-    username = check_auth(request, check_inactivity=True)
-    
+    session = check_session(request, check_inactivity=True)
+    username = session[0] if session else None
+
     if username:
         import display_filter
-        display_filter.CURRENT_USER.set(username)        # per-user display filter (display_filter.py)
+        # per-user display filter (display_filter.py); a TV app keeps its own, under 'name#tv'
+        display_filter.CURRENT_USER.set(username + display_filter.TV_SUFFIX if session[1] == 'tv' else username)
         started = time.time()
         response = await call_next(request)
         took = time.time() - started

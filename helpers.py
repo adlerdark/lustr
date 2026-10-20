@@ -144,6 +144,16 @@ def check_auth(request: Request, check_inactivity: bool = True) -> Optional[str]
         return None
 
 
+def check_session(request: Request, check_inactivity: bool = True) -> Optional[tuple]:
+    """Like check_auth, but -> (username, kind) or None; kind is 'browser' or 'tv'."""
+    try:
+        import auth_sessions
+        return auth_sessions.check_session(session_token(request), SESSION['timeout'], touch=check_inactivity)
+    except Exception as e:
+        print(f"Session check failed: {e}")
+        return None
+
+
 def request_is_https(request: Request) -> bool:
     """True when the browser reached lustr over HTTPS (directly or through a reverse proxy)."""
     proto = request.headers.get('x-forwarded-proto', '').split(',')[0].strip().lower()

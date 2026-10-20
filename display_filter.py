@@ -23,6 +23,7 @@ TAG_TYPE = {'straight': 'straight', 'gay': 'gay', 'bisexual': 'bisexual', 'heter
 SETTINGS_KEY = 'display_filter'
 
 CURRENT_USER = contextvars.ContextVar('display_filter_user', default=None)
+TV_SUFFIX = '#tv'               # TV apps' own selection: 'jane#tv' (until it's set, a TV uses the web app's)
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +171,10 @@ def _all(conn):
 
 def get_selection(conn, user=None):
     user = user if user is not None else CURRENT_USER.get()
-    sel = _all(conn).get(user or '')
+    data = _all(conn)
+    sel = data.get(user or '')
+    if sel is None and (user or '').endswith(TV_SUFFIX):
+        sel = data.get(user[:-len(TV_SUFFIX)])
     return [t for t in TYPES if t in sel] if isinstance(sel, list) else list(TYPES)
 
 

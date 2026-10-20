@@ -192,6 +192,39 @@ class PasswordLoginTests(unittest.TestCase):
         self.assertEqual(auth_sessions.check_session(token, 900), ('jane', 'browser'))
 
 
+class DisplayFilterTests(unittest.TestCase):
+    """A TV keeps its own 'Show libraries and videos' selection; until it has one, the web app's."""
+    def test_tv_selection(self):
+        import sqlite3
+        import display_filter as df
+        c = sqlite3.connect(':memory:')
+        c.execute('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)')
+        everything = df.get_selection(c, 'jane')
+        df.set_selection(c, 'jane', ['straight'])
+        self.assertEqual(df.get_selection(c, 'jane#tv'), ['straight'])          # follows the web app
+        df.set_selection(c, 'jane#tv', ['gay', 'straight'])
+        df.set_selection(c, 'jane', everything)
+        self.assertEqual(sorted(df.get_selection(c, 'jane#tv')), ['gay', 'straight'])
+        self.assertEqual(df.get_selection(c, 'jane'), everything)
+
+    def test_middleware_picks_the_tv_key(self):
+        try:
+            import web_server
+        except Exception as e:
+            self.skipTest(f'web_server not importable: {e}')
+        import display_filter as df
+        auth_sessions.set_db_path(os.path.join(_DATA, 'library.db'))
+        seen = []
+
+        async def nxt(req):
+            seen.append(df.CURRENT_USER.get())
+            return Response('ok')
+        for kind in ('browser', 'tv'):
+            token = auth_sessions.create('jane', kind=kind, max_age=3600 if kind == 'tv' else None)
+            run(web_server.auth_middleware(make_request(token, path='/api/videos', method='GET'), nxt))
+        self.assertEqual(seen, ['jane', 'jane#tv'])
+
+
 class MiddlewareTests(Base):
     """Only the two pairing paths are public under /api/tv."""
     @classmethod
