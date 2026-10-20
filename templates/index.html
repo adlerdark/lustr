@@ -913,6 +913,27 @@
                 fileChangesData: [],
                 libraryManagementTab: 'libraries', // 'libraries', 'groups', or 'settings'
                 settingsTab: 'general', // 'general', 'thumbnails', 'vlc', 'tools', 'extdb', 'appearance'
+                // Settings as a full page with a sidebar ('page'), or the older popup with tabs ('popup'); per browser
+                settingsLayout: (() => { try { return localStorage.getItem('settingsLayout') || 'page'; } catch (e) { return 'page'; } })(),
+                settingsPage: (() => { try { return localStorage.getItem('settingsPage') || 'browsing'; } catch (e) { return 'browsing'; } })(),
+                settingsPages: [
+                    { id: 'account', label: 'Account & Security', group: 'Personal', icon: '🔒' },
+                    { id: 'appearance', label: 'Appearance', group: 'Personal', icon: '🎨' },
+                    { id: 'browsing', label: 'Browsing', group: 'Personal', icon: '🗂️' },
+                    { id: 'libraries', label: 'Libraries & Scans', group: 'Library', icon: '📚' },
+                    { id: 'thumbnails', label: 'Thumbnails', group: 'Library', icon: '🖼️' },
+                    { id: 'metadata', label: 'Metadata', group: 'Library', icon: '🏷️' },
+                    { id: 'playhistory', label: 'Play History', group: 'Library', icon: '🕘' },
+                    { id: 'player', label: 'Player', group: 'Playback', icon: '▶' },
+                    { id: 'captions', label: 'Captions', group: 'Playback', icon: '💬' },
+                    { id: 'vlc', label: 'VLC', group: 'Playback', icon: '🔶' },
+                    { id: 'extdb', label: 'External DB', group: 'Data', icon: '🌐', wide: true,
+                      subs: [['overview', 'Overview'], ['tagmap', 'Tag mappings'], ['links', 'Linked videos']] },
+                    { id: 'maintenance', label: 'Maintenance', group: 'Data', icon: '🧹', wide: true,
+                      subs: [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'],
+                             ['spell', 'Same performer, different spelling'], ['tags', 'Tag cleanup'], ['backups', 'Backups']] },
+                    { id: 'importexport', label: 'Import / Export', group: 'Data', icon: '📁' },
+                ],
                 // Settings -> General -> Play History (library_stats.py: play_log, watch_stats)
                 ph: { tab: 'log', q: '', from: '', to: '', countedOnly: false, showDeleted: true, loading: false, error: '', seq: 0,
                       minSeconds: 15, colMenu: null, selected: [],
@@ -1901,6 +1922,8 @@
                     
                     // Handle browser back button
                     window.addEventListener('popstate', (event) => {
+                        if (this._settingsPop) { this._settingsPop = false; return; }   // closeSettings() taking its entry back
+                        if (this.modals.settings && this.settingsLayout === 'page') { this.modals.settings = false; return; }   // back closes Settings
                         if (this.np.open) { this.npTeardown(); return; }      // back button closes the new player
                         if (this.activeVideo) {
                             // Clear video player without using history.back()
@@ -2131,7 +2154,7 @@
                 },
 
                 openLibraryTypes() {
-                    this.modals.settings = false;
+                    if (this.settingsLayout !== 'page') this.modals.settings = false;    // the Settings page stays underneath
                     this.openLibraryModal();
                     this.libraryManagementTab = 'settings';
                 },
@@ -2385,7 +2408,7 @@
                     else if (this.modals.manageLib) this.modals.manageLib = false;
                     else if (this.modals.fileInfo) this.modals.fileInfo = false;
                     else if (this.modals.playHistory) { if (this.ph.colMenu) this.ph.colMenu = null; else this.phClose(); }
-                    else if (this.modals.settings) this.modals.settings = false;
+                    else if (this.modals.settings) this.closeSettings();
                     else if (this.activeVideo) this.closeVideo(); // Replaced activeVideo = null
                     else if (this.selectedPaths.size > 0) {
                         this.selectedPaths.clear();
@@ -6997,7 +7020,7 @@ No metadata is changed.`)) return;
                 },
 
                 phOpen() {
-                    this.modals.settings = false;
+                    if (this.settingsLayout !== 'page') this.modals.settings = false;    // the Settings page stays underneath
                     try {
                         const p = JSON.parse(localStorage.getItem('phPrefs') || '{}');
                         for (const t of ['log', 'stats']) {
@@ -7826,6 +7849,59 @@ No metadata is changed.`)) return;
                     });
                 },
 
+                // ===== Settings: a full page with a sidebar, or the older popup (settingsLayout) =====
+                openSettings(page) {
+                    if (page) this.settingsPage = page;
+                    if (!this.settingsPages.some(p => p.id === this.settingsPage)) this.settingsPage = 'browsing';
+                    const wasOpen = this.modals.settings;
+                    this.modals.settings = true;
+                    this.loadAutomation();
+                    if (this.settingsLayout !== 'page') return;
+                    if (!wasOpen) { try { history.pushState({ lustrSettings: true }, '', window.location.pathname); } catch (e) { /* ignore */ } }
+                    this.settingsGo(this.settingsPage);
+                },
+
+                closeSettings() {
+                    this.modals.settings = false;
+                    if (history.state && history.state.lustrSettings) { this._settingsPop = true; history.back(); }   // the page's Back entry
+                },
+
+                // open a sidebar page (and sub-page) and load what it shows
+                settingsGo(id, sub) {
+                    this.settingsPage = id;
+                    try { localStorage.setItem('settingsPage', id); } catch (e) { /* ignore */ }
+                    if (id === 'player' || id === 'captions') this.npSettingsLoad();
+                    else if (id === 'importexport') this.toolsActiveTab = 'import-export';
+                    else if (id === 'maintenance') {
+                        this.toolsActiveTab = 'cleanup';
+                        this.maintLoad();
+                        if (sub) this.maintShow(sub);
+                    } else if (id === 'extdb') {
+                        this.extCfgOpen().then(() => {
+                            if (!sub || sub === this.extCfg.tab) return;
+                            this.extCfg.tab = sub;
+                            if (sub === 'links') this.extCfgLoadLinks(1);
+                            if (sub === 'overview') this.extCfgLoadOverview();
+                        });
+                    }
+                    if (this.$refs.settingsBody) this.$refs.settingsBody.scrollTop = 0;
+                },
+
+                settingsSubOn(p, k) { return p.id === 'extdb' ? this.extCfg.tab === k : this.maint.view === k; },
+                settingsInfo() { return this.settingsPages.find(p => p.id === this.settingsPage) || this.settingsPages[0]; },
+                // a section that belongs to one sidebar page (the popup shows it in its tab, as before)
+                sPage(id) { return this.settingsLayout !== 'page' || this.settingsPage === id; },
+                // a popup tab's block: in page mode it shows on any of the pages its sections belong to
+                sShow(tab, pages) { return this.settingsLayout === 'page' ? [].concat(pages).includes(this.settingsPage) : this.settingsTab === tab; },
+
+                setSettingsLayout(v) {
+                    this.settingsLayout = v;
+                    try { localStorage.setItem('settingsLayout', v); } catch (e) { /* ignore */ }
+                    const el = this.$refs.settingsPanel;                      // a moved popup goes back to the middle
+                    if (el) Object.assign(el.style, { position: '', left: '', top: '', margin: '', width: '' });
+                    if (v === 'page') this.settingsGo('appearance'); else this.settingsTab = 'appearance';
+                },
+
                 // ===== Settings -> External DB (ext_db.py) =====
                 async extCfgOpen() {
                     this.settingsTab = 'extdb';
@@ -8040,7 +8116,7 @@ No metadata is changed.`)) return;
                                                          .filter(f => !['male_cast', 'cast', 'site'].includes(f) && !(f in work));
                     Object.assign(this.qt, { work, orig: JSON.stringify(work), extra, sel: Object.keys(work)[0] || extra[0] || null,
                                              add: '', dragIdx: null, overIdx: null, error: '', saving: false });
-                    this.modals.settings = false;
+                    if (this.settingsLayout !== 'page') this.modals.settings = false;    // the Settings page stays underneath
                     this.modals.quickTags = true;
                 },
 
@@ -10984,7 +11060,7 @@ No metadata is changed.`)) return;
                         if (d.success) S.spr = d.status;
                     } catch (e) { /* keep last */ }
                     clearTimeout(S.sprTimer);
-                    if (S.spr && (S.spr.running || S.spr.queued) && this.modals.settings && this.settingsTab === 'player')
+                    if (S.spr && (S.spr.running || S.spr.queued) && this.modals.settings && this.sShow('player', 'player'))
                         S.sprTimer = setTimeout(() => this.npSprStatus(), 2000);
                 },
 
@@ -11644,7 +11720,7 @@ No metadata is changed.`)) return;
                                                           done: d.done || [], doneTotal: d.done_total || 0 });
                     } catch (e) { /* keep last */ }
                     clearTimeout(C.timer);
-                    if (this.modals.settings && this.settingsTab === 'player') C.timer = setTimeout(() => this.ccStatusLoad(), 3000);
+                    if (this.modals.settings && this.sShow('player', 'captions')) C.timer = setTimeout(() => this.ccStatusLoad(), 3000);
                 },
                 async ccDrop(cacheId) {
                     try { await this.extDbPostAny('/api/captions/drop', { cache_id: cacheId }); } catch (e) { /* ignore */ }
@@ -13056,7 +13132,7 @@ No metadata is changed.`)) return;
                         <button @click="setDisplayFilter(displayTypes)" class="w-full mt-1 text-xs text-gray-400 hover:text-white text-left">Show all</button>
                     </div>
                 </div>
-                <button @click="modals.settings = true; loadAutomation()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
+                <button @click="openSettings()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
                 <button @click="generateAllThumbs(currentLibrary)" class="text-gray-400 hover:text-white p-1" title="Gen All Thumbs">&#128247;</button>
                 <button @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning || folderAdding"
                         :title="folderAdding ? 'Adding a folder to ' + folderAddingLib + ' and looking for videos' : ''">
@@ -15300,17 +15376,68 @@ No metadata is changed.`)) return;
             </div>
         </div>
         
-        <div x-show="modals.settings" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4">
-            <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] shadow-2xl flex flex-col overflow-hidden" style="max-height: 80vh;" @click.outside="modals.settings = false"
-                 :class="(settingsTab === 'extdb' || (settingsTab === 'tools' && toolsActiveTab === 'cleanup')) ? 'max-w-7xl' : 'max-w-3xl'">
-                <!-- Header -->
-                <div class="p-4 border-b border-gray-700 flex justify-between items-center shrink-0" data-drag-handle style="cursor: move">
+        <!-- Settings: a full page with a sidebar (settingsLayout 'page'), or the older popup with tabs ('popup').
+             One copy of the content: sPage(id) / sShow(tab, pages) pick what each layout shows. -->
+        <div x-show="modals.settings" x-cloak class="fixed inset-0"
+             :class="settingsLayout === 'page' ? 'z-[70] bg-gray-900 flex' : 'z-[80] bg-black/80 flex items-center justify-center p-4'">
+            <div x-ref="settingsPanel" x-init="$nextTick(() => makeDraggable($el))" class="flex overflow-hidden"
+                 :style="settingsLayout === 'page' ? '' : 'max-height: 80vh;'"
+                 @click.outside="if (settingsLayout !== 'page') modals.settings = false"
+                 :class="settingsLayout === 'page' ? 'w-full h-full flex-col md:flex-row'
+                         : 'bg-gray-800 rounded-lg w-[95%] shadow-2xl flex-col ' + ((settingsTab === 'extdb' || (settingsTab === 'tools' && toolsActiveTab === 'cleanup')) ? 'max-w-7xl' : 'max-w-3xl')">
+                <!-- Header (popup) -->
+                <div x-show="settingsLayout !== 'page'" class="p-4 border-b border-gray-700 flex justify-between items-center shrink-0" data-drag-handle style="cursor: move">
                     <h3 class="font-bold text-xl">Settings</h3>
                     <button @click="modals.settings = false" class="text-gray-400 hover:text-white text-2xl font-bold">&times;</button>
                 </div>
-                
-                <!-- Tabs -->
-                <div class="flex border-b border-gray-700 px-4 shrink-0 overflow-x-auto whitespace-nowrap">
+
+                <!-- Sidebar (page) -->
+                <nav x-show="settingsLayout === 'page'" class="hidden md:flex flex-col w-60 shrink-0 bg-gray-800 border-r border-gray-700 overflow-y-auto">
+                    <div class="flex items-center justify-between px-4 py-4 border-b border-gray-700">
+                        <h2 class="font-bold text-xl">Settings</h2>
+                        <button @click="closeSettings()" class="text-gray-400 hover:text-white text-2xl leading-none" title="Close (Esc)">&times;</button>
+                    </div>
+                    <div class="py-2 text-sm">
+                        <template x-for="(p, i) in settingsPages" :key="p.id">
+                            <div>
+                                <div x-show="i === 0 || settingsPages[i - 1].group !== p.group"
+                                     class="px-4 pt-4 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500" x-text="p.group"></div>
+                                <button @click="settingsGo(p.id)" class="w-full flex items-center gap-2 px-4 py-1.5 text-left transition-colors"
+                                        :class="settingsPage === p.id ? 'bg-blue-600/20 text-white border-l-2 border-blue-500' : 'text-gray-300 hover:bg-gray-700 border-l-2 border-transparent'">
+                                    <span class="w-5 text-center" x-text="p.icon"></span><span x-text="p.label"></span>
+                                </button>
+                                <template x-if="p.subs && settingsPage === p.id">
+                                    <div class="pb-1">
+                                        <template x-for="[k, label] in p.subs" :key="k">
+                                            <button @click="settingsGo(p.id, k)" class="w-full text-left pl-11 pr-4 py-1 text-xs transition-colors"
+                                                    :class="settingsSubOn(p, k) ? 'text-blue-300' : 'text-gray-400 hover:text-gray-200'" x-text="label"></button>
+                                        </template>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </nav>
+
+                <!-- Page picker (page, narrow screens) -->
+                <div x-show="settingsLayout === 'page'" class="md:hidden flex items-center gap-2 px-4 py-3 bg-gray-800 border-b border-gray-700 shrink-0">
+                    <select class="flex-1 min-w-0 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm"
+                            @change="const [id, sub] = $event.target.value.split(':'); settingsGo(id, sub)">
+                        <template x-for="g in [...new Set(settingsPages.map(p => p.group))]" :key="'mg' + g">
+                            <optgroup :label="g">
+                                <template x-for="o in settingsPages.filter(p => p.group === g).flatMap(p => p.subs
+                                                     ? p.subs.map(([k, label]) => ({ v: p.id + ':' + k, t: p.label + ' › ' + label, on: settingsPage === p.id && settingsSubOn(p, k) }))
+                                                     : [{ v: p.id, t: p.icon + ' ' + p.label, on: settingsPage === p.id }])" :key="'m' + o.v">
+                                    <option :value="o.v" :selected="o.on" x-text="o.t"></option>
+                                </template>
+                            </optgroup>
+                        </template>
+                    </select>
+                    <button @click="closeSettings()" class="text-gray-400 hover:text-white text-2xl leading-none px-1" title="Close">&times;</button>
+                </div>
+
+                <!-- Tabs (popup) -->
+                <div x-show="settingsLayout !== 'page'" class="flex border-b border-gray-700 px-4 shrink-0 overflow-x-auto whitespace-nowrap">
                     <button @click="settingsTab = 'general'" 
                             class="px-4 py-3 text-sm font-medium border-b-2 transition-colors"
                             :class="settingsTab === 'general' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
@@ -15354,39 +15481,42 @@ No metadata is changed.`)) return;
                 </div>
                 
                 <!-- Tab Content -->
-                <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                    <!-- General Tab -->
-                    <div x-show="settingsTab === 'general'" class="space-y-4">
-                        <button @click="modals.columns = true; modals.settings = false" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
+                <div x-ref="settingsBody" class="flex-1 min-h-0 overflow-y-auto" :class="settingsLayout === 'page' ? '' : 'p-4 space-y-4'">
+                  <div :class="settingsLayout === 'page' ? 'mx-auto w-full px-4 sm:px-8 py-6 space-y-4 ' + (settingsInfo().wide ? 'max-w-7xl' : 'max-w-3xl') : 'space-y-4'">
+                    <h2 x-show="settingsLayout === 'page'" class="text-2xl font-bold flex items-center gap-2 pb-2">
+                        <span x-text="settingsInfo().icon"></span><span x-text="settingsInfo().label"></span></h2>
+                    <!-- General Tab (page: Account & Security, Browsing, Libraries & Scans, Metadata, Play History) -->
+                    <div x-show="sShow('general', ['account', 'browsing', 'libraries', 'metadata', 'playhistory'])" class="space-y-4">
+                        <button x-show="sPage('browsing')" @click="modals.columns = true; if (settingsLayout !== 'page') modals.settings = false" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
                             <span>Configure Columns</span><span>&#9881;</span>
                         </button>
 
-                        <button @click="qtOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
+                        <button x-show="sPage('metadata')" @click="qtOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
                             <span>Edit Quick Tags <span class="text-xs text-gray-500">- the quick-pick buttons in Edit Metadata</span></span><span>🏷️</span>
                         </button>
 
-                        <button @click="phOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
+                        <button x-show="sPage('playhistory')" @click="phOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
                             <span>Play History <span class="text-xs text-gray-500">- every play, and plays / time watched per video</span></span><span>🕘</span>
                         </button>
 
-                        <div class="flex items-center justify-between bg-gray-900 p-3 rounded" x-init="phLoadMin()">
+                        <div x-show="sPage('playhistory')" class="flex items-center justify-between bg-gray-900 p-3 rounded" x-init="phLoadMin()">
                             <div><span class="block text-sm font-medium">Minimum play length for Play History</span><span class="block text-xs text-gray-500">Plays shorter than this aren't logged or counted (same for everyone; 0 logs everything)</span></div>
                             <div class="flex items-center gap-1 shrink-0">
                                 <input type="number" min="0" max="3600" x-model.number="ph.minSeconds" @change="phSaveMin()" class="w-20 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm focus:border-blue-500 outline-none">
                                 <span class="text-xs text-gray-400">s</span>
                             </div>
                         </div>
-                        
-                        <button @click="scanDuplicates(); modals.settings = false" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center" :disabled="scanningDuplicates">
+
+                        <button x-show="sPage('libraries')" @click="scanDuplicates(); if (settingsLayout !== 'page') modals.settings = false" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center" :disabled="scanningDuplicates">
                             <span x-text="scanningDuplicates ? 'Scanning...' : 'Scan Duplicate Filenames'"></span><span>&#128269;</span>
                         </button>
-                        
-                        <div>
+
+                        <div x-show="sPage('browsing')">
                             <label class="block text-sm mb-1 font-medium">Items Per Page</label>
                             <input type="number" x-model="appSettings.itemsPerPage" @change="updateItemsPerPage" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm focus:border-blue-500 outline-none">
                         </div>
-                        
-                        <div class="bg-gray-900 p-3 rounded" x-show="appSettings.manualPagination && !appSettings.loadAll">
+
+                        <div class="bg-gray-900 p-3 rounded" x-show="sPage('browsing') && appSettings.manualPagination && !appSettings.loadAll">
                             <label class="block text-sm mb-2 font-bold">Pagination Style</label>
                             <div class="space-y-2">
                                 <label class="flex items-center gap-2 cursor-pointer">
@@ -15400,17 +15530,17 @@ No metadata is changed.`)) return;
                             </div>
                         </div>
                         
-                        <div class="flex items-center justify-between bg-gray-900 p-3 rounded">
+                        <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Manual Pagination</span><span class="block text-xs text-gray-500">Use "Load More" button</span></div>
                             <button @click="toggleSetting('manualPagination')" class="w-10 h-5 rounded-full transition-colors relative" :class="appSettings.manualPagination && !appSettings.loadAll ? 'bg-blue-600' : 'bg-gray-600'" :disabled="appSettings.loadAll"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.manualPagination && !appSettings.loadAll ? 'translate-x-5' : ''"></div></button>
                         </div>
                         
-                        <div class="flex items-center justify-between bg-gray-900 p-3 rounded">
+                        <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Load All Items</span><span class="block text-xs text-gray-500">Disabled for "All Videos"</span></div>
                             <button @click="toggleSetting('loadAll')" class="w-10 h-5 rounded-full transition-colors relative" :class="appSettings.loadAll ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.loadAll ? 'translate-x-5' : ''"></div></button>
                         </div>
                         
-                        <div class="bg-gray-900 p-3 rounded space-y-2">
+                        <div x-show="sPage('account')" class="bg-gray-900 p-3 rounded space-y-2">
                             <div><span class="block text-sm font-medium">Account</span>
                                 <span class="block text-xs text-gray-500">Logged in as <span class="text-gray-300" x-text="account.username"></span>.
                                     Forgot the password? Run <code class="text-gray-300">docker exec -it lustr python3 reset_password.py</code> on the server.</span></div>
@@ -15426,7 +15556,7 @@ No metadata is changed.`)) return;
                             <p x-show="account.msg" class="text-xs text-green-400" x-text="account.msg"></p>
                         </div>
 
-                        <div class="flex items-center justify-between gap-3 bg-gray-900 p-3 rounded">
+                        <div x-show="sPage('account')" class="flex items-center justify-between gap-3 bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Log out after inactivity</span>
                                 <span class="block text-xs text-gray-500">So nobody else can open your library if you leave it open. Closing the browser logs out too.</span></div>
                             <div class="flex items-center gap-3 flex-shrink-0">
@@ -15445,7 +15575,7 @@ No metadata is changed.`)) return;
                             </div>
                         </div>
 
-                        <div class="bg-gray-900 p-3 rounded space-y-2">
+                        <div x-show="sPage('browsing')" class="bg-gray-900 p-3 rounded space-y-2">
                             <div>
                                 <span class="block text-sm font-medium">Show libraries and videos</span>
                                 <span class="block text-xs text-gray-500">Just for you. A video's orientation tag beats its library's type, which beats its group's. Untagged videos in Mixed (or unset) libraries always show.</span>
@@ -15458,7 +15588,11 @@ No metadata is changed.`)) return;
                             <button @click="openLibraryTypes()" class="text-xs text-blue-400 hover:text-blue-300">Set library and group types →</button>
                         </div>
 
-                        <div class="bg-gray-900 p-3 rounded space-y-2">
+                        <button x-show="settingsLayout === 'page' && sPage('libraries')" @click="openLibraryTypes()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
+                            <span>Library and group types <span class="text-xs text-gray-500">- what each library and group holds; decides what "Show libraries and videos" (Browsing) hides</span></span><span>📚</span>
+                        </button>
+
+                        <div x-show="sPage('libraries')" class="bg-gray-900 p-3 rounded space-y-2">
                             <div class="flex items-center justify-between gap-3">
                                 <div><span class="block text-sm font-medium">Automatic library scans</span>
                                     <span class="block text-xs text-gray-500" x-text="automationScanText()"></span></div>
@@ -15490,24 +15624,24 @@ No metadata is changed.`)) return;
                             </div>
                         </div>
 
-                        <div class="flex items-center justify-between gap-3 bg-gray-900 p-3 rounded">
+                        <div x-show="sPage('metadata')" class="flex items-center justify-between gap-3 bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Apply performers' starred attributes when they're added to a video</span>
                                 <span class="block text-xs text-gray-500">Edit Metadata, Suggest metadata and bulk scene matching. Adds values, never removes.</span></div>
                             <button @click="saveAutomation({ cast_attributes: !automation.cast_attributes })" class="w-10 h-5 rounded-full transition-colors relative flex-shrink-0"
                                     :class="automation.cast_attributes ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="automation.cast_attributes ? 'translate-x-5' : ''"></div></button>
                         </div>
 
-                        <div class="flex items-center justify-between bg-gray-900 p-3 rounded">
+                        <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Same-name performers: show their number</span><span class="block text-xs text-gray-500">Different people with one name are stored as Jane Doe (1), Jane Doe (2). Show the number on video cards, list rows and in the player too (bios, File Info and pickers always show it)</span></div>
                             <button @click="toggleSetting('showCastNumbers')" class="w-10 h-5 rounded-full transition-colors relative flex-shrink-0" :class="appSettings.showCastNumbers ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.showCastNumbers ? 'translate-x-5' : ''"></div></button>
                         </div>
 
-                        <div class="flex items-center justify-between bg-gray-900 p-3 rounded">
+                        <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Length Filter: Slider Mode</span><span class="block text-xs text-gray-500">Use adjustable slider instead of buttons</span></div>
                             <button @click="toggleSetting('lengthSliderMode')" class="w-10 h-5 rounded-full transition-colors relative" :class="appSettings.lengthSliderMode ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.lengthSliderMode ? 'translate-x-5' : ''"></div></button>
                         </div>
 
-                        <div class="bg-gray-900 p-3 rounded space-y-2">
+                        <div x-show="sPage('browsing')" class="bg-gray-900 p-3 rounded space-y-2">
                             <div><span class="block text-sm font-medium">Length Filter: Default</span>
                                 <span class="block text-xs text-gray-500" x-text="'Selected when the app opens and whenever you switch library (this browser). ' + (appSettings.lengthSliderMode ? 'Slider mode is on - set the default range.' : 'Pick the ranges; none = show all lengths.')"></span></div>
                             <div x-show="!appSettings.lengthSliderMode" class="flex flex-wrap gap-1.5">
@@ -15529,7 +15663,7 @@ No metadata is changed.`)) return;
                     </div>
                     
                     <!-- Thumbnails Tab -->
-                    <div x-show="settingsTab === 'thumbnails'" class="space-y-4">
+                    <div x-show="sShow('thumbnails', 'thumbnails')" class="space-y-4">
                         <div class="bg-gray-900 p-4 rounded border border-gray-700">
                             <h4 class="text-sm font-bold mb-3 text-gray-300">Thumbnail Settings</h4>
                             <div class="space-y-3">
@@ -15555,7 +15689,8 @@ No metadata is changed.`)) return;
                     </div>
                     
                     <!-- VLC Tab -->
-                    <div x-show="settingsTab === 'player'" class="space-y-4">
+                    <div x-show="sShow('player', ['player', 'captions'])" class="space-y-4">
+                      <div x-show="sPage('player')" class="space-y-4">
                         <div class="bg-gray-900 p-4 rounded space-y-2 text-sm">
                             <h4 class="font-bold text-blue-400">Which player</h4>
                             <label class="flex items-start gap-2 cursor-pointer"><input type="radio" class="mt-1" :checked="appSettings.playerMode !== 'new'" @change="npSetMode('classic')">
@@ -15626,9 +15761,10 @@ No metadata is changed.`)) return;
                                       x-text="chapterJob ? `${chapterJob.done} of ${chapterJob.total} files checked · ${chapterJob.markers} markers from ${chapterJob.files_with_chapters} files` + (chapterJob.running ? '' : ' - done') : ''"></span>
                             </div>
                         </div>
+                      </div>
 
                         <!-- Captions (captions.py) -->
-                        <div class="bg-gray-900 p-4 rounded border border-gray-700 space-y-3 text-sm">
+                        <div x-show="sPage('captions')" class="bg-gray-900 p-4 rounded border border-gray-700 space-y-3 text-sm">
                             <div class="flex items-center gap-2">
                                 <h3 class="font-semibold flex-1">Captions</h3>
                             </div>
@@ -15738,7 +15874,7 @@ No metadata is changed.`)) return;
                         </div>
                     </div>
 
-                    <div x-show="settingsTab === 'vlc'" class="space-y-4">
+                    <div x-show="sShow('vlc', 'vlc')" class="space-y-4">
                         <div class="bg-gray-900 p-4 rounded border border-gray-700">
                             <h4 class="font-bold mb-2 text-blue-400 flex items-center gap-2">
                                 <svg class="w-5 h-5 text-orange-500" fill="currentColor" viewBox="0 0 24 24">
@@ -15833,9 +15969,9 @@ No metadata is changed.`)) return;
                         </div>
                     </div>
 
-                    <div x-show="settingsTab === 'tools'" class="space-y-4">
-                        <!-- Sub-tabs for Tools -->
-                        <div class="flex gap-2 border-b border-gray-700 pb-2">
+                    <div x-show="sShow('tools', ['maintenance', 'importexport'])" class="space-y-4">
+                        <!-- Sub-tabs for Tools (popup; the page has them in the sidebar) -->
+                        <div x-show="settingsLayout !== 'page'" class="flex gap-2 border-b border-gray-700 pb-2">
                             <button @click="toolsActiveTab = 'cleanup'; maintLoad()" 
                                     class="px-3 py-1.5 text-sm rounded transition-colors"
                                     :class="toolsActiveTab === 'cleanup' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'">
@@ -15852,7 +15988,7 @@ No metadata is changed.`)) return;
                         <div x-show="toolsActiveTab === 'cleanup'" class="space-y-3 text-sm">
                             <div class="flex flex-wrap gap-2 items-center">
                                 <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['tags', 'Tag cleanup'], ['backups', 'Backups']]" :key="k">
-                                    <button @click="maintShow(k)" class="px-3 py-1 rounded text-xs"
+                                    <button x-show="settingsLayout !== 'page'" @click="maintShow(k)" class="px-3 py-1 rounded text-xs"
                                             :class="maint.view === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="label"></button>
                                 </template>
                                 <div class="flex-1"></div>
@@ -16180,8 +16316,8 @@ No metadata is changed.`)) return;
 
 
                     <!-- External DB Tab (ext_db.py) -->
-                    <div x-show="settingsTab === 'extdb'" class="space-y-3 text-sm">
-                        <div class="flex gap-2 border-b border-gray-700 pb-2">
+                    <div x-show="sShow('extdb', 'extdb')" class="space-y-3 text-sm">
+                        <div x-show="settingsLayout !== 'page'" class="flex gap-2 border-b border-gray-700 pb-2">
                             <button @click="extCfg.tab = 'tagmap'" class="px-3 py-1.5 text-sm rounded transition-colors"
                                     :class="extCfg.tab === 'tagmap' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'">🏷️ Tag mappings</button>
                             <button @click="extCfg.tab = 'links'; extCfgLoadLinks(1)" class="px-3 py-1.5 text-sm rounded transition-colors"
@@ -16488,7 +16624,7 @@ No metadata is changed.`)) return;
                     </div>
 
                     <!-- Appearance Tab -->
-                    <div x-show="settingsTab === 'appearance'" class="space-y-5">
+                    <div x-show="sShow('appearance', 'appearance')" class="space-y-5">
 
                         <!-- Theme grid -->
                         <div>
@@ -16540,13 +16676,24 @@ No metadata is changed.`)) return;
                             </label>
                         </div>
 
+                        <!-- Settings layout -->
+                        <div class="border-t border-gray-700 pt-4">
+                            <h4 class="text-sm font-semibold mb-1 text-gray-300">Settings layout</h4>
+                            <p class="text-xs text-gray-500 mb-3">How this Settings window opens, in this browser.</p>
+                            <div class="flex flex-wrap gap-4 text-sm">
+                                <label class="flex items-center gap-2 cursor-pointer"><input type="radio" :checked="settingsLayout === 'page'" @change="setSettingsLayout('page')"> Full page with a sidebar</label>
+                                <label class="flex items-center gap-2 cursor-pointer"><input type="radio" :checked="settingsLayout !== 'page'" @change="setSettingsLayout('popup')"> Popup with tabs</label>
+                            </div>
+                        </div>
+
                     </div>
 
+                  </div>
                 </div>
-                
 
-                <!-- Modal footer with Close button — subtle, not prominent -->
-                <div class="flex justify-end px-4 py-3 border-t border-gray-700 shrink-0">
+
+                <!-- Modal footer with Close button — subtle, not prominent (popup) -->
+                <div x-show="settingsLayout !== 'page'" class="flex justify-end px-4 py-3 border-t border-gray-700 shrink-0">
                     <button @click="modals.settings = false"
                             class="px-4 py-1.5 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors">
                         Close
