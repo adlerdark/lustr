@@ -107,6 +107,16 @@ def title_key(title):
     return re.sub(r'[^a-z0-9]+', '', t)
 
 
+_SERIES_ONE = re.compile(r'(?i)^(.*?\w.*?)[\s:,\-]*(?:\s(?:vol(?:ume)?|part|pt|no|chapter|episode|ep)\.?\s*|\s*#\s*|\s)0*1$')
+
+
+def first_of_series(title):
+    """'Night Shift 1', 'Night Shift Vol. 1', 'Night Shift #1' -> 'Night Shift' (ThePornDB often lists the
+    first of a series without its number); None when the title doesn't end in a 1."""
+    m = _SERIES_ONE.match((title or '').strip())
+    return m.group(1).strip() if m else None
+
+
 def clean_title(title):
     t = re.sub(r'\s+', ' ', (title or '').strip())
     return t.strip(' -,:;_.(').strip()
@@ -895,7 +905,8 @@ def _movie_context(conn, mid):
     for scene, name in conn.execute('SELECT vm.scene, t.value FROM video_movie vm JOIN video_cast_junction j ON j.video_id = vm.video_id '
                                     'JOIN video_cast t ON t.id = j.cast_id WHERE vm.movie_id = ? AND vm.scene IS NOT NULL', (mid,)):
         scene_cast.setdefault(scene, set()).add(ext_db.norm_name(name))
-    return {'title': m[0], 'key': title_key(m[0]), 'year': (m[1] or '')[:4], 'studios': studios, 'cast': cast, 'top_scene': top_scene,
+    one = first_of_series(m[0])
+    return {'title': m[0], 'key': title_key(m[0]), 'key_one': title_key(one) if one else None, 'year': (m[1] or '')[:4], 'studios': studios, 'cast': cast, 'top_scene': top_scene,
             'scene_cast': scene_cast}
 
 
@@ -975,6 +986,9 @@ def score_candidate(ctx, cand):
     if title_key(cand.get('title')) == ctx['key']:
         pts += 60
         why.append('same title')
+    elif ctx.get('key_one') and title_key(cand.get('title')) == ctx['key_one']:
+        pts += 58
+        why += ['same title', 'without the "1"']
     else:
         sim = difflib.SequenceMatcher(None, ctx['key'], title_key(cand.get('title'))).ratio()
         pts += round(sim * 50)
@@ -1006,7 +1020,7 @@ def bulk_one(conn, mid, add_tags=True):
     """Check one movie on ThePornDB -> (outcome, detail, candidates). Links it when the match is sure."""
     import ext_db
     ctx = _movie_context(conn, mid)
-    found = ext_db.tpdb_search('movie', ctx['title'], per_page=10)
+    found = tpdb_movie_search(ctx['title'], per_page=10)
     scored = []
     for c in found:
         pts, why = score_candidate(ctx, c)
@@ -1422,10 +1436,23 @@ def on_video_linked(conn, video_id, kind, raw, scene_number=None, image=None):
     return mid
 
 
-def tpdb_candidates(query):
+def tpdb_movie_search(title, per_page=10):
+    """ThePornDB movie search; for 'Night Shift 1' it also searches 'Night Shift' (the number left off)."""
     import ext_db
+    found = ext_db.tpdb_search('movie', title, per_page=per_page)
+    one = first_of_series(title)
+    if one:
+        seen = {c['id'] for c in found}
+        extra = [c for c in ext_db.tpdb_search('movie', one, per_page=per_page) if c['id'] not in seen]
+        # the unnumbered title itself first, then whatever else each search found
+        found = ([c for c in extra if title_key(c['title']) == title_key(one)] + found
+                 + [c for c in extra if title_key(c['title']) != title_key(one)])
+    return found
+
+
+def tpdb_candidates(query):
     out = []
-    for c in ext_db.tpdb_search('movie', query, per_page=12):
+    for c in tpdb_movie_search(query, per_page=12):
         out.append({'id': c['id'], 'title': c['title'], 'date': c['date'], 'studio': c['studio_name'] or '',
                     'image_url': c['image_url'], 'scenes': len(c['scenes']), 'page_url': c['page_url']})
     return out

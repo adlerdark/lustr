@@ -63,6 +63,12 @@ class ParseTests(unittest.TestCase):
         for t in ('SCENE 1 - JANE DOE, JOHN ROE', 'Jane Doe solo', 'Obscene 2', ''):
             self.assertIsNone(movies.parse_movie(t), t)
 
+    def test_first_of_series(self):
+        for t in ('Night Shift 1', 'Night Shift 01', 'Night Shift #1', 'Night Shift Vol. 1', 'Night Shift: Part 1'):
+            self.assertEqual(movies.first_of_series(t), 'Night Shift', t)
+        for t in ('Night Shift 11', 'Night Shift 21', 'Blink 181', 'Shift1', '1', 'Night Shift'):
+            self.assertIsNone(movies.first_of_series(t), t)
+
     def test_title_key(self):
         self.assertEqual(movies.title_key("Jane's Diary 5"), movies.title_key('jane-s diary 5'))
         self.assertEqual(movies.title_key('Night Shift 02'), movies.title_key('Night Shift 2'))
@@ -376,6 +382,20 @@ class BulkLinkTests(MovieBase):
         self.c.execute("UPDATE movies SET year = NULL WHERE id = ?", (self.mid,))
         self.results = [self.cand('t1', 'Summer Road Trip 13')]
         self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'review')
+
+    def test_first_of_a_series_listed_without_the_1(self):
+        movies.update(self.c, self.mid, {'title': 'Summer Road Trip 1'})
+        asked = []
+
+        def search(kind, q, per_page=10):
+            asked.append(q)
+            return [self.cand('t1', 'Summer Road Trip', '2011-05-01'), self.cand('t2', 'Summer Road Trip 2', '2012-01-01')] if q == 'Summer Road Trip' else []
+        self.ext.tpdb_search = search
+        self.assertEqual([c['id'] for c in movies.tpdb_candidates('Summer Road Trip 1')], ['t1', 't2'])
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'linked', detail)
+        self.assertEqual(asked[-2:], ['Summer Road Trip 1', 'Summer Road Trip'])
+        self.assertIn('without the "1"', cands[0]['reasons'])
 
     def test_nothing_close(self):
         self.results = [self.cand('t9', 'Completely Different Film')]
