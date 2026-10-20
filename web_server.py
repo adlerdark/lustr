@@ -76,6 +76,7 @@ from routes.clips import router as clips_router
 from routes.home import router as home_router
 from routes.collections import router as collections_router
 from routes.movies import router as movies_router
+from routes.tv import router as tv_router
 
 
 # --- BACKUP FUNCTION ---
@@ -188,6 +189,8 @@ async def auth_middleware(request: Request, call_next):
         "/api/max_users",
         "/api/check_auth",
         "/api/health",
+        "/api/tv/pair/start",                        # a TV that isn't logged in yet (routes/tv.py)
+        "/api/tv/pair/poll",
         "/favicon.ico",
         "/install_vlc_link.bat"
     ]
@@ -370,6 +373,7 @@ def register_routes():
     app.include_router(home_router)
     app.include_router(collections_router)
     app.include_router(movies_router)
+    app.include_router(tv_router)
 
 
 # --- STATUS ENDPOINT ---

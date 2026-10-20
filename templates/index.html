@@ -717,6 +717,7 @@
                 sessionTimeoutMinutes: Math.round(TimerManager.INACTIVITY_TIMEOUT_MS / 60000),   // 0 = never
                 countDuringPlayback: TimerManager.COUNT_DURING_PLAYBACK,
                 account: { username: '', open: false, current: '', next: '', again: '', busy: false, msg: '', err: '' },
+                tvLink: { code: '', busy: false, msg: '', err: '', sessions: [] },     // Settings -> Account & Security -> Link a TV
                 // display_filter.py: library orientation types + this user's shown types
                 libraryTypes: {},          // effective type per library (own, else group's, else mixed)
                 libraryOwnTypes: {},       // libraries with their own type (others follow their group)
@@ -7856,9 +7857,57 @@ No metadata is changed.`)) return;
                     const wasOpen = this.modals.settings;
                     this.modals.settings = true;
                     this.loadAutomation();
-                    if (this.settingsLayout !== 'page') return;
+                    this.tvLoadSessions();
+                    if (this.settingsLayout !== 'page') {                       // the popup: the tab that holds that page
+                        if (page) this.settingsTab = { thumbnails: 'thumbnails', player: 'player', captions: 'player', vlc: 'vlc', extdb: 'extdb',
+                                                       maintenance: 'tools', importexport: 'tools', appearance: 'appearance' }[page] || 'general';
+                        return;
+                    }
                     if (!wasOpen) { try { history.pushState({ lustrSettings: true }, '', window.location.pathname); } catch (e) { /* ignore */ } }
                     this.settingsGo(this.settingsPage);
+                },
+
+                // ----- Link a TV (routes/tv.py) -----
+                async tvApprove() {
+                    const T = this.tvLink;
+                    if (T.busy || T.code.length !== 4) return;
+                    T.busy = true; T.err = ''; T.msg = '';
+                    try {
+                        const r = await fetch('/api/tv/pair/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                         body: JSON.stringify({ code: T.code }) });
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(d.detail || `Linking failed (${r.status})`);
+                        T.msg = `Linked ${d.device_name || 'the TV'}. It stays logged in for up to 4 hours.`;
+                        T.code = '';
+                        setTimeout(() => this.tvLoadSessions(), 3000);     // the TV picks up its login within a poll or two
+                    } catch (e) {
+                        T.err = e.message;
+                    } finally {
+                        T.busy = false;
+                    }
+                },
+
+                async tvLoadSessions() {
+                    try {
+                        const r = await fetch('/api/tv/sessions');
+                        if (r.ok) this.tvLink.sessions = (await r.json()).sessions || [];
+                    } catch (e) { /* keep the last list */ }
+                },
+
+                async tvLogout(id) {
+                    if (!id && !confirm('Log out every TV?')) return;
+                    try {
+                        await fetch('/api/tv/sessions/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                 body: JSON.stringify(id ? { id } : { all: true }) });
+                    } catch (e) { /* the list below shows what's left */ }
+                    this.tvLoadSessions();
+                },
+
+                tvTime(t) {
+                    const d = new Date(t * 1000);
+                    const sameDay = d.toDateString() === new Date().toDateString();
+                    return (sameDay ? '' : d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' ')
+                        + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 },
 
                 closeSettings() {
@@ -7871,6 +7920,7 @@ No metadata is changed.`)) return;
                     this.settingsPage = id;
                     try { localStorage.setItem('settingsPage', id); } catch (e) { /* ignore */ }
                     if (id === 'player' || id === 'captions') this.npSettingsLoad();
+                    else if (id === 'account') this.tvLoadSessions();
                     else if (id === 'importexport') this.toolsActiveTab = 'import-export';
                     else if (id === 'maintenance') {
                         this.toolsActiveTab = 'cleanup';
@@ -13133,6 +13183,8 @@ No metadata is changed.`)) return;
                     </div>
                 </div>
                 <button @click="openSettings()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
+                <button @click="openSettings('account'); $nextTick(() => document.getElementById('settings-link-tv')?.scrollIntoView({ block: 'center' }))"
+                        class="text-gray-400 hover:text-white p-1" title="Link a TV…">📺</button>
                 <button @click="generateAllThumbs(currentLibrary)" class="text-gray-400 hover:text-white p-1" title="Gen All Thumbs">&#128247;</button>
                 <button @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning || folderAdding"
                         :title="folderAdding ? 'Adding a folder to ' + folderAddingLib + ' and looking for videos' : ''">
@@ -15572,6 +15624,33 @@ No metadata is changed.`)) return;
                                 <label class="flex items-center gap-1 text-xs text-gray-400" :class="sessionTimeoutMinutes ? '' : 'opacity-40'"
                                        title="Off: playing a video pauses the countdown">
                                     <input type="checkbox" class="rounded" :disabled="!sessionTimeoutMinutes" x-model="countDuringPlayback" @change="saveSessionSettings()"> Also while a video plays</label>
+                            </div>
+                        </div>
+
+                        <!-- Link a TV (routes/tv.py, tv_pairing.py) -->
+                        <div x-show="sPage('account')" id="settings-link-tv" class="bg-gray-900 p-3 rounded space-y-2">
+                            <div><span class="block text-sm font-medium">Link a TV</span>
+                                <span class="block text-xs text-gray-500">Type the 4-digit code the TV app shows. A TV stays logged in for up to 4 hours; the inactivity setting above applies too.</span></div>
+                            <form @submit.prevent="tvApprove()" class="flex flex-wrap items-center gap-2 text-sm">
+                                <input type="text" inputmode="numeric" maxlength="4" pattern="[0-9]*" autocomplete="off" placeholder="0000"
+                                       x-model="tvLink.code" @input="tvLink.code = tvLink.code.replace(/\D/g, '').slice(0, 4); tvLink.err = ''; if (tvLink.code.length === 4) tvApprove()"
+                                       class="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-center tracking-[0.4em] font-mono text-lg">
+                                <button type="submit" :disabled="tvLink.busy || tvLink.code.length !== 4" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-xs">Link</button>
+                            </form>
+                            <p x-show="tvLink.err" class="text-xs text-red-400" x-text="tvLink.err"></p>
+                            <p x-show="tvLink.msg" class="text-xs text-green-400" x-text="tvLink.msg"></p>
+                            <div x-show="tvLink.sessions.length" class="pt-1 space-y-1">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-xs uppercase text-gray-400">Logged-in TVs</span>
+                                    <button @click="tvLogout(null)" class="text-xs text-red-400 hover:text-red-300">Log out all TVs</button>
+                                </div>
+                                <template x-for="s in tvLink.sessions" :key="s.id">
+                                    <div class="flex items-center gap-2 text-xs bg-gray-800 rounded px-2 py-1">
+                                        <span class="flex-1 truncate text-gray-200" x-text="s.device || 'TV'"></span>
+                                        <span class="text-gray-400" x-text="'logged in ' + tvTime(s.created) + (s.expires ? ', ends ' + tvTime(s.expires) : '')"></span>
+                                        <button @click="tvLogout(s.id)" class="text-gray-400 hover:text-red-400">Log out</button>
+                                    </div>
+                                </template>
                             </div>
                         </div>
 

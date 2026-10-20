@@ -5,6 +5,7 @@ Authentication routes.
 Handles user signup, login, logout, password change, and session management.
 """
 
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Response, Depends
 from pydantic import BaseModel
 from helpers import sign_token, check_auth, session_token, request_is_https, login_limiter
@@ -28,6 +29,8 @@ class AuthRequest(BaseModel):
     """Authentication request model."""
     username: str
     password: str
+    client: Optional[str] = None     # 'tv': a TV app's login, at most 4 hours (routes/tv.py)
+    device_name: Optional[str] = None
 
 
 class PasswordChange(BaseModel):
@@ -106,7 +109,11 @@ def login(request: Request, response: Response, req: AuthRequest, user_model = D
     _too_many(request)
     if user_model.verify_user(req.username, req.password):
         login_limiter.succeeded(_client_ip(request))
-        _start_session(request, response, req.username.lower().strip())
+        if req.client == 'tv':
+            from routes.tv import start_tv_session
+            start_tv_session(request, response, req.username.lower().strip(), (req.device_name or '').strip()[:60] or 'TV')
+        else:
+            _start_session(request, response, req.username.lower().strip())
         return {"status": "success", "message": "Login successful"}
     login_limiter.failed(_client_ip(request))
     raise HTTPException(status_code=401, detail="Invalid username or password")
