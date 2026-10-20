@@ -8623,6 +8623,13 @@ No metadata is changed.`)) return;
                     this.fetchVideos('none');
                 },
                 
+                // File Info's Library link: close File Info (and Edit Metadata under it), open that library
+                infoOpenLibrary(name) {
+                    if (this.modals.metadata) { this.closeMetadata(); if (this.modals.metadata) return; }   // kept open: unsaved edits
+                    this.modals.fileInfo = false;
+                    this.selectLibraryOrGroup({ type: 'library', name });
+                },
+
                 // File Info for one path (e.g. from Edit Metadata's header), on top of what's open
                 async openFileInfoFor(path) {
                     try {
@@ -15178,8 +15185,11 @@ No metadata is changed.`)) return;
                     <div class="bg-gray-900 p-4 rounded">
                         <h4 class="text-sm font-semibold text-gray-300 mb-3">Video Metadata</h4>
                         <div class="grid grid-cols-2 gap-3">
-                            <div><span class="text-gray-400 block text-xs uppercase">Title</span><span x-text="infoVideo?.title || infoVideo?.filename" class="font-mono"></span></div>
-                            <div><span class="text-gray-400 block text-xs uppercase">Date Added</span><span x-text="infoVideo?.date_added || 'Unknown'" class="text-xs"></span></div>
+                            <div class="min-w-0"><span class="text-gray-400 block text-xs uppercase">Title</span><span x-text="infoVideo?.title || infoVideo?.filename" class="font-mono break-words"></span></div>
+                            <div class="min-w-0"><span class="text-gray-400 block text-xs uppercase">Date Added</span><span x-text="infoVideo?.date_added || 'Unknown'" class="text-xs"></span></div>
+                            <div x-show="infoVideo?.library" class="min-w-0"><span class="text-gray-400 block text-xs uppercase">Library</span>
+                                <a href="#" @click.prevent="infoOpenLibrary(infoVideo.library)" class="text-blue-300 hover:text-blue-200 hover:underline break-words" title="Open the library"
+                                   x-text="infoVideo?.library"></a></div>
                             <div x-show="infoVideo?.movie" class="col-span-2"><span class="text-gray-400 block text-xs uppercase">Movie</span>
                                 <a href="#" @click.prevent="mvOpenFromVideo(infoVideo)" class="text-blue-300 hover:text-blue-200 hover:underline" title="Open the movie"
                                    x-text="movieLabel(infoVideo)"></a></div>
@@ -15241,6 +15251,7 @@ No metadata is changed.`)) return;
                         <div x-show="!infoVideo?.versions || infoVideo.versions.length <= 1" class="bg-gray-900 p-4 rounded space-y-3">
                             <div><span class="text-gray-400 block text-xs uppercase">Filename</span><span x-text="infoVideo?.filename" class="font-mono text-xs"></span></div>
                             <div><span class="text-gray-400 block text-xs uppercase">Full Path</span><span x-text="infoVideo?.path" class="font-mono bg-black px-2 py-1 rounded block mt-1 break-all select-all text-xs"></span></div>
+                            <div x-show="infoVideo?.cache_id"><span class="text-gray-400 block text-xs uppercase">Cache ID</span><span x-text="infoVideo?.cache_id" class="font-mono bg-black px-2 py-1 rounded block mt-1 break-all select-all text-xs"></span></div>
                             <div class="grid grid-cols-3 gap-2">
                                 <div><span class="text-gray-400 block text-xs uppercase">Resolution</span><span x-text="infoVideo?.resolution"></span></div>
                                 <div><span class="text-gray-400 block text-xs uppercase">Codec</span><span x-text="infoVideo?.codec"></span></div>
@@ -15269,6 +15280,7 @@ No metadata is changed.`)) return;
                                     <div class="space-y-2">
                                         <div><span class="text-gray-400 block text-xs uppercase">Filename</span><span x-text="version.filename" class="font-mono text-xs"></span></div>
                                         <div><span class="text-gray-400 block text-xs uppercase">Full Path</span><span x-text="version.path" class="font-mono bg-black px-2 py-1 rounded block mt-1 break-all select-all text-xs"></span></div>
+                                        <div x-show="version.cache_id"><span class="text-gray-400 block text-xs uppercase">Cache ID</span><span x-text="version.cache_id" class="font-mono bg-black px-2 py-1 rounded block mt-1 break-all select-all text-xs"></span></div>
                                         <div class="grid grid-cols-3 gap-2">
                                             <div><span class="text-gray-400 block text-xs uppercase">Resolution</span><span x-text="version.resolution" class="text-xs"></span></div>
                                             <div><span class="text-gray-400 block text-xs uppercase">Codec</span><span x-text="version.codec" class="text-xs"></span></div>

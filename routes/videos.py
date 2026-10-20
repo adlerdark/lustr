@@ -9,7 +9,7 @@ import re
 import urllib.parse
 import threading
 import time
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import Optional, List, Dict, Tuple, Any
 from functools import lru_cache
 from helpers import check_auth, get_file_data, get_thumbnail_path
@@ -784,6 +784,24 @@ def _get_videos_sql_fast(
         "sites": {},
         "letters": letters
     }
+
+@router.get("/video")
+def get_video(request: Request, path: str, model = Depends(get_model)):
+    """One video for File Info: the /api/videos item plus its library and every version's cache ID."""
+    username = check_auth(request)
+    import home
+    item = home.card(model, path, username, get_watch_history())
+    if not item:
+        raise HTTPException(status_code=404, detail="Video not found")
+    full = model.db.get_video_by_id(item['video_id']) if item.get('video_id') else None
+    if full:
+        item['library'] = full.get('library')
+    versions = model.db.get_file_versions(item['video_id']) if item.get('video_id') else []
+    for v in versions or []:
+        v['cache_id'] = MediaHandler._get_cache_key(v['path'], cache_id=v.get('cache_id'))   # NULL = legacy filename key
+    if versions and len(versions) > 1:
+        item['versions'] = versions
+    return item
 
 @router.get("/videos")
 def get_videos(
