@@ -593,7 +593,7 @@
                 coll: { list: [], loading: false, view: null, items: [], total: 0, page: 1, editing: false,
                         form: { name: '', description: '' }, msg: '' },
                 collModal: { open: false, list: [], name: '', busy: false },
-                mv: { list: [], total: 0, page: 1, loading: false, q: '', qTimer: null, sort: 'title', view: null, items: [], msg: '', editing: false,
+                mv: { list: [], total: 0, page: 1, loading: false, q: '', qTimer: null, sort: 'title', view: null, items: [], msg: '', editing: false, backScroll: null,
                       form: {}, ext: { open: false, query: '', paste: '', list: [], busy: false, msg: '' } },        // Movies tab (movies.py)
                 mvFind: { open: false, library: '', whole: false, loading: false, busy: false, groups: [], msg: '', done: '', filter: 'all', q: '', shown: 200 },
                 mvTitles: [], mvTitlesTimer: null,
@@ -6360,16 +6360,23 @@ No metadata is changed.`)) return;
 
                 mvFiltersChanged() { this.loadMovies(1); this.mvFetchFilters(); },
 
-                async loadMovies(page = 1) {
+                async loadMovies(page = 1, keep = false) {
+                    // keep: fetch again every page loaded so far and swap them in at once (back from a movie: same length, same place)
                     const M = this.mv;
                     M.loading = true;
                     try {
-                        const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: M.q || '', sort: M.sort, page, limit: 120 },
-                                                                     this.mvFilterParams()));
-                        const d = await (await fetch('/api/movies?' + qs)).json();
-                        if (!d.success) throw new Error(d.error);
-                        M.list = page === 1 ? d.movies : [...M.list, ...d.movies];
-                        Object.assign(M, { total: d.total, page, msg: '' });
+                        const upto = keep ? M.page : page;
+                        let list = [], d;
+                        for (let p = keep ? 1 : page; p <= upto; p++) {
+                            const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: M.q || '', sort: M.sort, page: p, limit: 120 },
+                                                                         this.mvFilterParams()));
+                            d = await (await fetch('/api/movies?' + qs)).json();
+                            if (!d.success) throw new Error(d.error);
+                            list = list.concat(d.movies);
+                            if (!d.movies.length) break;
+                        }
+                        M.list = page === 1 || keep ? list : [...M.list, ...list];
+                        Object.assign(M, { total: d.total, page: upto, msg: '' });
                     } catch (e) { M.msg = 'Could not load movies: ' + e.message; }
                     M.loading = false;
                 },
@@ -6380,10 +6387,14 @@ No metadata is changed.`)) return;
                 },
 
                 async mvOpen(id) {
+                    const scroller = document.querySelector('.scroller-main');
+                    // from the movies list: ‹ Movies comes back to this spot
+                    this.mv.backScroll = (this.mvTabActive() && !this.mv.view && scroller) ? scroller.scrollTop : null;
                     if (this.currentLibrary === 'Home') this.selectLibraryOrGroup({ type: 'library', name: 'All Videos' });
                     this.libraryTab = 'movies';
                     if (this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = 'movies';
                     await this.mvLoad(id);
+                    if (scroller) scroller.scrollTop = 0;
                 },
 
                 mvOpenFromVideo(v) {
@@ -6407,7 +6418,14 @@ No metadata is changed.`)) return;
                     M.loading = false;
                 },
 
-                mvBack() { this.mv.view = null; this.mv.items = []; this.mvClearSel(); this.loadMovies(1); },
+                mvBack() {
+                    const M = this.mv, y = M.backScroll;
+                    M.view = null; M.items = []; M.backScroll = null; this.mvClearSel();
+                    if (y == null || !M.list.length) { this.loadMovies(1); return; }
+                    // the list is still here: put it back where it was, then refresh it in place (edits made on the movie's page)
+                    this.$nextTick(() => { const el = document.querySelector('.scroller-main'); if (el) el.scrollTop = y; });
+                    this.loadMovies(1, true);
+                },
 
                 mvRefresh() { if (this.mv.view) this.mvLoad(this.mv.view.id); else this.loadMovies(1); },
 
@@ -6849,7 +6867,7 @@ No metadata is changed.`)) return;
                     } else if (ev.ctrlKey || ev.metaKey) {
                         this.mvToggleSel(m, idx);
                     } else {
-                        this.mvLoad(m.id);
+                        this.mvOpen(m.id);
                     }
                 },
 
