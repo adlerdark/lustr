@@ -80,6 +80,22 @@ def find_existing(conn, value):
     return nums[0] if nums else None
 
 
+def stored_case(conn, name):
+    """A name as it is stored, ignoring capitals only: 'jessie rogers' -> 'Jessie Rogers'.
+    For reading a profile (bio, photo, aliases); unknown names come back unchanged."""
+    name = (name or '').strip()
+    if not name:
+        return name
+    places = [(t, c) for t, c in [('video_cast', 'value'), ('cast_aliases', 'alias_name'), ('cast_aliases', 'primary_name'),
+                                  ('cast_photos', 'cast_name'), ('cast_attributes', 'cast_name')] if _exists(conn, t)]
+    for collate in ('', ' COLLATE NOCASE'):           # exact anywhere first, then ignoring capitals
+        for table, col in places:
+            row = conn.execute(f'SELECT {col} FROM {table} WHERE {col} = ?{collate} LIMIT 1', (name,)).fetchone()
+            if row:
+                return row[0]
+    return name
+
+
 def cast_value_id(conn, value):
     """Get or create the video_cast row for a name, reusing the spelling you already have."""
     value = (value or '').strip()
@@ -125,6 +141,22 @@ def spelling_groups(conn):
                       key=lambda r: (r['alias_of'] is not None, -r['videos'], r['value']))
         out.append({'key': _group_key(vs), 'values': rows, 'keep': rows[0]['value']})
     return sorted(out, key=lambda g: g['values'][0]['value'].lower())
+
+
+def case_only_groups(conn):
+    """The spelling groups that differ only in capitals ('Jessie Rogers' / 'jessie rogers')."""
+    return [g for g in spelling_groups(conn) if len({v['value'].lower() for v in g['values']}) == 1]
+
+
+def merge_case_only(conn):
+    """Merge every case-only group into its usual spelling (spelling_groups' keep). Other spelling
+    differences (dots, hyphens, spaces) are left for Maintenance, as they may be different people."""
+    merged, links = [], 0
+    for g in case_only_groups(conn):
+        others = [v['value'] for v in g['values'] if v['value'] != g['keep']]
+        links += merge_cast_values(conn, g['keep'], others)
+        merged.append(f"{', '.join(others)} -> {g['keep']}")
+    return {'count': len(merged), 'links': links, 'samples': merged[:10]}
 
 
 def mark_not_same(conn, values):

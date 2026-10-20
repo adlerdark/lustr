@@ -29,6 +29,18 @@ def set_model(model):
     _model = model
 
 
+def _stored(model, name):
+    """The name as stored, ignoring capitals ('jessie rogers' opens Jessie Rogers' profile)."""
+    if not USE_SQLITE:
+        return name
+    try:
+        import cast_names
+        with model.db.get_connection() as conn:
+            return cast_names.stored_case(conn, name)
+    except Exception:
+        return name
+
+
 @router.get("/all")
 def get_all_cast(model = Depends(get_model)):
     """Get all cast members with video counts and favorite status."""
@@ -186,7 +198,8 @@ def get_cast_attributes(cast_name: str, model = Depends(get_model)):
     """Get all attributes for a specific cast member."""
     if not USE_SQLITE:
         return {"error": "SQLite only"}
-    
+    cast_name = _stored(model, cast_name)
+
     with model.db.get_connection() as conn:
         cursor = conn.cursor()
         
@@ -890,7 +903,7 @@ def get_cast_videos_route(cast_name: str, model = Depends(get_model)):
 @router.get("/{cast_name}/bio")
 def get_cast_bio(cast_name: str, model = Depends(get_model)):
     """Get comprehensive bio data for a cast member, including alias videos."""
-    cast_name = urllib.parse.unquote(cast_name)
+    cast_name = _stored(model, urllib.parse.unquote(cast_name))
 
     if USE_SQLITE:
         with model.db.get_connection() as conn:
@@ -1207,7 +1220,7 @@ def crop_cast_photo(cast_name: str, body: PhotoCropRequest, request: Request, mo
 @router.get("/photo/{cast_name}")
 def get_cast_photo_route(cast_name: str, thumbnail: bool = False, original: bool = False, model = Depends(get_model)):
     """Get cast photo with browser caching (original=true: the uncropped photo, for re-cropping)."""
-    cast_name = urllib.parse.unquote(cast_name)
+    cast_name = _stored(model, urllib.parse.unquote(cast_name))
     
     if USE_SQLITE:
         photo = model.db.get_cast_photo(cast_name, thumbnail, original)
@@ -1295,8 +1308,8 @@ def set_cast_gender(body: SetGenderRequest, request: Request, model = Depends(ge
 def get_cast_gender(cast_name: str, request: Request, model = Depends(get_model)):
     """Get gender for a specific cast member."""
     check_auth(request)
-    
-    cast_name = urllib.parse.unquote(cast_name)
+
+    cast_name = _stored(model, urllib.parse.unquote(cast_name))
     
     if not USE_SQLITE:
         return {"cast_name": cast_name, "gender": "female"}  # Default for JSON mode
@@ -1338,7 +1351,7 @@ def set_cast_category(body: SetCategoryRequest, request: Request, model = Depend
 def get_cast_category(cast_name: str, request: Request, model = Depends(get_model)):
     """Get category for a specific cast member."""
     check_auth(request)
-    cast_name = urllib.parse.unquote(cast_name)
+    cast_name = _stored(model, urllib.parse.unquote(cast_name))
     if not USE_SQLITE:
         return {"cast_name": cast_name, "category": "pro"}
     category = model.db.get_cast_category(cast_name)
@@ -1357,7 +1370,7 @@ class AliasRequest(_BaseModel):
 def get_aliases(cast_name: str, request: Request, model = Depends(get_model)):
     """Return all aliases for a cast member."""
     check_auth(request)
-    cast_name = urllib.parse.unquote(cast_name)
+    cast_name = _stored(model, urllib.parse.unquote(cast_name))
     if not USE_SQLITE:
         return {"primary": cast_name, "aliases": []}
     with model.db.get_connection() as conn:
@@ -1502,7 +1515,7 @@ def resolve_cast_name(name: str, model = Depends(get_model)):
     Given any name (primary or alias), return the canonical primary name.
     Used by the cast browser to redirect alias searches to the right profile.
     """
-    name = urllib.parse.unquote(name)
+    name = _stored(model, urllib.parse.unquote(name))
     if not USE_SQLITE:
         return {"name": name, "primary": name, "is_alias": False}
     with model.db.get_connection() as conn:

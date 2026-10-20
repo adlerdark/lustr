@@ -55,9 +55,9 @@ CAST_PROFILE_TABLES = [('cast_photos', 'cast_name'), ('cast_attributes', 'cast_n
 VIDEO_TABLES = ['video_ext_link', 'video_ext_bulk_log', 'video_cast_role', 'playlist_items', 'video_markers']
 
 ACTIONS = ['sync_libraries', 'soft_delete_unowned', 'flag_hygiene', 'purge_expired', 'orphan_videos',
-           'orphan_junctions', 'orphan_ext_rows', 'merge_alias_profiles', 'orphan_values']
+           'orphan_junctions', 'orphan_ext_rows', 'merge_cast_case', 'merge_alias_profiles', 'orphan_values']
 AUTO_ACTIONS = ['sync_libraries', 'flag_hygiene', 'purge_expired', 'orphan_videos', 'orphan_junctions',
-                'orphan_ext_rows', 'merge_alias_profiles']
+                'orphan_ext_rows', 'merge_cast_case', 'merge_alias_profiles']
 
 _run_lock = threading.Lock()
 
@@ -632,6 +632,21 @@ def merge_alias_profiles(conn):
     return {'count': rows, 'performers': len(merged), 'samples': merged[:10]}
 
 
+def merge_cast_case(conn):
+    """Performers written with different capitals become one (cast_names.merge_case_only)."""
+    if not _exists(conn, 'video_cast'):
+        return {'count': 0}
+    import cast_names
+    r = cast_names.merge_case_only(conn)
+    if r['count']:
+        try:
+            import ext_db
+            ext_db._male_invalidate()
+        except Exception:
+            pass
+    return r
+
+
 def delete_cast_profiles(conn, names):
     n = 0
     for name in names:
@@ -939,6 +954,7 @@ def _apply(conn, actions, days):
            'orphan_videos': lambda: orphan_videos(conn),
            'orphan_junctions': lambda: orphan_junctions(conn),
            'orphan_ext_rows': lambda: orphan_ext_rows(conn),
+           'merge_cast_case': lambda: merge_cast_case(conn),
            'merge_alias_profiles': lambda: merge_alias_profiles(conn),
            'orphan_values': lambda: orphan_values(conn)}
     return {a: fns[a]() for a in actions}

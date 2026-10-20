@@ -115,5 +115,42 @@ class MergeTests(Base):
         self.assertEqual(cast_names.spelling_groups(self.c), [])
 
 
+class CaseOnlyTests(Base):
+    def test_case_only_merges_others_stay(self):
+        self.tag('v1', 'Jessie Rogers')
+        self.tag('v2', 'Jessie Rogers')
+        self.tag('v3', 'jessie rogers', 'Anya Taylor Joy')
+        self.tag('v2', 'Anya Taylor-Joy')
+        self.c.execute("INSERT INTO cast_gender (cast_name, gender) VALUES ('jessie rogers', 'female')")
+        self.c.commit()
+        r = cast_names.merge_case_only(self.c)
+        self.assertEqual(r['count'], 1)
+        self.assertEqual(self.cast_of('v3'), ['Anya Taylor Joy', 'Jessie Rogers'])
+        self.assertEqual(self.c.execute("SELECT gender FROM cast_gender WHERE cast_name = 'Jessie Rogers'").fetchone()[0], 'female')
+        left = cast_names.spelling_groups(self.c)                     # a hyphen is not a capital: left for review
+        self.assertEqual([g['key'] for g in left], ['Anya Taylor Joy|Anya Taylor-Joy'])
+
+    def test_not_same_is_skipped(self):
+        self.tag('v1', 'Aubrey')
+        self.tag('v2', 'aubrey')
+        cast_names.mark_not_same(self.c, ['Aubrey', 'aubrey'])
+        self.assertEqual(cast_names.merge_case_only(self.c)['count'], 0)
+
+    def test_maintenance_runs_it(self):
+        import db_maintenance
+        self.tag('v1', 'Cherie DeVille')
+        self.tag('v2', 'Cherie Deville')
+        self.tag('v3', 'Cherie Deville')
+        r = db_maintenance._apply(self.c, ['merge_cast_case'], 30)
+        self.assertEqual(r['merge_cast_case']['count'], 1)
+        self.assertEqual(self.cast_of('v1'), ['Cherie Deville'])          # the spelling with more videos
+
+    def test_stored_case(self):
+        self.tag('v1', 'Dana DeArmond')
+        self.assertEqual(cast_names.stored_case(self.c, 'dana dearmond'), 'Dana DeArmond')
+        self.assertEqual(cast_names.stored_case(self.c, 'Dana DeArmond'), 'Dana DeArmond')
+        self.assertEqual(cast_names.stored_case(self.c, 'Nobody Here'), 'Nobody Here')
+
+
 if __name__ == '__main__':
     unittest.main()
