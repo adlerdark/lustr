@@ -938,6 +938,46 @@ def suggestions(conn, mid):
     return {'tags': tags, 'details': details}
 
 
+def bulk_tag_info(conn, ids):
+    """Tags of several movies for the Edit tags window: the ones they have (how many of them have each)
+    and ThePornDB's suggestions they don't have yet (for which of them)."""
+    import ext_db
+    ensure_schema(conn)
+    ids = [int(i) for i in ids or [] if i]
+    vocab = ext_db._video_vocab(conn, ext_db._tag_fields())
+    have, sugg = Counter(), {}
+    for mid in ids:
+        mine = set(movie_tags(conn, mid))
+        have.update(mine)
+        raw = _raw(conn, mid)
+        if not raw:
+            continue
+        for t in _tpdb_tag_values(conn, raw, vocab):
+            if t['value'] in mine:
+                continue
+            s = sugg.setdefault(t['value'], {'value': t['value'], 'ext': t['ext'], 'mapped': t['mapped'], 'ids': []})
+            s['mapped'] = s['mapped'] or t['mapped']
+            s['ids'].append(mid)
+    current = sorted(({'value': v, 'n': n} for v, n in have.items()), key=lambda x: (-x['n'], x['value']))
+    suggested = sorted(sugg.values(), key=lambda x: (-len(x['ids']), not x['mapped'], x['value']))
+    for s in suggested:
+        s['n'] = len(s['ids'])
+    return {'count': len(ids), 'linked': sum(1 for i in ids if (conn.execute('SELECT ext_id FROM movies WHERE id = ?', (i,)).fetchone() or [None])[0]),
+            'current': current, 'suggested': suggested}
+
+
+def bulk_set_tags(conn, ids, add=(), remove=()):
+    """Add / remove movie tags on several movies at once."""
+    ensure_schema(conn)
+    n = 0
+    for mid in [int(i) for i in ids or [] if i]:
+        if conn.execute('SELECT 1 FROM movies WHERE id = ?', (mid,)).fetchone():
+            set_tags(conn, mid, add, remove, commit=False)
+            n += 1
+    conn.commit()
+    return n
+
+
 # ---------------------------------------------------------------------------
 # bulk ThePornDB linking
 # ---------------------------------------------------------------------------

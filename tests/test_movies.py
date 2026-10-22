@@ -558,6 +558,39 @@ class CoverTests(MovieBase):
         self.assertEqual(ids, [m['id'] for m in movies.listing(self.model, self.c, 'Lib')['movies']])
 
 
+class BulkTagTests(MovieBase):
+    def setUp(self):
+        super().setUp()
+        import ext_db
+        self.ext = ext_db
+        self.saved = ext_db._tag_mapping
+        ext_db._tag_mapping = lambda conn, src, name, vocab: (
+            {'status': 'confirmed', 'value': name.lower(), 'field': 'tags'} if name in ('Outdoor', 'Gonzo') else {'status': 'unmapped', 'value': None, 'field': None})
+        self.a = movies.set_video_movie(self.c, 'v1', 'Alpha', scene=1)
+        self.b = movies.set_video_movie(self.c, 'v2', 'Beta', scene=1)
+        for mid, tags in ((self.a, ['Outdoor', 'Gonzo', 'Pool Party']), (self.b, ['Outdoor'])):
+            movies._fill_from_tpdb(self.c, mid, {'id': f'x{mid}', 'title': 't', 'tags': [{'name': t} for t in tags]}, f'x{mid}')
+        self.c.commit()
+
+    def tearDown(self):
+        self.ext._tag_mapping = self.saved
+        super().tearDown()
+
+    def test_info_and_apply(self):
+        movies.set_tags(self.c, self.a, add=['gonzo', 'mine'])
+        info = movies.bulk_tag_info(self.c, [self.a, self.b])
+        self.assertEqual((info['count'], info['linked']), (2, 2))
+        self.assertEqual(info['current'], [{'value': 'gonzo', 'n': 1}, {'value': 'mine', 'n': 1}])
+        sug = {s['value']: (s['n'], s['ids'], s['mapped']) for s in info['suggested']}
+        self.assertEqual(sug['outdoor'], (2, [self.a, self.b], True))              # both, mapped
+        self.assertEqual(sug['pool.party'], (1, [self.a], False))                 # one, not mapped
+        self.assertNotIn('gonzo', sug)                                            # Alpha has it; Beta isn't suggested it
+        self.assertEqual(movies.bulk_set_tags(self.c, [self.a, self.b], add=['outdoor', 'Big Tits'], remove=['mine']), 2)
+        self.assertEqual(movies.movie_tags(self.c, self.a), ['big.tits', 'gonzo', 'outdoor'])
+        self.assertEqual(movies.movie_tags(self.c, self.b), ['big.tits', 'outdoor'])
+        self.assertNotIn('outdoor', {s['value'] for s in movies.bulk_tag_info(self.c, [self.a, self.b])['suggested']})
+
+
 class SameNameTests(MovieBase):
     def test_old_table_is_migrated(self):
         c = self.c

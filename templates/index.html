@@ -604,6 +604,7 @@
                 mvPoster: { open: false, side: 'front' },
                 mvTpdb: { status: null, timer: null },    // Refresh from ThePornDB for several movies
                 mvCoverModal: { open: false, tab: 'upload', front: '', back: '', busy: false, msg: '' },   // Change covers
+                mvBT: { open: false, ids: [], info: null, busy: false, input: '', msg: '' },   // Edit tags for one or more movies
                 collSel: {}, collSelLast: null, collMenu: { open: false, x: 0, y: 0, c: null },   // selecting collection cards
                 selAllOffer: null,               // after Select All on one page: { scope, n, noun } - "select all N?"
                 selAcrossPages: false, selVideoIds: {},   // videos selected beyond the loaded page (path -> video_id)
@@ -6999,6 +7000,44 @@ No metadata is changed.`)) return;
                 },
 
                 mvTpdbStop() { fetch('/api/movies/refresh/stop', { method: 'POST' }); },
+
+                // ----- Edit tags (right-click): tags of one or more movies, ThePornDB suggestions, a tag of your own -----
+                async mvBTOpen(ids) {
+                    Object.assign(this.mvBT, { open: true, ids: [...ids], info: null, input: '', msg: '' });
+                    await this.mvBTLoad();
+                },
+
+                async mvBTLoad() {
+                    try { this.mvBT.info = await this.mvPost('/api/movies/tags/info', { ids: this.mvBT.ids }); }
+                    catch (e) { this.mvBT.msg = e.message; }
+                },
+
+                // add / remove on these movies (default: all the selected ones), then show the new state
+                async mvBTApply(add = [], remove = [], ids = null) {
+                    const B = this.mvBT;
+                    add = add.map(t => String(t).trim()).filter(Boolean);
+                    if (!add.length && !remove.length) return;
+                    B.busy = true; B.msg = '';
+                    try {
+                        await this.mvPost('/api/movies/tags/bulk', { ids: ids || B.ids, add, remove });
+                        await this.mvBTLoad();
+                        this.mvFetchFilters();
+                        if (this.mv.view && B.ids.includes(this.mv.view.id)) this.mvLoad(this.mv.view.id);
+                    } catch (e) { B.msg = e.message; }
+                    B.busy = false;
+                },
+
+                mvBTAddTyped() {
+                    const vals = (this.mvBT.input || '').split(',');
+                    this.mvBT.input = '';
+                    this.mvBTApply(vals);
+                },
+
+                get mvBTChoices() {
+                    const q = (this.mvBT.input || '').trim().toLowerCase();
+                    if (!q) return [];
+                    return Object.keys(this.allTags || {}).filter(t => t.toLowerCase().includes(q)).slice(0, 40);
+                },
 
                 mvPosterSrc() {
                     const v = this.mv.view;
@@ -15433,6 +15472,78 @@ No metadata is changed.`)) return;
             </template>
         </div>
 
+        <!-- EDIT TAGS FOR ONE OR MORE MOVIES (movies.bulk_tag_info / bulk_set_tags) -->
+        <div x-show="mvBT.open" x-cloak class="fixed inset-0 z-[88] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvBT.open = false">
+            <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl" @click.outside="mvBT.open = false">
+                <div class="p-4 border-b border-gray-700 flex items-center" data-drag-handle style="cursor: move">
+                    <span class="font-bold flex-1" x-text="'Edit tags · ' + mvBT.ids.length + ' movie' + (mvBT.ids.length === 1 ? '' : 's')"></span>
+                    <button @click="mvBT.open = false" class="text-gray-400 hover:text-white">✕</button>
+                </div>
+                <div class="p-4 space-y-4 overflow-y-auto scroller text-sm" :class="mvBT.busy ? 'opacity-60 pointer-events-none' : ''">
+                    <p x-show="!mvBT.info && !mvBT.msg" class="text-gray-400">Loading…</p>
+                    <template x-if="mvBT.info">
+                        <div class="space-y-4">
+                            <!-- tags they have -->
+                            <div>
+                                <div class="text-xs text-gray-400 mb-1">Their tags <span class="text-gray-500">(✕ removes from all of them; "+ all" adds to the rest)</span></div>
+                                <div class="flex flex-wrap gap-1">
+                                    <template x-for="t in mvBT.info.current" :key="'btc' + t.value">
+                                        <span class="px-2 py-0.5 rounded text-xs flex items-center gap-1" :class="t.n === mvBT.info.count ? 'bg-gray-600' : 'bg-gray-700/60 border border-dashed border-gray-500'">
+                                            <span x-text="t.value"></span>
+                                            <span x-show="mvBT.info.count > 1" class="text-gray-400" x-text="t.n === mvBT.info.count ? '(all)' : '(' + t.n + ' of ' + mvBT.info.count + ')'"></span>
+                                            <button x-show="t.n < mvBT.info.count" @click="mvBTApply([t.value])" class="text-blue-300 hover:text-blue-200" title="Add to all of them">+ all</button>
+                                            <button @click="mvBTApply([], [t.value])" class="text-gray-400 hover:text-red-400" title="Remove from all of them">✕</button>
+                                        </span>
+                                    </template>
+                                    <span x-show="!mvBT.info.current.length" class="text-gray-500 text-xs">No movie tags yet.</span>
+                                </div>
+                            </div>
+                            <!-- ThePornDB suggestions -->
+                            <div x-show="mvBT.info.suggested.length">
+                                <div class="text-xs text-gray-400 mb-1 flex items-center gap-2">Suggested from ThePornDB
+                                    <span class="text-gray-500" x-text="'(' + mvBT.info.linked + ' of ' + mvBT.info.count + ' linked; click adds it to the movies it\'s suggested for)'"></span></div>
+                                <template x-for="grp in [['all', 'For all of them'], ['some', 'For some of them']]" :key="'btg' + grp[0]">
+                                    <div x-show="mvBT.info.suggested.some(t => grp[0] === 'all' ? t.n === mvBT.info.count : t.n < mvBT.info.count)" class="mb-2">
+                                        <div class="text-[11px] text-gray-500 mb-1 flex items-center gap-2"><span x-text="mvBT.info.count > 1 ? grp[1] : ''"></span>
+                                            <button x-show="grp[0] === 'all' && mvBT.info.suggested.some(t => t.mapped && t.n === mvBT.info.count)"
+                                                    @click="mvBTApply(mvBT.info.suggested.filter(t => t.mapped && t.n === mvBT.info.count).map(t => t.value))"
+                                                    class="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 text-white">Add all mapped</button></div>
+                                        <div class="flex flex-wrap gap-1">
+                                            <template x-for="t in mvBT.info.suggested.filter(t => grp[0] === 'all' ? t.n === mvBT.info.count : t.n < mvBT.info.count)" :key="'bts' + grp[0] + t.value">
+                                                <span class="flex items-center rounded text-xs border" :class="t.mapped ? 'border-blue-600 text-blue-200' : 'border-gray-600 text-gray-300'">
+                                                    <button @click="mvBTApply([t.value], [], t.ids)" class="px-2 py-0.5 rounded-l" :class="t.mapped ? 'hover:bg-blue-800' : 'hover:bg-gray-700'"
+                                                            :title="(t.mapped ? 'ThePornDB \'' + t.ext + '\' maps to your tag ' + t.value : 'ThePornDB \'' + t.ext + '\' (not mapped to one of your tags yet)')
+                                                                    + (t.n < mvBT.info.count ? ' - adds it to the ' + t.n + ' it\'s suggested for' : '')"
+                                                            x-text="'+ ' + t.value + (t.n < mvBT.info.count ? ' (' + t.n + ')' : '')"></button>
+                                                    <button x-show="t.n < mvBT.info.count" @click="mvBTApply([t.value])" class="px-1.5 py-0.5 border-l border-gray-600 hover:bg-gray-700 rounded-r"
+                                                            title="Add it to all of them">all</button>
+                                                </span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                            <!-- your own -->
+                            <div>
+                                <div class="text-xs text-gray-400 mb-1">Add a tag to all of them <span class="text-gray-500">(commas for several)</span></div>
+                                <div class="flex gap-2">
+                                    <input type="text" x-model="mvBT.input" @keydown.enter.prevent="mvBTAddTyped()" list="mv-bt-choices" autocomplete="off" placeholder="tag"
+                                           class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                    <datalist id="mv-bt-choices"><template x-for="t in mvBTChoices" :key="'btx' + t"><option :value="t"></option></template></datalist>
+                                    <button @click="mvBTAddTyped()" :disabled="!mvBT.input.trim()" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm disabled:opacity-50">Add</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                    <p x-show="mvBT.msg" class="text-red-400" x-text="mvBT.msg"></p>
+                    <p class="text-[11px] text-gray-500">These are the movies' own tags (the Movies tab's tag filter also counts the tags of their scenes). Changes are saved right away.</p>
+                </div>
+                <div class="p-4 border-t border-gray-700 flex justify-end">
+                    <button @click="mvBT.open = false" class="px-4 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Done</button>
+                </div>
+            </div>
+        </div>
+
         <!-- CHANGE MOVIE COVERS (front / back, upload or link) -->
         <div x-show="mvCoverModal.open" x-cloak class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvCoverModal.open = false">
             <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg max-w-lg w-full p-6" @click.outside="mvCoverModal.open = false">
@@ -15520,6 +15631,8 @@ No metadata is changed.`)) return;
             <button @click="mvMenu.open = false; mvFavorite(mvMenuIds(), !(mvMenuIds().length === 1 && mvMenu.m?.favorite))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
                     x-text="mvMenuIds().length === 1 && mvMenu.m?.favorite ? '☆ Remove from favorites' : '★ Add to favorites'"></button>
             <button x-show="mvMenuIds().length > 1" @click="mvMenu.open = false; mvFavorite(mvMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
+            <button @click="mvMenu.open = false; mvBTOpen(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                    x-text="mvMenuIds().length > 1 ? 'Edit tags (' + mvMenuIds().length + ')…' : 'Edit tags…'"></button>
             <button @click="mvMenu.open = false; mvBulkSelected(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Link to ThePornDB…</button>
             <button x-show="mvMenuIds().length > 1 || mvMenu.m?.linked" @click="mvMenu.open = false; mvTpdbRefresh(mvMenuIds())"
                     :disabled="!!mvTpdb.status?.running" class="w-full text-left px-3 py-1.5 hover:bg-blue-600 disabled:opacity-50"

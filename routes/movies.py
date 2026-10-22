@@ -100,6 +100,29 @@ def bulk_status():
     return {'success': True, 'status': movies.bulk_status()}
 
 
+class BulkTagsBody(BaseModel):
+    ids: List[int] = []
+    add: List[str] = []
+    remove: List[str] = []
+
+
+@router.post('/tags/info')
+def bulk_tags_info(body: BulkTagsBody, model=Depends(get_model)):
+    """Edit tags window: the selected movies' tags and ThePornDB suggestions, with how many of them each applies to."""
+    try:
+        return {'success': True, **movies.bulk_tag_info(_conn(), body.ids)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.post('/tags/bulk')
+def bulk_tags_set(body: BulkTagsBody, model=Depends(get_model)):
+    try:
+        return {'success': True, 'changed': movies.bulk_set_tags(_conn(), body.ids, body.add, body.remove)}
+    except Exception as e:
+        return _err(e)
+
+
 class RefreshBody(BaseModel):
     movie_ids: List[int] = []
 
