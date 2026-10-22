@@ -612,6 +612,7 @@
                 mvHover: { c: null, x: 0, y: 0 },   // ThePornDB candidate popover (tags, scenes)
                 mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '', ids: null },
                 mvSug: { tags: [], details: [], loading: false, fields: [], vocab: {}, drafts: {}, msg: '' }, mvTagInput: '',
+                mvSugMapOpen: false,          // the movie page's "Not mapped yet" list (collapsed until opened)
                 
                 // Cast functionality
                 castBioMode: false,
@@ -13919,8 +13920,12 @@ No metadata is changed.`)) return;
                                                     </template>
                                                 </div>
                                                 <div x-show="mvSug.tags.some(t => !t.mapped)" class="mt-2">
-                                                    <div class="text-[11px] text-gray-400 mb-1">Not mapped yet <span class="text-gray-500">- map a ThePornDB tag to one of your fields once (used for scenes too), add it as it is, or ignore it</span></div>
-                                                    <template x-for="t in mvSug.tags.filter(t => !t.mapped)" :key="'sgu' + t.ext">
+                                                    <button @click="mvSugMapOpen = !mvSugMapOpen" class="text-[11px] text-gray-400 hover:text-gray-200 mb-1 flex items-center gap-1">
+                                                        <span class="inline-block w-3" x-text="mvSugMapOpen ? '▾' : '▸'"></span>
+                                                        <span x-text="'Not mapped yet (' + mvSug.tags.filter(t => !t.mapped).length + ')'"></span>
+                                                        <span x-show="mvSugMapOpen" class="text-gray-500">- map a ThePornDB tag to one of your fields once (used for scenes too), add it as it is, or ignore it</span>
+                                                    </button>
+                                                    <template x-for="t in (mvSugMapOpen ? mvSug.tags.filter(t => !t.mapped) : [])" :key="'sgu' + t.ext">
                                                         <div class="flex flex-wrap items-center gap-1 py-0.5 text-xs">
                                                             <span class="w-40 truncate text-gray-200" :title="t.ext" x-text="t.ext"></span>
                                                             <span x-show="t.choices?.length" class="text-yellow-400" :title="'Found in several fields: ' + (t.choices || []).map(c => c.field).join(', ')">several fields</span>
