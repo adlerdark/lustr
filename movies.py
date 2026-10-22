@@ -783,6 +783,7 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, st
     elif s == 'favorites':
         out.sort(key=lambda m: not m['favorite'])
     total = len(out)
+    letters = _letter_index(out) if s == 'title' else []
     start = (max(1, page) - 1) * limit
     out = out[start:start + limit]
     every = {}                                         # videos in all libraries ("2 here · 5 in all")
@@ -802,7 +803,19 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, st
         m.pop('cover_video_id', None)
         m['cover'] = (f"/api/movies/{m['id']}/cover?v={m['updated_at'] or ''}" if m['has_cover']
                       else (_thumb(pick[1], pick[0], pick[2]) if pick else None))
-    return {'movies': out, 'total': total}
+    return {'movies': out, 'total': total, 'letters': letters}
+
+
+def _letter_index(movies):
+    """[{letter, index}]: where each letter starts in the title-sorted movies ('#' for anything not A-Z)."""
+    out, seen = [], set()
+    for i, m in enumerate(movies):
+        ch = _fold(m['display']).strip()[:1].upper()
+        L = ch if 'A' <= ch <= 'Z' else '#'
+        if L not in seen:
+            seen.add(L)
+            out.append({'letter': L, 'index': i})
+    return out
 
 
 def filter_counts(model, conn, library=None, q='', status='', tags=None, tags_exclude=None, sites=None, sites_exclude=None,
@@ -1037,14 +1050,54 @@ def score_candidate(ctx, cand):
     return pts, why
 
 
+def _movie_performers(conn, mid, n=3):
+    """Your performers in this movie (their main names), the ones in most of its videos first."""
+    import ext_db
+    out = []
+    for (name,) in conn.execute('SELECT t.value FROM video_movie vm JOIN video_cast_junction j ON j.video_id = vm.video_id '
+                                'JOIN video_cast t ON t.id = j.cast_id WHERE vm.movie_id = ? '
+                                'GROUP BY t.value ORDER BY COUNT(DISTINCT vm.video_id) DESC, t.value', (mid,)):
+        try:
+            name = ext_db.resolve_primary(conn, name) or name
+        except Exception:
+            pass
+        if name not in out:
+            out.append(name)
+        if len(out) >= n:
+            break
+    return out
+
+
+def tpdb_search_with_cast(conn, mid, title, ctx=None, per_page=10):
+    """ThePornDB movie search for this title; when nothing found has the title, search again as
+    'title performer' for up to 3 of your performers (a long list of look-alikes can bury the
+    right one; adding a performer narrows it). Results found that way carry 'found_with'."""
+    ctx = ctx or _movie_context(conn, mid)
+    one = first_of_series(title)
+    keys = {ctx['key'], ctx.get('key_one'), title_key(title), title_key(one) if one else None} - {None, ''}
+    found = tpdb_movie_search(title, per_page=per_page)
+    if any(title_key(c['title']) in keys for c in found):
+        return found
+    seen = {c['id'] for c in found}
+    for name in _movie_performers(conn, mid):
+        extra = [dict(c, found_with=name) for c in tpdb_movie_search(f'{one or title} {name}', per_page=per_page) if c['id'] not in seen]
+        found += extra
+        seen |= {c['id'] for c in extra}
+        if any(title_key(c['title']) in keys for c in extra):
+            break
+    return found
+
+
 def bulk_one(conn, mid, add_tags=True):
     """Check one movie on ThePornDB -> (outcome, detail, candidates). Links it when the match is sure."""
     import ext_db
     ctx = _movie_context(conn, mid)
-    found = tpdb_movie_search(ctx['title'], per_page=10)
+    found = tpdb_search_with_cast(conn, mid, ctx['title'], ctx)
     scored = []
     for c in found:
         pts, why = score_candidate(ctx, c)
+        if c.get('found_with'):
+            why.append(f"found with {c['found_with']}")
         scored.append({'id': c['id'], 'title': c['title'], 'date': c['date'], 'studio': c.get('studio_name') or '',
                        'image_url': c.get('image_url'), 'scenes': len(c.get('scenes') or []), 'page_url': c.get('page_url'),
                        'score': pts, 'reasons': why})
@@ -1252,6 +1305,7 @@ def detail(model, conn, mid, username=None, watch_history=None):
             pass
     d['tags'] = movie_tags(conn, mid)
     d['check'] = None if d['ext_id'] else check_of(conn, mid)
+    d['cast'] = [] if d['ext_id'] else _movie_performers(conn, mid, n=12)     # performer picks in the ThePornDB search window
     have = {r[1] for r in rows if r[1]}
     for sc in d['ext_scenes']:
         sc['have'] = sc['n'] in have
@@ -1471,12 +1525,19 @@ def tpdb_movie_search(title, per_page=10):
     return found
 
 
-def tpdb_candidates(query):
-    out = []
-    for c in tpdb_movie_search(query, per_page=12):
-        out.append({'id': c['id'], 'title': c['title'], 'date': c['date'], 'studio': c['studio_name'] or '',
-                    'image_url': c['image_url'], 'scenes': len(c['scenes']), 'page_url': c['page_url']})
-    return out
+def tpdb_candidates(query, conn=None, mid=None, performer=''):
+    """The search window: 'query performer' when a performer is given; otherwise the title search,
+    with the performer fallback (tpdb_search_with_cast) when it's for a movie."""
+    performer = (performer or '').strip()
+    if performer:
+        found = [dict(c, found_with=performer) for c in tpdb_movie_search(f'{query} {performer}', per_page=12)]
+    elif conn is not None and mid:
+        found = tpdb_search_with_cast(conn, mid, query, per_page=12)
+    else:
+        found = tpdb_movie_search(query, per_page=12)
+    return [{'id': c['id'], 'title': c['title'], 'date': c['date'], 'studio': c['studio_name'] or '',
+             'image_url': c['image_url'], 'scenes': len(c['scenes']), 'page_url': c['page_url'], 'found_with': c.get('found_with')}
+            for c in found]
 
 
 def _tpdb_id(text):

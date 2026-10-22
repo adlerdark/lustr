@@ -49,7 +49,7 @@ def list_movies(library: Optional[str] = None, q: str = '', sort: str = 'title',
                 status: str = '', tags: str = '', tags_exclude: str = '', sites: str = '', sites_exclude: str = '',
                 favorites: bool = False, model=Depends(get_model)):
     try:
-        return {'success': True, **movies.listing(_model, _conn(), library, q, sort, max(1, page), max(1, min(limit, 500)),
+        return {'success': True, **movies.listing(_model, _conn(), library, q, sort, max(1, page), max(1, min(limit, 10000)),
                                                   status, tags, tags_exclude, sites, sites_exclude, favorites)}
     except Exception as e:
         return _err(e)
@@ -357,13 +357,14 @@ def cover_from_video(mid: int, body: CoverVideoBody, model=Depends(get_model)):
 
 class SearchBody(BaseModel):
     query: str = ''
+    performer: str = ''
 
 
 @router.post('/{mid}/ext/search')
 def ext_search(mid: int, body: SearchBody, model=Depends(get_model)):
     try:
         q = (body.query or '').strip() or movies.get(_conn(), mid)['title']
-        return {'success': True, 'query': q, 'candidates': movies.tpdb_candidates(q)}
+        return {'success': True, 'query': q, 'candidates': movies.tpdb_candidates(q, _conn(), mid, body.performer)}
     except Exception as e:
         return _err(e)
 

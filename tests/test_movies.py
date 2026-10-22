@@ -188,6 +188,15 @@ class MovieTests(MovieBase):
         self.assertEqual([i['path'] for i in det['items']], [A, B])
         self.assertEqual(det['movie']['libraries'], ['Lib'])
 
+    def test_listing_letters(self):
+        for vid, name in (('v1', 'Émile Tales'), ('v2', '2 Fast'), ('v3', 'apple Pie')):
+            movies.set_video_movie(self.c, vid, name, scene=1)
+        self.model.db.get_file = self.db.get_file
+        d = movies.listing(self.model, self.c, 'Lib', limit=1, page=2)
+        self.assertEqual([m['title'] for m in d['movies']], ['apple Pie'])            # letters cover every page, not just this one
+        self.assertEqual(d['letters'], [{'letter': '#', 'index': 0}, {'letter': 'A', 'index': 1}, {'letter': 'E', 'index': 2}])
+        self.assertEqual(movies.listing(self.model, self.c, 'Lib', sort='year')['letters'], [])
+
     def test_scenes_from_two_libraries(self):
         self.c.execute("UPDATE videos SET library = 'Other' WHERE video_id = 'v2'")
         movies.set_video_movie(self.c, 'v1', 'Movie', scene=1)
@@ -397,6 +406,39 @@ class BulkLinkTests(MovieBase):
         self.assertEqual(out, 'linked', detail)
         self.assertEqual(asked[-2:], ['Summer Road Trip 1', 'Summer Road Trip'])
         self.assertIn('without the "1"', cands[0]['reasons'])
+
+    def test_title_and_performer_fallback(self):
+        movies.update(self.c, self.mid, {'title': '19 Natural'})
+        self.c.execute("DELETE FROM video_cast_junction WHERE video_id = 'v1'")           # only these two performers
+        for name in ('Melanie Jagger', 'Someone Else'):
+            cid = self.c.execute('INSERT INTO video_cast (value) VALUES (?)', (name,)).lastrowid
+            self.c.execute("INSERT INTO video_cast_junction (video_id, cast_id) VALUES ('v1', ?)", (cid,))
+        self.c.commit()
+        asked = []
+
+        def search(kind, q, per_page=10):
+            asked.append(q)
+            if q == '19 Natural Melanie Jagger':
+                return [self.cand('t9', '19 & Natural', '2011-06-10')]
+            return [self.cand('t1', 'Natural Bush 19'), self.cand('t2', '19 and Natural Girls')]
+        self.ext.tpdb_search = search
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'linked', detail)
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 't9')
+        self.assertIn('found with Melanie Jagger', cands[0]['reasons'])
+        self.assertEqual(asked[:2], ['19 Natural', '19 Natural Melanie Jagger'])     # stops at the first performer that finds it
+        self.assertEqual(len(asked), 2)
+        asked.clear()
+        found = movies.tpdb_candidates('19 Natural', self.c, self.mid, performer='Someone Else')
+        self.assertEqual((asked, found[0]['found_with']), (['19 Natural Someone Else'], 'Someone Else'))
+
+    def test_no_performer_search_when_the_title_matches(self):
+        asked = []
+        self.ext.tpdb_search = lambda kind, q, per_page=10: asked.append(q) or [self.cand('t1', 'Summer Road Trip 13', '2011-05-01')]
+        cid = self.c.execute("INSERT INTO video_cast (value) VALUES ('Melanie Jagger')").lastrowid
+        self.c.execute("INSERT INTO video_cast_junction (video_id, cast_id) VALUES ('v1', ?)", (cid,))
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'linked')
+        self.assertEqual(asked, ['Summer Road Trip 13'])
 
     def test_nothing_close(self):
         self.results = [self.cand('t9', 'Completely Different Film')]

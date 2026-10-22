@@ -593,8 +593,8 @@
                 coll: { list: [], loading: false, view: null, items: [], total: 0, page: 1, editing: false,
                         form: { name: '', description: '' }, msg: '' },
                 collModal: { open: false, list: [], name: '', busy: false },
-                mv: { list: [], total: 0, page: 1, loading: false, q: '', qTimer: null, sort: 'title', view: null, items: [], msg: '', editing: false, backScroll: null,
-                      form: {}, ext: { open: false, query: '', paste: '', list: [], busy: false, msg: '' } },        // Movies tab (movies.py)
+                mv: { list: [], total: 0, page: 1, loading: false, q: '', qTimer: null, sort: 'title', view: null, items: [], msg: '', editing: false, backScroll: null, startPage: 1, letters: [], pageEdit: false, pageInput: 1,
+                      form: {}, ext: { open: false, query: '', performer: '', paste: '', list: [], busy: false, msg: '' } },        // Movies tab (movies.py)
                 mvFind: { open: false, library: '', whole: false, loading: false, busy: false, groups: [], msg: '', done: '', filter: 'all', q: '', shown: 200 },
                 mvTitles: [], mvTitlesTimer: null,
                 mvPick: { open: false, q: '', list: [], scene: '', busy: false, msg: '', paths: [], timer: null },   // right-click -> Add to movie…
@@ -803,6 +803,8 @@
                     loadAll: false,
                     itemsPerPage: 150,
                     paginationMode: 'button',
+                    mvPagination: 'button',      // Movies tab: 'button' (Load more) | 'pages' | 'scroll' | 'all'
+                    mvPerPage: 120,
                     hideZeroLength: 'hide', // 'button' or 'prevnext'
                     lockScreenInfo: false,  // new player: title + thumbnail in the Media Session (lock screen)
                     folderSort: 'added',    // library folder lists: 'added' (order added) or 'name' (A-Z)
@@ -2001,6 +2003,8 @@
                         try { this.appSettings = { ...this.appSettings, ...JSON.parse(savedSettings) }; } catch(e){}
                     }
                     if(!this.appSettings.itemsPerPage) this.appSettings.itemsPerPage = 150;
+                    if (!(parseInt(this.appSettings.mvPerPage) > 0)) this.appSettings.mvPerPage = 120;
+                    if (!['button', 'pages', 'scroll', 'all'].includes(this.appSettings.mvPagination)) this.appSettings.mvPagination = 'button';
                     try {                                   // once per browser: the new player becomes the default
                         if (!localStorage.getItem('npDefaultSet')) {
                             this.appSettings.playerMode = 'new';
@@ -2283,6 +2287,13 @@
                 },
                 
                 handleScroll(e) {
+                    if (this.mvTabActive()) {                       // Movies tab: its own paging setting
+                        const el = e.target, M = this.mv;
+                        if (el && !M.view && this.appSettings.mvPagination === 'scroll' && !M.loading && M.list.length
+                            && (M.startPage - 1) * this.mvPer() + M.list.length < M.total
+                            && el.scrollHeight - el.scrollTop - el.clientHeight < 300) this.loadMovies(0, 'append');
+                        return;
+                    }
                     if (this.appSettings.manualPagination || this.appSettings.loadAll) return; 
                     if (this.isAllVideosMode) return; 
                     
@@ -2291,6 +2302,15 @@
                     if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) {
                         this.loadMore();
                     }
+                },
+
+                // after a letter jump the list starts on a later page (Load more / infinite scroll): add the page before it
+                async loadEarlierVideos() {
+                    if (this.isLoadingMore || this.listStartPage <= 1) return;
+                    this.isLoadingMore = true;
+                    const last = this.page;
+                    this.page = this.listStartPage - 1;
+                    try { await this.fetchVideos('prepend'); } finally { this.page = last; this.isLoadingMore = false; }
                 },
 
                 async loadMore() {
@@ -2670,8 +2690,13 @@
                         console.log(`Received ${data.items?.length || 0} videos`);
                         
                         const updateStart = performance.now();
+                        const scEl = document.querySelector('.scroller-main'), h0 = scEl ? scEl.scrollHeight : 0;
                         if (mode === 'append') {
                             this.videos = [...this.videos, ...data.items];
+                        } else if (mode === 'prepend') {             // the page before the loaded list (after a letter jump)
+                            this.videos = [...data.items, ...this.videos];
+                            this.listStartPage = this.page;
+                            this.$nextTick(() => { if (scEl) scEl.scrollTop += scEl.scrollHeight - h0; });
                         } else {
                             this.videos = data.items;
                             this.listStartPage = this.page;          // the page the loaded list starts on (jump bar)
@@ -2702,7 +2727,9 @@
                         if (data.tags) this.allTags = data.tags;
                         if (data.sites) this.allSites = data.sites;
 
-                        if (this.isAllVideosMode) {
+                        if (mode === 'prepend') {
+                            // hasMore is about the end of the list: unchanged
+                        } else if (this.isAllVideosMode) {
                             this.hasMore = data.items.length === limit; 
                         } else if (this.appSettings.loadAll) {
                             this.hasMore = false; 
@@ -3019,16 +3046,18 @@
                     });
                 },
                 // ----- # A-Z jump bar: the server says where each letter starts in the sorted list -----
+                mvJumpActive() { return this.mvTabActive() && !this.mv.view && this.mv.letters.length > 0 && this.mv.list.length > 0; },
                 jumpBarShown() {
+                    if (this.mvJumpActive()) return true;
                     return this.jumpLetters.length > 0 && this.viewMode === 'grid' && this.currentView === 'library'
                         && this.currentLibrary !== 'Home' && this.libraryTab === 'library' && !this.castBioMode;
                 },
                 jumpBarLetters() {
                     const all = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
-                    return this.sortDesc ? all.reverse() : all;
+                    return this.sortDesc && !this.mvJumpActive() ? all.reverse() : all;
                 },
                 jumpIndexOf(L) {
-                    const hit = this.jumpLetters.find(x => x.letter === L);
+                    const hit = (this.mvJumpActive() ? this.mv.letters : this.jumpLetters).find(x => x.letter === L);
                     return hit ? hit.index : undefined;
                 },
                 jumpMeasure() {
@@ -3042,6 +3071,18 @@
                     const i = this.jumpIndexOf(L);
                     if (i === undefined || this.jumpBusy) return;
                     this.jumpBusy = true;
+                    if (this.mvJumpActive()) {                       // the movie list: same idea, its own paging
+                        try {
+                            const M = this.mv, per = this.mvPer(), all = this.appSettings.mvPagination === 'all';
+                            const from = (M.startPage - 1) * per;
+                            if (!all && (i < from || i >= from + M.list.length)) await this.loadMovies(Math.floor(i / per) + 1);
+                            await this.$nextTick();
+                            const el = document.querySelector(`.scroller-main [data-midx="${all ? i : i - (M.startPage - 1) * per}"]`);
+                            if (el) el.scrollIntoView({ block: 'start', behavior: 'instant' });
+                            this.jumpCurrent = L;
+                        } finally { this.jumpBusy = false; }
+                        return;
+                    }
                     try {
                         const limit = parseInt(this.appSettings.itemsPerPage) || 150;
                         const paged = !this.appSettings.loadAll;
@@ -3069,14 +3110,15 @@
                         const sc = document.querySelector('.scroller-main');
                         if (!sc) return;
                         const top = sc.getBoundingClientRect().top;
-                        const cards = sc.querySelectorAll('[data-vidx]');
+                        const mv = this.mvJumpActive();
+                        const cards = sc.querySelectorAll(mv ? '[data-midx]' : '[data-vidx]');
                         let first = null;
                         for (const c of cards) { if (c.getBoundingClientRect().bottom > top + 4) { first = c; break; } }
                         if (!first) return;
-                        const limit = parseInt(this.appSettings.itemsPerPage) || 150;
-                        const g = +first.dataset.vidx + (this.appSettings.loadAll ? 0 : (this.listStartPage - 1) * limit);
+                        const g = mv ? +first.dataset.midx + (this.mv.startPage - 1) * this.mvPer()
+                                     : +first.dataset.vidx + (this.appSettings.loadAll ? 0 : (this.listStartPage - 1) * (parseInt(this.appSettings.itemsPerPage) || 150));
                         let cur = '';
-                        for (const x of this.jumpLetters) if (x.index <= g) cur = x.letter;
+                        for (const x of (mv ? this.mv.letters : this.jumpLetters)) if (x.index <= g) cur = x.letter;
                         this.jumpCurrent = cur;
                     });
                 },
@@ -6361,25 +6403,52 @@ No metadata is changed.`)) return;
 
                 mvFiltersChanged() { this.loadMovies(1); this.mvFetchFilters(); },
 
-                async loadMovies(page = 1, keep = false) {
-                    // keep: fetch again every page loaded so far and swap them in at once (back from a movie: same length, same place)
+                mvPer() { return this.appSettings.mvPagination === 'all' ? 10000 : (parseInt(this.appSettings.mvPerPage) || 120); },
+                get mvTotalPages() { return Math.max(1, Math.ceil((this.mv.total || 0) / this.mvPer())); },
+
+                // how: 'reset' - the list is this page (and starts on it) · 'append' - the next page added below (Load more / scrolling)
+                //      'prepend' - the page before added above · 'keep' - every page loaded so far fetched again and swapped in at once
+                //      (back from a movie: same length, same place)
+                async loadMovies(page = 1, how = 'reset') {
                     const M = this.mv;
+                    if (how === 'append' && M.loading) return;
                     M.loading = true;
                     try {
-                        const upto = keep ? M.page : page;
+                        const [from, upto] = how === 'keep' ? [M.startPage, M.page] : how === 'append' ? [M.page + 1, M.page + 1]
+                                           : how === 'prepend' ? [M.startPage - 1, M.startPage - 1] : [page, page];
                         let list = [], d;
-                        for (let p = keep ? 1 : page; p <= upto; p++) {
-                            const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: M.q || '', sort: M.sort, page: p, limit: 120 },
+                        for (let p = from; p <= upto; p++) {
+                            const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: M.q || '', sort: M.sort, page: p, limit: this.mvPer() },
                                                                          this.mvFilterParams()));
                             d = await (await fetch('/api/movies?' + qs)).json();
                             if (!d.success) throw new Error(d.error);
                             list = list.concat(d.movies);
                             if (!d.movies.length) break;
                         }
-                        M.list = page === 1 || keep ? list : [...M.list, ...list];
-                        Object.assign(M, { total: d.total, page: upto, msg: '' });
+                        const sc = document.querySelector('.scroller-main'), h0 = sc ? sc.scrollHeight : 0;
+                        if (how === 'append') { M.list = [...M.list, ...list]; M.page = upto; }
+                        else if (how === 'prepend') { M.list = [...list, ...M.list]; M.startPage = from; }
+                        else { M.list = list; M.startPage = from; M.page = upto; }
+                        Object.assign(M, { total: d.total, letters: d.letters || [], msg: '' });
+                        if (how === 'prepend' && sc) this.$nextTick(() => { sc.scrollTop += sc.scrollHeight - h0; });   // stay on what you were looking at
+                        if (how === 'reset' && page > 1 && this.appSettings.mvPagination === 'pages' && sc) sc.scrollTop = 0;
+                        this.$nextTick(() => this.jumpMeasure());
                     } catch (e) { M.msg = 'Could not load movies: ' + e.message; }
                     M.loading = false;
+                },
+
+                mvGoPage(n) {
+                    const p = parseInt(n);
+                    this.mv.pageEdit = false;
+                    if (isNaN(p) || p < 1 || p > this.mvTotalPages || p === this.mv.page) return;
+                    this.loadMovies(p);
+                    const sc = document.querySelector('.scroller-main');
+                    if (sc) sc.scrollTop = 0;
+                },
+
+                mvPagingChanged() {
+                    localStorage.setItem('appSettings', JSON.stringify(this.appSettings));
+                    if (this.mvTabActive() && !this.mv.view) this.loadMovies(1);
                 },
 
                 mvSearch() {
@@ -6425,7 +6494,7 @@ No metadata is changed.`)) return;
                     if (y == null || !M.list.length) { this.loadMovies(1); return; }
                     // the list is still here: put it back where it was, then refresh it in place (edits made on the movie's page)
                     this.$nextTick(() => { const el = document.querySelector('.scroller-main'); if (el) el.scrollTop = y; });
-                    this.loadMovies(1, true);
+                    this.loadMovies(1, 'keep');
                 },
 
                 mvRefresh() { if (this.mv.view) this.mvLoad(this.mv.view.id); else this.loadMovies(1); },
@@ -6505,7 +6574,7 @@ No metadata is changed.`)) return;
 
                 mvExtOpen() {
                     const stored = (this.mv.view.check?.candidates || []);
-                    Object.assign(this.mv.ext, { open: true, query: this.mv.view.title, list: stored, msg: '', paste: '' });
+                    Object.assign(this.mv.ext, { open: true, query: this.mv.view.title, performer: '', list: stored, msg: '', paste: '' });
                     if (!stored.length) this.mvExtSearch();
                 },
 
@@ -6661,14 +6730,21 @@ No metadata is changed.`)) return;
                     return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
                 },
 
+                mvFoundWith(c) {
+                    if (c.found_with) return c.found_with;
+                    const r = (c.reasons || []).find(x => x.startsWith('found with '));
+                    return r ? r.slice(11) : '';
+                },
+
                 async mvExtSearch() {
                     const X = this.mv.ext;
                     X.busy = true; X.msg = '';
                     try {
-                        const d = await this.mvPost(`/api/movies/${this.mv.view.id}/ext/search`, { query: X.query });
+                        const d = await this.mvPost(`/api/movies/${this.mv.view.id}/ext/search`, { query: X.query, performer: X.performer || '' });
                         X.list = d.candidates;
                         this.mvLoadDetails(X.list);
-                        if (!X.list.length) X.msg = 'Nothing found on ThePornDB. Try a shorter name, or paste the movie\'s link.';
+                        if (!X.list.length) X.msg = X.performer ? 'Nothing found with that performer. Try another, a shorter name, or paste the movie\'s link.'
+                                                                : 'Nothing found on ThePornDB. Try adding a performer, a shorter name, or paste the movie\'s link.';
                     } catch (e) { X.msg = e.message; }
                     X.busy = false;
                 },
@@ -13378,7 +13454,7 @@ No metadata is changed.`)) return;
 
                     <!-- HOME LIBRARY VIEW (also a library's Recommended tab) -->
                     <!-- MOVIES TAB (movies.py) -->
-                    <div x-show="currentLibrary !== 'Home' && libraryTab === 'movies' && !castBioMode" class="p-6">
+                    <div x-show="currentLibrary !== 'Home' && libraryTab === 'movies' && !castBioMode" class="p-6" :class="jumpBarShown() ? 'pr-10' : ''">
                         <p x-show="mv.msg" class="text-sm text-red-400 mb-3" x-text="mv.msg"></p>
                         <!-- list -->
                         <div x-show="!mv.view">
@@ -13424,9 +13500,12 @@ No metadata is changed.`)) return;
                                 <span x-show="!(mv.q || mvStatus || Object.keys(activeTags).length || Object.keys(activeSites).length)">No movies here yet. Click <b>Find movies…</b> to find them in your titles (like "Movie Name 2 Scene 3"),
                                     or set <b>Movie</b> on a video in Edit Metadata.</span>
                             </div>
+                            <div x-show="mv.startPage > 1 && appSettings.mvPagination !== 'pages' && mv.list.length" class="text-center mb-3">
+                                <button @click="loadMovies(0, 'prepend')" :disabled="mv.loading" class="px-4 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm disabled:opacity-50">‹ Show earlier movies</button>
+                            </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                                 <template x-for="(m, idx) in mv.list" :key="m.id">
-                                    <div @click="mvCardClick(m, idx, $event)" @contextmenu.prevent.stop="mvMenuOpen($event, m)"
+                                    <div :data-midx="idx" @click="mvCardClick(m, idx, $event)" @contextmenu.prevent.stop="mvMenuOpen($event, m)"
                                          class="bg-gray-800 rounded-lg border overflow-hidden cursor-pointer select-none group"
                                          :class="mvSel[m.id] ? 'border-blue-400 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
                                         <div class="relative w-full bg-gray-900 overflow-hidden" style="aspect-ratio: 2 / 3">   <!-- portrait, like a DVD cover -->
@@ -13447,10 +13526,31 @@ No metadata is changed.`)) return;
                                     </div>
                                 </template>
                             </div>
-                            <div class="text-center mt-4">
-                                <span class="text-xs text-gray-500 mr-3" x-show="mv.total" x-text="mv.list.length + ' of ' + mv.total + ' movies'"></span>
-                                <button x-show="mv.list.length < mv.total && !mv.loading" @click="loadMovies(mv.page + 1)"
+                            <div class="flex flex-wrap justify-center items-center gap-2 mt-4">
+                                <template x-if="appSettings.mvPagination === 'pages' && mvTotalPages > 1">
+                                    <div class="flex gap-1 items-center">
+                                        <button @click="mvGoPage(1)" :disabled="mv.page <= 1" class="bg-gray-700 px-3 py-2 rounded text-white text-sm font-mono disabled:opacity-30 hover:bg-gray-600" title="First page">&laquo;</button>
+                                        <button @click="mvGoPage(mv.page - 1)" :disabled="mv.page <= 1" class="bg-gray-700 px-3 py-2 rounded text-white text-sm font-mono disabled:opacity-30 hover:bg-gray-600" title="Previous page">&lsaquo;</button>
+                                        <div class="flex items-center gap-1 text-sm text-gray-400 select-none mx-1">
+                                            <span>Page</span>
+                                            <span x-show="!mv.pageEdit" @click="mv.pageEdit = true; mv.pageInput = mv.page; $nextTick(() => $refs.mvPageInput?.select())"
+                                                  class="px-2 py-1 rounded bg-gray-800 border border-gray-600 cursor-pointer hover:border-blue-500 hover:text-white min-w-[2rem] text-center"
+                                                  x-text="mv.page" title="Click to jump to page"></span>
+                                            <input x-show="mv.pageEdit" x-ref="mvPageInput" x-model="mv.pageInput" type="number" min="1" :max="mvTotalPages"
+                                                   @keydown.enter="mvGoPage(mv.pageInput)" @keydown.escape="mv.pageEdit = false" @blur="mv.pageEdit = false"
+                                                   class="w-14 px-2 py-1 rounded bg-gray-800 border border-gray-600 text-white text-center text-sm outline-none focus:border-blue-500">
+                                            <span>of <span x-text="mvTotalPages"></span></span>
+                                        </div>
+                                        <button @click="mvGoPage(mv.page + 1)" :disabled="mv.page >= mvTotalPages" class="bg-gray-700 px-3 py-2 rounded text-white text-sm font-mono disabled:opacity-30 hover:bg-gray-600" title="Next page">&rsaquo;</button>
+                                        <button @click="mvGoPage(mvTotalPages)" :disabled="mv.page >= mvTotalPages" class="bg-gray-700 px-3 py-2 rounded text-white text-sm font-mono disabled:opacity-30 hover:bg-gray-600" title="Last page">&raquo;</button>
+                                    </div>
+                                </template>
+                                <span class="text-xs text-gray-500" x-show="mv.total" x-text="appSettings.mvPagination === 'pages' || mv.startPage > 1
+                                      ? ((mv.startPage - 1) * mvPer() + 1) + '–' + ((mv.startPage - 1) * mvPer() + mv.list.length) + ' of ' + mv.total + ' movies'
+                                      : mv.list.length + ' of ' + mv.total + ' movies'"></span>
+                                <button x-show="appSettings.mvPagination === 'button' && (mv.startPage - 1) * mvPer() + mv.list.length < mv.total && !mv.loading" @click="loadMovies(0, 'append')"
                                         class="px-4 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">Load more</button>
+                                <span x-show="appSettings.mvPagination === 'scroll' && mv.loading && mv.list.length" class="text-xs text-gray-500">Loading more…</span>
                             </div>
                         </div>
                         <!-- one movie -->
@@ -13688,8 +13788,18 @@ No metadata is changed.`)) return;
                                 </div>
                                 <div class="p-4 space-y-3 overflow-y-auto scroller">
                                     <div class="flex gap-2">
-                                        <input type="text" x-model="mv.ext.query" @keydown.enter="mvExtSearch()" class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                        <input type="text" x-model="mv.ext.query" @keydown.enter="mvExtSearch()" placeholder="Title" class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                        <input type="text" x-model="mv.ext.performer" @keydown.enter="mvExtSearch()" placeholder="Performer (optional)" class="w-48 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm"
+                                               title="Searches the title together with this performer - narrows a long list of look-alikes">
                                         <button @click="mvExtSearch()" :disabled="mv.ext.busy" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm disabled:opacity-50">Search</button>
+                                    </div>
+                                    <div x-show="mv.view?.cast?.length" class="flex flex-wrap items-center gap-1 text-xs">
+                                        <span class="text-gray-400 mr-1">Your performers:</span>
+                                        <template x-for="n in mv.view?.cast || []" :key="'mvc' + n">
+                                            <button @click="mv.ext.performer = mv.ext.performer === n ? '' : n; mvExtSearch()" :disabled="mv.ext.busy"
+                                                    class="px-2 py-0.5 rounded" :class="mv.ext.performer === n ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'" x-text="n"></button>
+                                        </template>
+                                        <span class="text-gray-500 ml-1">(click one to search the title with them; with none, your top performers are tried when the title alone finds nothing)</span>
                                     </div>
                                     <div class="flex gap-2">
                                         <input type="text" x-model="mv.ext.paste" placeholder="…or paste a ThePornDB movie link / ID" class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
@@ -13709,6 +13819,7 @@ No metadata is changed.`)) return;
                                                 <div class="p-2 text-xs flex-1">
                                                     <div class="font-bold text-sm" x-text="c.title"></div>
                                                     <div class="text-gray-400" x-text="[c.date, c.studio].filter(Boolean).join(' · ')"></div>
+                                                    <div x-show="mvFoundWith(c)" class="text-sky-300" x-text="'Found with ' + mvFoundWith(c)"></div>
                                                     <div x-show="c._loading" class="text-gray-500 mt-0.5">checking its scenes…</div>
                                                                 <div x-show="c.details" class="mt-0.5 font-medium" :class="c.details?.matched ? 'text-emerald-300' : (c.details?.scenes ? 'text-gray-300' : 'text-gray-500')"
                                                                      x-text="c.details ? (c.details.scenes ? c.details.scenes + ' scenes' + (c.details.matched ? ' · ' + c.details.matched + ' match yours' : '') : 'No scene list') : ''"></div>
@@ -13806,6 +13917,11 @@ No metadata is changed.`)) return;
                 </div>
 
                 
+                <div x-show="currentView !== 'playlists' && currentLibrary !== 'Home' && libraryTab === 'library' && !castBioMode && listStartPage > 1
+                             && !isAllVideosMode && !appSettings.loadAll && !(appSettings.manualPagination && appSettings.paginationMode === 'prevnext') && videos.length > 0"
+                     class="pt-4 text-center">
+                    <button @click="loadEarlierVideos()" :disabled="isLoadingMore" class="px-4 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm disabled:opacity-50">‹ Show earlier videos</button>
+                </div>
                 <div x-show="currentView !== 'playlists' && viewMode === 'grid' && currentLibrary !== 'Home' && libraryTab === 'library' && !castBioMode" class="p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"
                      :class="jumpBarShown() ? 'pr-10' : ''">
                     <template x-for="(video, vidx) in videos" :key="video.path">
@@ -15643,6 +15759,21 @@ No metadata is changed.`)) return;
                             <button @click="toggleSetting('manualPagination')" class="w-10 h-5 rounded-full transition-colors relative" :class="appSettings.manualPagination && !appSettings.loadAll ? 'bg-blue-600' : 'bg-gray-600'" :disabled="appSettings.loadAll"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.manualPagination && !appSettings.loadAll ? 'translate-x-5' : ''"></div></button>
                         </div>
                         
+                        <div x-show="sPage('browsing')" class="bg-gray-900 p-3 rounded space-y-2">
+                            <label class="block text-sm font-bold">Movies tab</label>
+                            <div class="flex items-center gap-2 text-sm">
+                                <span>Movies per page</span>
+                                <input type="number" min="12" max="2000" x-model="appSettings.mvPerPage" @change="mvPagingChanged()"
+                                       class="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm focus:border-blue-500 outline-none" :disabled="appSettings.mvPagination === 'all'">
+                            </div>
+                            <template x-for="o in [['button', 'Load More button'], ['pages', 'Pages (Previous / Next, show only the current page)'], ['scroll', 'Infinite scroll (load more as you scroll)'], ['all', 'Load all movies']]" :key="'mvp' + o[0]">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" x-model="appSettings.mvPagination" :value="o[0]" @change="mvPagingChanged()">
+                                    <span class="text-sm" x-text="o[1]"></span>
+                                </label>
+                            </template>
+                        </div>
+
                         <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Load All Items</span><span class="block text-xs text-gray-500">Disabled for "All Videos"</span></div>
                             <button @click="toggleSetting('loadAll')" class="w-10 h-5 rounded-full transition-colors relative" :class="appSettings.loadAll ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.loadAll ? 'translate-x-5' : ''"></div></button>
