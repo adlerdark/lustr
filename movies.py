@@ -1154,6 +1154,31 @@ def tpdb_search_with_cast(conn, mid, title, ctx=None, per_page=10):
     return found
 
 
+def _duplicate_records(top, cands):
+    """The candidates (with details) that are the same movie as top: same title (already), same year,
+    and the same performers - or, when neither lists performers, the same release date."""
+    import ext_db
+    perf = lambda c: {ext_db.norm_name(n) for n in (c.get('details') or {}).get('performers') or []} - {''}
+    out = []
+    for c in cands:
+        if not c.get('details') or (top.get('date') or '')[:4] != (c.get('date') or '')[:4]:
+            continue
+        p1, p2 = perf(top), perf(c)
+        if (p1 and p1 == p2) or (not p1 and not p2 and (top.get('date') or '') == (c.get('date') or '')):
+            out.append(c)
+    return out
+
+
+def _record_fullness(c):
+    """Which copy of a movie to take: one with a scene list (more matching yours, then more scenes),
+    then more tags, then one with a cover."""
+    import ext_db
+    d = c['details']
+    raw = _raw_cache.get(c['id']) or {}
+    c['_photo'] = bool(ext_db.tpdb_movie_images(raw)[0]) if raw else bool(c.get('image_url'))
+    return (bool(d['scenes']), d['matched'], d['scenes'], len(d.get('tags') or []), c['_photo'])
+
+
 def bulk_one(conn, mid, add_tags=True):
     """Check one movie on ThePornDB -> (outcome, detail, candidates). Links it when the match is sure."""
     import ext_db
@@ -1187,6 +1212,17 @@ def bulk_one(conn, mid, add_tags=True):
         if win and (win['details']['matched'] or agrees(win)):
             top = win
             picked_note = (f" · picked the one with {win['details']['scenes']} scenes, {win['details']['matched']} matching yours")
+        elif not win:
+            # the same movie listed more than once (same title, year and cast): take the best-filled record
+            dupes = _duplicate_records(top, same[:3])
+            if len(dupes) > 1:
+                win = max(dupes, key=_record_fullness)
+                if win['details']['matched'] or agrees(win):
+                    top = win
+                    d = win['details']
+                    picked_note = (f" · {len(dupes)} copies of this movie on ThePornDB, picked the one with "
+                                   + ', '.join(x for x in (f"{d['scenes']} scenes" if d['scenes'] else 'no scene list',
+                                                           f"{len(d['tags'])} tags", 'a cover' if win.get('_photo') else 'no cover') if x))
         scored.sort(key=_cand_order)
         top5 = scored[:5]
     if 'same title' in top['reasons'] and (len(same) == 1 or lead >= AUTO_LEAD or picked_note) and (agrees(top) or picked_note):

@@ -748,8 +748,30 @@ class CandidateDetailTests(BulkLinkTests):
         self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'linked')
         self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'list')
 
-    def test_no_scene_lists_stays_in_review(self):
-        self.raws['bare2'] = dict(self.raws['bare'], id='bare2')
+    def test_copies_without_scene_lists_take_the_one_with_more_tags(self):
+        self.raws['bare2'] = dict(self.raws['bare'], id='bare2', tags=[{'name': 'Outdoor'}, {'name': 'Gonzo'}])
+        self.results = [self.cand('bare', 'Summer Road Trip 13', '2011-05-01'), self.cand('bare2', 'Summer Road Trip 13', '2011-05-01')]
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'linked', detail)
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'bare2')
+        self.assertIn('2 copies of this movie', detail)
+
+    def test_copies_then_the_one_with_a_cover(self):
+        self.raws['bare2'] = dict(self.raws['bare'], id='bare2', posters={'large': 'https://cdn.theporndb.net/x.jpg'})
+        self.results = [self.cand('bare', 'Summer Road Trip 13', '2011-05-01'), self.cand('bare2', 'Summer Road Trip 13', '2011-05-01')]
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'linked')
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'bare2')
+
+    def test_two_with_scene_lists_matching_take_the_better_match(self):
+        scene = lambda *names: {'performers': [{'name': n} for n in names]}
+        self.raws['with2'] = dict(self.raws['with'], id='with2', scenes=[scene('Jane Doe')])
+        self.results = [self.cand('with2', 'Summer Road Trip 13', '2011-05-01'), self.cand('with', 'Summer Road Trip 13', '2011-05-01')]
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'linked')
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'with')               # 1 match each: more scenes
+
+    def test_different_movies_with_one_name_stay_in_review(self):
+        self.raws['bare'] = dict(self.raws['bare'], performers=[{'name': 'Mary Major'}])
+        self.raws['bare2'] = dict(self.raws['bare'], id='bare2', performers=[{'name': 'Someone Else'}])
         self.results = [self.cand('bare', 'Summer Road Trip 13', '2011-05-01'), self.cand('bare2', 'Summer Road Trip 13', '2011-05-01')]
         out, detail, cands = movies.bulk_one(self.c, self.mid)
         self.assertEqual(out, 'review', detail)
