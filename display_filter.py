@@ -4,12 +4,13 @@ Library orientation types and the per-user display filter.
 
 A group can have a type (straight / gay / bisexual / trans / lesbian / mixed, or none; metadata
 'group_types'), and so can a library (model.library_settings[lib]['type'], or none = follow its
-group). Group < library < video tag. Each user picks which of the five types they see
+group). Group < library < movie tag < video tag. Each user picks which of the five types they see
 (metadata key 'display_filter' = {username: [types]}; default: all, i.e. no filtering).
 
 A video's effective types are those of its orientation tags (heteroflexible counts as
-bisexual); a video with no recognised orientation tag takes its library's type. It shows
-when any effective type is selected, or when it is untagged in a mixed (or untyped) library.
+bisexual); a video with no recognised orientation tag takes its movie's orientation tags (the
+movie's own tags, movies.py), and without those its library's type. It shows when any effective
+type is selected, or when it is untagged (video and movie) in a mixed (or untyped) library.
 
 No FastAPI imports. The current user comes from CURRENT_USER, set by the auth middleware.
 """
@@ -204,6 +205,20 @@ def _selected(conn, selection):
     return get_selection(conn) if selection is None else [t for t in TYPES if t in selection]
 
 
+def _has_movie_tags(conn):
+    try:
+        return conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('movie_tags', 'video_movie')").fetchone()[0] == 2
+    except Exception:
+        return False
+
+
+def movie_shown(conn, movie_tags, selection=None):
+    """A movie with none of your videos: shown unless its own orientation tags are all unselected."""
+    sel = _selected(conn, selection)
+    types = {TAG_TYPE[t] for t in movie_tags or () if t in TAG_TYPE}
+    return not types or bool(types & set(sel))
+
+
 def shown_sql(conn, model, col='v.video_id', lib_col='v.library', selection=None):
     """The rule itself as SQL on `col` / `lib_col` (correlated subqueries), or ('', []) when nothing is filtered."""
     sel = _selected(conn, selection)
@@ -213,12 +228,22 @@ def shown_sql(conn, model, col='v.video_id', lib_col='v.library', selection=None
     hidden_libs = [lib for lib, t in library_types(model).items() if t != MIXED and t not in sel]
     tag_q = (f'SELECT 1 FROM video_orientation_junction dfj JOIN video_orientation dfo ON dfo.id = dfj.orientation_id '
              f'WHERE dfj.video_id = {col} AND LOWER(dfo.value) IN ')
+    # a movie's own orientation tags count for its videos without one (movies.py: movie_tags, video_movie)
+    movie_q = (f'SELECT 1 FROM video_movie dfvm JOIN movie_tags dfmt ON dfmt.movie_id = dfvm.movie_id '
+               f'WHERE dfvm.video_id = {col} AND dfmt.value IN ') if _has_movie_tags(conn) else None
+    any_tag = f'NOT EXISTS ({tag_q}({",".join("?" * len(TAG_TYPE))}))'
     parts, params = [], []
     if shown_tags:
         parts.append(f'EXISTS ({tag_q}({",".join("?" * len(shown_tags))}))')
         params += shown_tags
-    untagged = f'NOT EXISTS ({tag_q}({",".join("?" * len(TAG_TYPE))}))'
+        if movie_q:
+            parts.append(f'({any_tag} AND EXISTS ({movie_q}({",".join("?" * len(shown_tags))})))')
+            params += list(TAG_TYPE) + shown_tags
+    untagged = any_tag
     params += list(TAG_TYPE)
+    if movie_q:
+        untagged += f' AND NOT EXISTS ({movie_q}({",".join("?" * len(TAG_TYPE))}))'
+        params += list(TAG_TYPE)
     if hidden_libs:
         untagged += f' AND COALESCE({lib_col}, \'\') NOT IN ({",".join("?" * len(hidden_libs))})'
         params += hidden_libs

@@ -704,8 +704,11 @@ def _scoped(model, conn, library):
         if r[8] == r[6]:
             m['_cover'] = (r[13], r[14], r[8])
     if library in home.EVERYTHING:                     # kept movies with none of your videos (yet)
+        import display_filter
         for r in conn.execute('SELECT id, title, year, studio, ext_id, cover IS NOT NULL, updated_at FROM movies '
                               'WHERE id NOT IN (SELECT movie_id FROM video_movie vm JOIN videos v ON v.video_id = vm.video_id)'):
+            if not display_filter.movie_shown(conn, movie_tags(conn, r[0])):     # its own orientation tag is filtered out
+                continue
             movies.setdefault(r[0], {'id': r[0], 'title': r[1], 'year': r[2] or '', 'studio': r[3] or '', 'linked': bool(r[4]),
                                      'has_cover': bool(r[5]), 'updated_at': r[6], 'count': 0, 'added': '',
                                      '_first': None, '_cover': None})

@@ -238,6 +238,26 @@ class MovieTests(MovieBase):
             self.assertEqual(movies.filter_counts(self.model, self.c, 'Lib')['tags'], {'straight': 1, 'onlystraight': 1})
             self.assertEqual(movies.autocomplete(self.c, 'Movie', model=self.model), ['Straight Movie'])
             self.assertEqual(movies.detail(self.model, self.c, movies.resolve_name(self.c, 'Gay Movie')[0])['items'], [])
+            # a movie tagged bisexual whose video has no orientation tag: the movie's tag counts for the video
+            bi = movies.set_video_movie(self.c, 'v3', 'Bi Movie', scene=1)
+            self.assertIn('Bi Movie', [m['title'] for m in movies.listing(self.model, self.c, 'Lib')['movies']])   # untagged: shown
+            movies.set_tags(self.c, bi, add=['bisexual'])
+            self.assertEqual([m['title'] for m in movies.listing(self.model, self.c, 'Lib')['movies']], ['Straight Movie'])
+            self.assertIn(C, df.hidden_paths(self.c, self.model))                     # the video is hidden in the library too
+            df.set_selection(self.c, 'jane', ['straight', 'bisexual'])
+            self.assertEqual([m['title'] for m in movies.listing(self.model, self.c, 'Lib')['movies']], ['Bi Movie', 'Straight Movie'])
+            self.assertNotIn(C, df.hidden_paths(self.c, self.model))
+            # a video's own tag still wins over its movie's
+            movies.set_tags(self.c, bi, add=['gay'], remove=['bisexual'])
+            tid = self.c.execute("SELECT id FROM video_orientation WHERE value = 'Straight'").fetchone()[0]
+            self.c.execute("INSERT INTO video_orientation_junction (video_id, orientation_id) VALUES ('v3', ?)", (tid,))
+            self.c.commit()
+            self.assertNotIn(C, df.hidden_paths(self.c, self.model))
+            # a movie with no videos: its own tag decides
+            movies.set_video_movie(self.c, 'v3', None)
+            kept = movies.get_or_create(self.c, 'Empty Gay Movie')
+            movies.set_tags(self.c, kept, add=['gay'])
+            self.assertNotIn('Empty Gay Movie', [m['title'] for m in movies.listing(self.model, self.c, 'All Videos')['movies']])
         finally:
             df.CURRENT_USER.reset(token)
         self.assertEqual(len(movies.listing(self.model, self.c, 'Lib')['movies']), 2)        # no user filter: both
