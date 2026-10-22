@@ -572,7 +572,7 @@
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
-                jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1,   // # A-Z jump bar (Title / Cast / Filename sorts)
+                jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1, tabsH: 0,   // tabsH: the sticky library tab bar's height   // # A-Z jump bar (Title / Cast / Filename sorts)
                 castPeek: { name: '', primary: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
                 thumbPick: { open: false, path: '', title: '', frames: [], cover: 0, busy: false, error: '' },   // choose the main thumbnail
                 forceThumbs: { open: false, count: 0, offset: '', error: '', resolve: null, dur: 0, frames: 8 },   // Force New: optional start offset
@@ -602,7 +602,11 @@
                 mvSel: {}, mvSelLast: null,   // selected movie cards (id -> true)
                 mvMenu: { open: false, x: 0, y: 0, m: null },
                 mvPoster: { open: false, side: 'front' },
-                mvCovers: { status: null, timer: null },
+                mvTpdb: { status: null, timer: null },
+                mvCoverModal: { open: false, tab: 'upload', front: '', back: '', busy: false, msg: '' },   // Change covers    // Refresh from ThePornDB for several movies
+                collSel: {}, collSelLast: null, collMenu: { open: false, x: 0, y: 0, c: null },   // selecting collection cards
+                selAllOffer: null,               // after Select All on one page: { scope, n, noun } - "select all N?"
+                selAcrossPages: false, selVideoIds: {},   // videos selected beyond the loaded page (path -> video_id)
                 mvHover: { c: null, x: 0, y: 0 },   // ThePornDB candidate popover (tags, scenes)
                 mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '', ids: null },
                 mvSug: { tags: [], details: [], loading: false }, mvTagInput: '',
@@ -1043,7 +1047,10 @@
                 },
                 
                 get vlcNetworkUrl() { return 'vlc://' + this.streamUrl; },
-                get selectionCount() { return this.selectedPaths.size; },
+                get selectionCount() {
+                    const sc = this.selScope();
+                    return sc === 'movies' ? this.mvSelIds.length : sc === 'collections' ? this.collSelIds.length : this.selectedPaths.size;
+                },
                 get unusedColumns() { return this.availableColumns.filter(c => !this.visibleColumns.includes(c)); },
                 get currentFolderName() {
                     if (!this.currentFolder) return 'Root';
@@ -2610,6 +2617,23 @@
                     this.videos = [{ type: 'file', filename: "Demo.mp4", title: "Demo", year: "2023", resolution: "1080p" }];
                 },
 
+                // /api/videos for the current library, search, filters and sort (no page / limit)
+                videosUrl() {
+                    let url = `/api/videos?library=${encodeURIComponent(this.currentLibrary)}`;
+                    if (this.apiQuery()) url += `&query=${encodeURIComponent(this.apiQuery())}`;
+                    const pick = (obj, st) => Object.entries(obj || {}).filter(([, v]) => v === st).map(([k]) => k);
+                    const [inT, exT, inS, exS] = [pick(this.activeTags, 1), pick(this.activeTags, -1), pick(this.activeSites, 1), pick(this.activeSites, -1)];
+                    if (inT.length) url += `&tags=${encodeURIComponent(inT.join(','))}`;
+                    if (exT.length) url += `&tags_exclude=${encodeURIComponent(exT.join(','))}`;
+                    if (inS.length) url += `&sites=${encodeURIComponent(inS.join(','))}`;
+                    if (exS.length) url += `&sites_exclude=${encodeURIComponent(exS.join(','))}`;
+                    if (this.favoritesOnly) url += `&favorites_only=true`;
+                    if (this.activeLengthFilters.length > 0) url += `&length_filter=${encodeURIComponent(this.activeLengthFilters.join(','))}`;
+                    url += `&sort_by=${encodeURIComponent(this.sortField)}&desc=${this.sortDesc}&seed=${this.sortSeed}`;
+                    url += `&hide_zero_length=${this.appSettings.hideZeroLength || 'hide'}`;
+                    return url;
+                },
+
                 async fetchVideos(mode = 'reset') {
                     this.ccIndexLoad();
                     this.isSearching = true;
@@ -2632,36 +2656,7 @@
                     if (this.libraryTab !== 'library' && this.searchQuery && this.searchQuery.trim()) this.setLibraryTab('library');   // a search shows the grid
                     try {
                         const urlStart = performance.now();
-                        let url = `/api/videos?library=${encodeURIComponent(this.currentLibrary)}`;
-                        if (this.apiQuery()) url += `&query=${encodeURIComponent(this.apiQuery())}`;
-                        
-                        const includedTags = [];
-                        const excludedTags = [];
-                        for (const [tag, state] of Object.entries(this.activeTags)) {
-                            if (state === 1) includedTags.push(tag);
-                            else if (state === -1) excludedTags.push(tag);
-                        }
-                        
-                        const includedSites = [];
-                        const excludedSites = [];
-                        for (const [site, state] of Object.entries(this.activeSites)) {
-                            if (state === 1) includedSites.push(site);
-                            else if (state === -1) excludedSites.push(site);
-                        }
-                        
-                        if (includedTags.length > 0) url += `&tags=${encodeURIComponent(includedTags.join(','))}`;
-                        if (excludedTags.length > 0) url += `&tags_exclude=${encodeURIComponent(excludedTags.join(','))}`;
-                        if (includedSites.length > 0) url += `&sites=${encodeURIComponent(includedSites.join(','))}`;
-                        if (excludedSites.length > 0) url += `&sites_exclude=${encodeURIComponent(excludedSites.join(','))}`;
-                        
-                        if (this.favoritesOnly) url += `&favorites_only=true`;
-                        
-                        if (this.activeLengthFilters.length > 0) url += `&length_filter=${encodeURIComponent(this.activeLengthFilters.join(','))}`;
-                        
-                        url += `&sort_by=${encodeURIComponent(this.sortField)}&desc=${this.sortDesc}&seed=${this.sortSeed}`;
-                        
-                        const hideZeroSetting = this.appSettings.hideZeroLength || 'hide';
-                        url += `&hide_zero_length=${hideZeroSetting}`;
+                        let url = this.videosUrl();
                         
                         let limit = parseInt(this.appSettings.itemsPerPage) || 150;
                         if (this.appSettings.loadAll && !this.isAllVideosMode) limit = 10000;
@@ -2743,7 +2738,10 @@
                         }
                         
                         const validPaths = new Set(this.videos.map(v => v.path));
-                        this.selectedPaths = new Set([...this.selectedPaths].filter(p => validPaths.has(p)));
+                        if (!this.selAcrossPages || !this.selectedPaths.size) {         // "select all N" keeps the ones on other pages
+                            this.selAcrossPages = false;
+                            this.selectedPaths = new Set([...this.selectedPaths].filter(p => validPaths.has(p)));
+                        }
                         
                         console.log(`Data updated in ${performance.now() - updateStart}ms`);
 
@@ -3060,9 +3058,10 @@
                     const hit = (this.mvJumpActive() ? this.mv.letters : this.jumpLetters).find(x => x.letter === L);
                     return hit ? hit.index : undefined;
                 },
+                jumpTabsOffset() { return this.currentLibrary !== 'Home' && !this.castBioMode ? (this.tabsH || 0) : 0; },
                 jumpMeasure() {
                     const sc = document.querySelector('.scroller-main');
-                    if (sc) this.jumpBarH = Math.max(200, sc.clientHeight - 24);
+                    if (sc) this.jumpBarH = Math.max(200, sc.clientHeight - 24 - this.jumpTabsOffset());
                     this.jumpTrack();
                 },
                 // Same page size and page navigation as usual: a letter on page 3 goes to page 3
@@ -3096,7 +3095,11 @@
                         const pos = paged ? i - (this.listStartPage - 1) * limit : i;
                         await this.$nextTick();
                         const el = document.querySelector(`.scroller-main [data-vidx="${pos}"]`);
-                        if (el) el.scrollIntoView({ block: 'start', behavior: 'instant' });
+                        if (el) {
+                            el.scrollIntoView({ block: 'start', behavior: 'instant' });
+                            const sc = document.querySelector('.scroller-main');
+                            if (sc) sc.scrollTop -= this.jumpTabsOffset() + 8;          // below the sticky tab bar
+                        }
                         this.jumpCurrent = L;
                     } finally {
                         this.jumpBusy = false;
@@ -3109,8 +3112,8 @@
                         this._jumpRaf = null;
                         const sc = document.querySelector('.scroller-main');
                         if (!sc) return;
-                        const top = sc.getBoundingClientRect().top;
                         const mv = this.mvJumpActive();
+                        const top = sc.getBoundingClientRect().top + this.jumpTabsOffset() + (mv ? (this.$refs.mvToolbar?.offsetHeight || 0) : 0);
                         const cards = sc.querySelectorAll(mv ? '[data-midx]' : '[data-vidx]');
                         let first = null;
                         for (const c of cards) { if (c.getBoundingClientRect().bottom > top + 4) { first = c; break; } }
@@ -6324,7 +6327,7 @@ No metadata is changed.`)) return;
                 // ----- library tabs: Recommended | Library | Collections -----
                 setLibraryTab(tab, remember = true) {
                     const wasMovies = this.libraryTab === 'movies';
-                    if (wasMovies && this.mv.view) this.mvClearSel();             // leaving a movie page
+                    this.clearAllSelections();                                     // a tab or library change starts with nothing selected
                     this.libraryTab = tab;
                     if (wasMovies && tab !== 'movies' && this.currentLibrary !== 'Home') this.fetchAvailableFilters();   // video counts again
                     if (remember && this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = tab;
@@ -6376,7 +6379,49 @@ No metadata is changed.`)) return;
                     C.loading = false;
                 },
 
-                collBack() { this.coll.view = null; this.loadCollections(); },
+                collBack() { this.coll.view = null; this.collSel = {}; this.selectedPaths = new Set(); this.selAllOffer = null; this.loadCollections(); },
+
+                // ----- selecting collection cards (circle / Ctrl / Shift) and their right-click menu -----
+                get collSelIds() { return Object.keys(this.collSel).filter(k => this.collSel[k]).map(Number); },
+                collCardClick(c, idx, ev) {
+                    if (ev.shiftKey) {
+                        if (this.collSelLast === null) { this.collToggleSel(c, idx); return; }
+                        const [a, b] = [Math.min(this.collSelLast, idx), Math.max(this.collSelLast, idx)];
+                        for (const x of this.coll.list.slice(a, b + 1)) this.collSel[x.id] = true;
+                        this.collSel = { ...this.collSel };
+                    } else if (ev.ctrlKey || ev.metaKey) {
+                        this.collToggleSel(c, idx);
+                    } else {
+                        this.collLoadItems(c.id);
+                    }
+                },
+                collToggleSel(c, idx) {
+                    if (this.collSel[c.id]) delete this.collSel[c.id]; else this.collSel[c.id] = true;
+                    this.collSel = { ...this.collSel };
+                    this.collSelLast = idx;
+                },
+                collMenuOpen(ev, c) {
+                    const w = 220, h = 200;
+                    Object.assign(this.collMenu, { open: true, c, x: Math.min(ev.clientX, window.innerWidth - w), y: Math.min(ev.clientY, window.innerHeight - h) });
+                },
+                collMenuIds() {
+                    const c = this.collMenu.c;
+                    return c && this.collSel[c.id] && this.collSelIds.length > 1 ? this.collSelIds : (c ? [c.id] : []);
+                },
+                async collShowOnHome(ids, on) {
+                    try { for (const id of ids) await this.extDbPost('/api/collections/update', { id, changes: { show_on_home: on } }); }
+                    catch (e) { alert(e.message); }
+                    this.loadCollections();
+                },
+                async collDeleteMany(ids) {
+                    const names = this.coll.list.filter(c => ids.includes(c.id)).map(c => c.name);
+                    if (!names.length || !confirm(ids.length === 1 ? `Delete the collection "${names[0]}"? The videos themselves are not touched.`
+                                                                   : `Delete ${ids.length} collections?\n\n${names.slice(0, 15).join('\n')}${names.length > 15 ? '\n…' : ''}\n\nThe videos themselves are not touched.`)) return;
+                    try { for (const id of ids) await this.extDbPost('/api/collections/delete', { id }); }
+                    catch (e) { alert(e.message); }
+                    this.collSel = {};
+                    this.loadCollections();
+                },
 
                 // ----- Movies tab (movies.py): a movie's scenes / parts, its own details, cover, ThePornDB link -----
                 mvTabActive() {
@@ -6560,11 +6605,15 @@ No metadata is changed.`)) return;
                     if (!f) return;
                     const fd = new FormData();
                     fd.append('file', f);
+                    const X = this.mvCoverModal;
+                    X.busy = true; X.msg = '';
                     try {
                         const d = await (await fetch(`/api/movies/${this.mv.view.id}/cover${back ? '/back' : ''}`, { method: 'POST', body: fd })).json();
                         if (!d.success) throw new Error(d.error);
                         await this.mvLoad(this.mv.view.id);
-                    } catch (e) { this.mv.msg = 'Cover not changed: ' + e.message; }
+                        X.msg = (back ? 'Back' : 'Front') + ' cover set.';
+                    } catch (e) { X.msg = (back ? 'Back' : 'Front') + ' cover not changed: ' + e.message; }
+                    X.busy = false;
                 },
 
                 async mvCoverFromVideo(videoId) {
@@ -6912,34 +6961,44 @@ No metadata is changed.`)) return;
                 },
 
                 async mvCoverFromLink(back = false) {
-                    const url = prompt(`Link to the ${back ? 'back cover' : 'cover'} image (http:// or https://):`);
-                    if (!url || !url.trim()) return;
-                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/cover${back ? '/back' : ''}/url`, { url: url.trim() }); await this.mvLoad(this.mv.view.id); }
-                    catch (e) { this.mv.msg = 'Cover not changed: ' + e.message; }
-                },
-
-                // ----- Get covers: linked movies missing a front or back cover get them from ThePornDB -----
-                async mvCoversStart(ids = null) {
+                    const X = this.mvCoverModal, url = (back ? X.back : X.front || '').trim();
+                    if (!url) return;
+                    X.busy = true; X.msg = '';
                     try {
-                        const p = await this.mvPost('/api/movies/covers/preview', { movie_ids: ids });
-                        if (!p.count) { alert(ids ? 'None of these are linked movies missing a cover.' : 'No linked movies are missing a front or back cover.'); return; }
-                        if (!ids && !confirm(`Get covers from ThePornDB for ${p.count} linked movie${p.count === 1 ? '' : 's'} missing a front or back cover?\n`
-                                             + '(Some may have no back cover on ThePornDB. Covers you set yourself are kept.)')) return;
-                        this.mvCovers.status = (await this.mvPost('/api/movies/covers/start', { movie_ids: ids })).status;
-                        this.mvCoversPoll();
-                    } catch (e) { this.mv.msg = 'Could not get covers: ' + e.message; }
+                        await this.mvPost(`/api/movies/${this.mv.view.id}/cover${back ? '/back' : ''}/url`, { url });
+                        await this.mvLoad(this.mv.view.id);
+                        if (back) X.back = ''; else X.front = '';
+                        X.msg = (back ? 'Back' : 'Front') + ' cover set.';
+                    } catch (e) { X.msg = (back ? 'Back' : 'Front') + ' cover not changed: ' + e.message; }
+                    X.busy = false;
                 },
 
-                mvCoversPoll() {
-                    clearTimeout(this.mvCovers.timer);
-                    this.mvCovers.timer = setTimeout(async () => {
-                        try { this.mvCovers.status = (await (await fetch('/api/movies/covers/status')).json()).status; } catch (e) {}
-                        if (this.mvCovers.status?.running) this.mvCoversPoll();
+                mvCoverModalOpen() { Object.assign(this.mvCoverModal, { open: true, tab: 'upload', front: '', back: '', busy: false, msg: '' }); },
+
+                // ----- Refresh from ThePornDB (right-click): one movie right away, several in the background -----
+                async mvTpdbRefresh(ids) {
+                    const linked = ids.filter(id => (this.mv.list.find(m => m.id === id) || {}).linked !== false);
+                    if (ids.length === 1) {
+                        try { await this.mvPost(`/api/movies/${ids[0]}/ext/refresh`); this.mvRefresh(); }
+                        catch (e) { this.mv.msg = 'Not refreshed: ' + e.message; }
+                        return;
+                    }
+                    try {
+                        this.mvTpdb.status = (await this.mvPost('/api/movies/refresh/start', { movie_ids: linked.length ? linked : ids })).status;
+                        this.mvTpdbPoll();
+                    } catch (e) { this.mv.msg = 'Could not refresh: ' + e.message; }
+                },
+
+                mvTpdbPoll() {
+                    clearTimeout(this.mvTpdb.timer);
+                    this.mvTpdb.timer = setTimeout(async () => {
+                        try { this.mvTpdb.status = (await (await fetch('/api/movies/refresh/status')).json()).status; } catch (e) {}
+                        if (this.mvTpdb.status?.running) this.mvTpdbPoll();
                         else if (this.mvTabActive()) this.mvRefresh();
                     }, 1500);
                 },
 
-                mvCoversStop() { fetch('/api/movies/covers/stop', { method: 'POST' }); },
+                mvTpdbStop() { fetch('/api/movies/refresh/stop', { method: 'POST' }); },
 
                 mvPosterSrc() {
                     const v = this.mv.view;
@@ -7066,7 +7125,7 @@ No metadata is changed.`)) return;
 
                 selectedVideoIds() {
                     const pool = [...this.videos, ...this.continueWatching, ...(this.playlistVideos || []), ...((this.castBioData && this.castBioData.exact_matches) || [])];
-                    return [...new Set(Array.from(this.selectedPaths).map(p => (pool.find(v => v.path === p) || {}).video_id).filter(Boolean))];
+                    return [...new Set(Array.from(this.selectedPaths).map(p => (pool.find(v => v.path === p) || {}).video_id || this.selVideoIds[p]).filter(Boolean))];
                 },
 
                 async collRemoveSelected() {
@@ -8710,13 +8769,64 @@ No metadata is changed.`)) return;
                     }
                     this.selectedPaths = new Set(this.selectedPaths);
                 },
+                // what the header's Select All works on: the movie list, the collection list, or videos (grid, a movie, a collection, cast)
+                selScope() {
+                    if (this.mvTabActive() && !this.mv.view) return 'movies';
+                    if (this.currentView === 'library' && this.currentLibrary !== 'Home' && this.libraryTab === 'collections' && !this.coll.view && !this.castBioMode) return 'collections';
+                    return 'videos';
+                },
+                clearAllSelections() {
+                    this.selectedPaths = new Set(); this.lastSelectedPath = null;
+                    this.mvSel = {}; this.mvSelLast = null; this.collSel = {}; this.collSelLast = null;
+                    this.selAllOffer = null; this.selAcrossPages = false; this.selVideoIds = {};
+                },
                 selectAll() {
-                    if (this.selectedPaths.size > 0) {
-                        this.selectedPaths.clear();
-                    } else {
-                        this._selectionList().forEach(v => this.selectedPaths.add(v.path));
+                    const sc = this.selScope();
+                    this.selAllOffer = null;
+                    if (this.selectionCount > 0) {
+                        if (sc === 'movies') this.mvSel = {};
+                        else if (sc === 'collections') this.collSel = {};
+                        else { this.selectedPaths = new Set(); this.selAcrossPages = false; this.selVideoIds = {}; }
+                        return;
                     }
+                    if (sc === 'movies') {
+                        this.mvSelectAllShown();
+                        if (this.mv.total > this.mv.list.length) this.selAllOffer = { scope: 'movies', shown: this.mv.list.length, n: this.mv.total, noun: 'movies' };
+                        return;
+                    }
+                    if (sc === 'collections') { const o = {}; for (const c of this.coll.list) o[c.id] = true; this.collSel = o; return; }
+                    this._selectionList().forEach(v => this.selectedPaths.add(v.path));
                     this.selectedPaths = new Set(this.selectedPaths);
+                    const shown = this.selectedPaths.size;
+                    if (this.currentLibrary !== 'Home' && this.libraryTab === 'collections' && this.coll.view && this.coll.total > shown)
+                        this.selAllOffer = { scope: 'collection', shown, n: this.coll.total, noun: 'videos in this collection' };
+                    else if (this.currentView === 'library' && this.currentLibrary !== 'Home' && this.libraryTab === 'library' && !this.castBioMode
+                             && !this.folderMode && (this.libraryStats?.filtered || 0) > shown)
+                        this.selAllOffer = { scope: 'videos', shown, n: this.libraryStats.filtered, noun: 'videos' };
+                },
+                // "Select all N": every match, not just the loaded page
+                async selectAllEverything() {
+                    const o = this.selAllOffer;
+                    if (!o) return;
+                    this.selAllOffer = null;
+                    try {
+                        if (o.scope === 'movies') {
+                            const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: this.mv.q || '', sort: this.mv.sort, ids_only: true }, this.mvFilterParams()));
+                            const d = await (await fetch('/api/movies?' + qs)).json();
+                            if (!d.success) throw new Error(d.error);
+                            const sel = {}; for (const id of d.ids) sel[id] = true; this.mvSel = sel;
+                            return;
+                        }
+                        const url = o.scope === 'collection' ? `/api/collections/${this.coll.view.id}/items?paths_only=true&seed=${this.sortSeed}`
+                                                             : this.videosUrl() + '&paths_only=true';
+                        const d = await (await fetch(url)).json();
+                        if (d.success === false) throw new Error(d.error);
+                        const ids = {};
+                        for (const x of d.paths || []) { this.selectedPaths.add(x.path); if (x.video_id) ids[x.path] = x.video_id; }
+                        this.selVideoIds = ids;
+                        this.selAcrossPages = true;
+                        this.selectedPaths = new Set(this.selectedPaths);
+                    } catch (e) { alert('Could not select them all: ' + e.message); }
                 },
                 isSelected(path) { return this.selectedPaths.has(path); },
                 _selectionList() {
@@ -12792,7 +12902,7 @@ No metadata is changed.`)) return;
                     // Get selected video IDs
                     const videoIds = Array.from(this.selectedPaths).map(path => {
                         const video = videoList.find(v => v.path === path);
-                        return video?.video_id;
+                        return video?.video_id || this.selVideoIds[path];
                     }).filter(Boolean);
                     
                     if (videoIds.length === 0) {
@@ -13245,7 +13355,17 @@ No metadata is changed.`)) return;
                     <button @click="toggleSortDir" class="text-gray-400 hover:text-white px-1"><span x-text="sortDesc ? '&#9660;' : '&#9650;'"></span></button>
                 </div>
                 <button @click="toggleFavoritesOnly" class="p-1.5 rounded" :class="favoritesOnly ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'text-gray-400 hover:text-white'">&#9733;</button>
-                <button @click="selectAll" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm hidden sm:block" x-text="selectionCount > 0 ? 'Deselect' : 'Select All'"></button>
+                <div class="relative hidden sm:block">
+                    <button @click="selectAll" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm whitespace-nowrap" x-text="selectionCount > 0 ? 'Deselect (' + selectionCount.toLocaleString() + ')' : 'Select All'"></button>
+                    <div x-show="selAllOffer" x-cloak @click.outside="selAllOffer = null" class="absolute right-0 top-full mt-2 z-[60] w-72 bg-gray-800 border border-gray-600 rounded shadow-2xl p-3 text-sm">
+                        <p class="text-gray-200" x-text="'Selected the ' + (selAllOffer?.shown || 0).toLocaleString() + ' on this page.'"></p>
+                        <p class="text-gray-400 mt-1" x-text="'Select all ' + (selAllOffer?.n || 0).toLocaleString() + ' ' + (selAllOffer?.noun || '') + '?'"></p>
+                        <div class="flex gap-2 mt-2">
+                            <button @click="selectAllEverything()" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs" x-text="'Select all ' + (selAllOffer?.n || 0).toLocaleString()"></button>
+                            <button @click="selAllOffer = null" class="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">No thanks</button>
+                        </div>
+                    </div>
+                </div>
                 <div class="flex bg-gray-700 rounded p-1 gap-1">
                     <button @click="switchView('grid')" class="p-1.5 rounded" :class="viewMode==='grid' ? 'bg-gray-500' : 'hover:bg-gray-600'"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg></button>
                     <button @click="switchView('list')" class="p-1.5 rounded" :class="viewMode==='list' ? 'bg-gray-500' : 'hover:bg-gray-600'"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd"></path></svg></button>
@@ -13328,8 +13448,8 @@ No metadata is changed.`)) return;
 
                 <!-- # A-Z jump bar (grid sorted by Title / Cast / Filename) -->
                 <div x-show="jumpBarShown()" x-cloak class="sticky top-0 h-0 z-30">
-                    <div class="absolute right-1 top-3 w-6 flex flex-col items-center justify-between bg-gray-900/70 rounded-full py-1 select-none"
-                         :style="`height:${jumpBarH}px`" :class="jumpBusy ? 'opacity-60 cursor-wait' : ''">
+                    <div class="absolute right-1 w-6 flex flex-col items-center justify-between bg-gray-900/70 rounded-full py-1 select-none"
+                         :style="`top:${jumpTabsOffset() + 12}px; height:${jumpBarH}px`" :class="jumpBusy ? 'opacity-60 cursor-wait' : ''">
                         <template x-for="L in jumpBarLetters()" :key="L">
                             <button @click="jumpToLetter(L)" :disabled="jumpIndexOf(L) === undefined || jumpBusy"
                                     class="w-6 leading-none font-semibold rounded"
@@ -13344,7 +13464,8 @@ No metadata is changed.`)) return;
                 <!-- LIBRARY VIEW -->
                 <div x-show="currentView === 'library'">
                     <!-- tabs for a library / group (roadmap #9) -->
-                    <div x-show="currentLibrary !== 'Home' && !castBioMode" class="flex flex-wrap items-center gap-1 px-4 pt-3 border-b border-gray-800 text-sm">
+                    <div x-show="currentLibrary !== 'Home' && !castBioMode" class="sticky top-0 z-20 bg-gray-900 flex flex-wrap items-center gap-1 px-4 pt-3 border-b border-gray-800 text-sm"
+                         x-init="new ResizeObserver(() => { tabsH = $el.offsetHeight; jumpMeasure(); }).observe($el)">
                         <template x-for="tb in [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections'], ['movies', 'Movies']]" :key="tb[0]">
                             <button @click="setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
                                     :class="libraryTab === tb[0] ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'" x-text="tb[1]"></button>
@@ -13368,9 +13489,14 @@ No metadata is changed.`)) return;
                                 or set up filters in the Library tab and click <b>★ Save as smart collection</b>.
                             </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-4">
-                                <template x-for="c in coll.list" :key="c.id">
-                                    <div @click="collLoadItems(c.id)" class="bg-gray-800 rounded-lg border border-gray-700 hover:border-blue-500 overflow-hidden cursor-pointer">
+                                <template x-for="(c, idx) in coll.list" :key="c.id">
+                                    <div @click="collCardClick(c, idx, $event)" @contextmenu.prevent.stop="collMenuOpen($event, c)"
+                                         class="bg-gray-800 rounded-lg border overflow-hidden cursor-pointer select-none group"
+                                         :class="collSel[c.id] ? 'border-blue-400 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
                                         <div class="video-card-thumb">
+                                            <button @click.stop="collToggleSel(c, idx)" class="absolute bottom-1 left-1 w-6 h-6 rounded border-2 flex items-center justify-center text-xs z-10"
+                                                    :class="collSel[c.id] ? 'bg-blue-600 border-blue-400 text-white opacity-100' : 'bg-black/50 border-gray-300 text-transparent ' + (collSelIds.length ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')"
+                                                    title="Select (Ctrl-click / Shift-click work too)">✓</button>
                                             <img x-show="c.cover" :src="c.cover" loading="lazy">
                                             <div x-show="!c.cover" class="absolute inset-0 flex items-center justify-center text-4xl text-gray-600">▤</div>
                                             <span x-show="c.kind === 'smart'" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-purple-700 text-white">smart</span>
@@ -13458,7 +13584,8 @@ No metadata is changed.`)) return;
                         <p x-show="mv.msg" class="text-sm text-red-400 mb-3" x-text="mv.msg"></p>
                         <!-- list -->
                         <div x-show="!mv.view">
-                            <div class="flex flex-wrap items-center gap-3 mb-4">
+                            <div class="sticky z-10 bg-gray-900 -mx-6 px-6 pt-1 pb-3 mb-3 -mt-2" :style="`top:${tabsH}px`" x-ref="mvToolbar">
+                            <div class="flex flex-wrap items-center gap-3">
                                 <h2 class="text-xl font-bold text-gray-200 flex-1" x-text="'Movies' + (currentLibrary === 'All Videos' ? '' : ' in ' + currentLibrary)"></h2>
                                 <input type="search" x-model="mv.q" @input="mvSearch()" placeholder="Search movies" class="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm w-48">
                                 <select x-model="mvStatus" @change="mvFiltersChanged()" class="bg-gray-800 border border-gray-600 rounded px-1 py-1.5 text-sm" title="ThePornDB link status">
@@ -13471,28 +13598,20 @@ No metadata is changed.`)) return;
                                 </select>
                                 <button @click="mvBulkOpen()" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-200"
                                         title="Look up every unlinked movie here on ThePornDB; sure matches are linked, the rest are kept for you to review">Link to ThePornDB…</button>
-                                <button @click="mvCoversStart()" :disabled="mvCovers.status?.running" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50"
-                                        title="Linked movies missing a front or back cover get them from ThePornDB (covers you set yourself are kept)">Get covers</button>
                                 <button @click="mvFindOpen()" class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-500 text-white"
                                         title="Find movies in your video titles, filenames and ThePornDB links, and review them before they're applied">Find movies…</button>
                             </div>
-                            <div x-show="mvCovers.status" class="flex flex-wrap items-center gap-3 mb-3 px-3 py-2 rounded bg-gray-800 border border-gray-700 text-sm text-gray-300">
-                                <span x-text="(mvCovers.status?.running ? 'Getting covers: ' + mvCovers.status.done + ' / ' + mvCovers.status.total
-                                                + (mvCovers.status.current ? ' · ' + mvCovers.status.current : '') : 'Covers done')
-                                               + ' · ' + (mvCovers.status?.fronts || 0) + ' front, ' + (mvCovers.status?.backs || 0) + ' back added'
-                                               + (mvCovers.status?.failed ? ' · ' + mvCovers.status.failed + ' front not found' : '')"></span>
-                                <span x-show="mvCovers.status?.error" class="text-red-400" x-text="mvCovers.status?.error"></span>
-                                <button x-show="mvCovers.status?.running" @click="mvCoversStop()" class="px-2 py-0.5 rounded bg-red-700 hover:bg-red-600 text-white text-xs">Stop</button>
-                                <button x-show="!mvCovers.status?.running" @click="mvCovers.status = null" class="text-gray-500 hover:text-white">✕</button>
+                            <div x-show="mvTpdb.status" class="flex flex-wrap items-center gap-3 mt-3 px-3 py-2 rounded bg-gray-800 border border-gray-700 text-sm text-gray-300">
+                                <span x-text="(mvTpdb.status?.running ? 'Refreshing from ThePornDB: ' + mvTpdb.status.done + ' / ' + mvTpdb.status.total
+                                                + (mvTpdb.status.current ? ' · ' + mvTpdb.status.current : '') : 'Refresh done')
+                                               + ' · ' + (mvTpdb.status?.refreshed || 0) + ' refreshed'
+                                               + (mvTpdb.status?.skipped ? ' · ' + mvTpdb.status.skipped + ' not linked' : '')
+                                               + (mvTpdb.status?.failed ? ' · ' + mvTpdb.status.failed + ' failed' : '')"></span>
+                                <span x-show="mvTpdb.status?.note" class="text-amber-300" x-text="mvTpdb.status?.note"></span>
+                                <span x-show="mvTpdb.status?.error" class="text-red-400" x-text="mvTpdb.status?.error"></span>
+                                <button x-show="mvTpdb.status?.running" @click="mvTpdbStop()" class="px-2 py-0.5 rounded bg-red-700 hover:bg-red-600 text-white text-xs">Stop</button>
+                                <button x-show="!mvTpdb.status?.running" @click="mvTpdb.status = null" class="text-gray-500 hover:text-white">✕</button>
                             </div>
-                            <div x-show="mvSelIds.length" class="flex flex-wrap items-center gap-2 mb-3 px-3 py-2 rounded bg-blue-900/40 border border-blue-800 text-sm">
-                                <b x-text="mvSelIds.length + ' selected'"></b>
-                                <button @click="mvBulkSelected(mvSelIds)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">Link to ThePornDB…</button>
-                                <button @click="mvCoversStart(mvSelIds)" :disabled="mvCovers.status?.running" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-50">Get covers</button>
-                                <button @click="mvFavorite(mvSelIds, true)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">★ Favorite</button>
-                                <button @click="mvFavorite(mvSelIds, false)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">Unfavorite</button>
-                                <button @click="mvSelectAllShown()" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs" x-text="'Select all shown (' + mv.list.length + ')'"></button>
-                                <button @click="mvSel = {}" class="px-2 py-1 rounded text-gray-300 hover:text-white text-xs">Clear</button>
                             </div>
                             <div x-show="mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center">Loading…</div>
                             <div x-show="!mv.loading && !mv.list.length" class="text-gray-500 py-10 text-center text-sm">
@@ -13505,7 +13624,7 @@ No metadata is changed.`)) return;
                             </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                                 <template x-for="(m, idx) in mv.list" :key="m.id">
-                                    <div :data-midx="idx" @click="mvCardClick(m, idx, $event)" @contextmenu.prevent.stop="mvMenuOpen($event, m)"
+                                    <div :data-midx="idx" :style="`scroll-margin-top:${tabsH + ($refs.mvToolbar?.offsetHeight || 0) + 8}px`" @click="mvCardClick(m, idx, $event)" @contextmenu.prevent.stop="mvMenuOpen($event, m)"
                                          class="bg-gray-800 rounded-lg border overflow-hidden cursor-pointer select-none group"
                                          :class="mvSel[m.id] ? 'border-blue-400 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
                                         <div class="relative w-full bg-gray-900 overflow-hidden" style="aspect-ratio: 2 / 3">   <!-- portrait, like a DVD cover -->
@@ -13526,7 +13645,7 @@ No metadata is changed.`)) return;
                                     </div>
                                 </template>
                             </div>
-                            <div class="flex flex-wrap justify-center items-center gap-2 mt-4">
+                            <div x-show="mvTabActive() && !mv.view && mv.list.length" class="pagination-bar py-3 flex flex-wrap justify-center items-center gap-2 min-h-[50px]">
                                 <template x-if="appSettings.mvPagination === 'pages' && mvTotalPages > 1">
                                     <div class="flex gap-1 items-center">
                                         <button @click="mvGoPage(1)" :disabled="mv.page <= 1" class="bg-gray-700 px-3 py-2 rounded text-white text-sm font-mono disabled:opacity-30 hover:bg-gray-600" title="First page">&laquo;</button>
@@ -13563,22 +13682,15 @@ No metadata is changed.`)) return;
                                              class="max-w-full max-h-full object-contain cursor-zoom-in" title="Click to enlarge">
                                         <span x-show="!mv.view?.cover" class="text-5xl text-gray-600">🎞</span>
                                     </div>
-                                    <div class="flex flex-wrap gap-1 mt-2 text-[11px]">
-                                        <label class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 cursor-pointer" title="Use an image of your own as the cover">
-                                            Upload cover<input type="file" accept="image/*" class="hidden" @change="mvCoverUpload($event)"></label>
-                                        <button @click="mvCoverFromLink()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="Use an image from a web link as the cover">Cover from link…</button>
-                                        <button x-show="mv.view?.has_cover || mv.view?.cover_video_id" @click="mvCoverFromVideo(null)"
-                                                class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400" title="Back to the first scene's thumbnail">Reset</button>
+                                    <div class="flex gap-1 mt-2 text-xs">
+                                        <button @click="mvPoster = { open: true, side: 'front' }" :disabled="!mv.view?.cover"
+                                                class="flex-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-40 disabled:cursor-default disabled:hover:bg-gray-800"
+                                                :title="mv.view?.cover ? 'Show the front cover' : 'No front cover'">Front</button>
+                                        <button @click="mvPoster = { open: true, side: 'back' }" :disabled="!mv.view?.back_image_url"
+                                                class="flex-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-40 disabled:cursor-default disabled:hover:bg-gray-800"
+                                                :title="mv.view?.back_image_url ? 'Show the back cover' : 'No back cover'">Back</button>
                                     </div>
-                                    <div class="flex flex-wrap items-center gap-1 mt-1 text-[11px]">
-                                        <button x-show="mv.view?.back_image_url" @click="mvPoster = { open: true, side: 'back' }" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
-                                                title="Show the back cover">Back cover</button>
-                                        <span x-show="!mv.view?.back_image_url" class="text-gray-500 px-1">No back cover</span>
-                                        <label class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 cursor-pointer" title="Use an image of your own as the back cover">
-                                            Upload<input type="file" accept="image/*" class="hidden" @change="mvCoverUpload($event, true)"></label>
-                                        <button @click="mvCoverFromLink(true)" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="Use an image from a web link as the back cover">From link…</button>
-                                    </div>
-                                    <p class="text-[10px] text-gray-500 mt-1">Or right-click a video below → Use as movie cover.</p>
+                                    <button @click="mvCoverModalOpen()" class="w-full mt-1 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs">Change covers…</button>
                                 </div>
                                 <div class="flex-1 min-w-[16rem]">
                                     <template x-if="!mv.editing">
@@ -15321,6 +15433,59 @@ No metadata is changed.`)) return;
             </template>
         </div>
 
+        <!-- CHANGE MOVIE COVERS (front / back, upload or link) -->
+        <div x-show="mvCoverModal.open" x-cloak class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvCoverModal.open = false">
+            <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg max-w-lg w-full p-6" @click.outside="mvCoverModal.open = false">
+                <h2 class="text-xl font-semibold mb-4" data-drag-handle style="cursor: move">Change Covers</h2>
+                <div class="flex gap-4 mb-4">
+                    <template x-for="side in ['front', 'back']" :key="'cvp' + side">
+                        <div class="flex-1 text-center">
+                            <div class="h-36 bg-gray-900 rounded border border-gray-700 flex items-center justify-center overflow-hidden">
+                                <img x-show="side === 'front' ? mv.view?.cover : mv.view?.back_image_url" :src="side === 'front' ? mv.view?.cover : mv.view?.back_image_url"
+                                     referrerpolicy="no-referrer" class="max-h-full max-w-full object-contain">
+                                <span x-show="!(side === 'front' ? mv.view?.cover : mv.view?.back_image_url)" class="text-xs text-gray-500">None</span>
+                            </div>
+                            <div class="text-xs text-gray-400 mt-1" x-text="side === 'front' ? 'Front' : 'Back'"></div>
+                        </div>
+                    </template>
+                </div>
+                <div class="flex gap-2 mb-4">
+                    <button @click="mvCoverModal.tab = 'upload'" :class="mvCoverModal.tab === 'upload' ? 'bg-blue-600' : 'bg-gray-700'" class="flex-1 py-2 rounded hover:bg-opacity-80 transition">Upload File</button>
+                    <button @click="mvCoverModal.tab = 'url'" :class="mvCoverModal.tab === 'url' ? 'bg-blue-600' : 'bg-gray-700'" class="flex-1 py-2 rounded hover:bg-opacity-80 transition">From URL</button>
+                </div>
+                <div x-show="mvCoverModal.tab === 'upload'" class="space-y-3">
+                    <template x-for="side in ['front', 'back']" :key="'cvu' + side">
+                        <div>
+                            <label class="block text-sm font-medium mb-1" x-text="side === 'front' ? 'Front cover' : 'Back cover'"></label>
+                            <input type="file" accept="image/*" @change="mvCoverUpload($event, side === 'back')" :disabled="mvCoverModal.busy"
+                                   class="w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 file:cursor-pointer">
+                        </div>
+                    </template>
+                    <p class="text-xs text-gray-400">Max 10 MB. JPG, PNG, GIF, WebP. Saved as soon as you pick a file.</p>
+                </div>
+                <div x-show="mvCoverModal.tab === 'url'" class="space-y-3">
+                    <template x-for="side in ['front', 'back']" :key="'cvl' + side">
+                        <div>
+                            <label class="block text-sm font-medium mb-1" x-text="side === 'front' ? 'Front cover' : 'Back cover'"></label>
+                            <div class="flex gap-2">
+                                <input type="url" x-model="mvCoverModal[side]" placeholder="https://example.com/cover.jpg" @keydown.enter="mvCoverFromLink(side === 'back')"
+                                       class="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm focus:border-blue-500 outline-none">
+                                <button @click="mvCoverFromLink(side === 'back')" :disabled="mvCoverModal.busy || !mvCoverModal[side].trim()"
+                                        class="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-sm disabled:opacity-50">Set</button>
+                            </div>
+                        </div>
+                    </template>
+                    <p class="text-xs text-gray-400">Images are downloaded and stored locally.</p>
+                </div>
+                <p x-show="mvCoverModal.busy" class="text-sm text-gray-400 mt-3">Saving…</p>
+                <p x-show="mvCoverModal.msg && !mvCoverModal.busy" class="text-sm mt-3" :class="mvCoverModal.msg.includes('not changed') ? 'text-red-400' : 'text-emerald-300'" x-text="mvCoverModal.msg"></p>
+                <button x-show="mv.view?.has_cover || mv.view?.cover_video_id" @click="mvCoverFromVideo(null)"
+                        class="w-full mt-4 bg-gray-700 hover:bg-gray-600 py-2 rounded transition text-sm">Use first scene's thumbnail as the front</button>
+                <p class="text-xs text-gray-500 mt-2">Or right-click a video on the movie's page → Use as movie cover.</p>
+                <button @click="mvCoverModal.open = false" class="w-full mt-3 bg-gray-700 hover:bg-gray-600 py-2 rounded transition">Close</button>
+            </div>
+        </div>
+
         <!-- MOVIE POSTER, BIG -->
         <div x-show="mvPoster.open" x-cloak class="fixed inset-0 z-[95] bg-black/90 flex flex-col items-center justify-center p-4"
              @click="mvPoster.open = false" @keydown.escape.window="mvPoster.open = false">
@@ -15329,6 +15494,22 @@ No metadata is changed.`)) return;
                 <button @click="mvPoster.side = 'front'" class="px-3 py-1 rounded text-sm" :class="mvPoster.side === 'front' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'">Front</button>
                 <button @click="mvPoster.side = 'back'" class="px-3 py-1 rounded text-sm" :class="mvPoster.side === 'back' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'">Back</button>
             </div>
+        </div>
+
+        <!-- RIGHT-CLICK ON A COLLECTION CARD -->
+        <div x-show="collMenu.open" x-cloak class="fixed z-[96] bg-gray-800 border border-gray-600 rounded shadow-2xl py-1 text-sm w-56"
+             :style="`left: ${collMenu.x}px; top: ${collMenu.y}px`" @click.outside="collMenu.open = false" @keydown.escape.window="collMenu.open = false">
+            <div class="px-3 py-1 text-xs text-gray-400 truncate" x-text="collMenuIds().length > 1 ? collMenuIds().length + ' collections' : (collMenu.c?.name || '')"></div>
+            <button x-show="collMenuIds().length === 1" @click="collMenu.open = false; collLoadItems(collMenu.c.id)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Open</button>
+            <button @click="collMenu.open = false; collShowOnHome(collMenuIds(), true)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Show on Home</button>
+            <button @click="collMenu.open = false; collShowOnHome(collMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Hide from Home</button>
+            <button @click="collMenu.open = false; collToggleSel(collMenu.c, coll.list.indexOf(collMenu.c))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                    x-text="collSel[collMenu.c?.id] ? 'Unselect' : 'Select'"></button>
+            <button x-show="collSelIds.length > 1" @click="collMenu.open = false; collSel = {}" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                    x-text="'Clear selection (' + collSelIds.length + ')'"></button>
+            <div class="border-t border-gray-700 my-1"></div>
+            <button @click="collMenu.open = false; collDeleteMany(collMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-red-700 text-red-300"
+                    x-text="collMenuIds().length > 1 ? 'Delete ' + collMenuIds().length + ' collections…' : 'Delete collection…'"></button>
         </div>
 
         <!-- RIGHT-CLICK ON A MOVIE CARD -->
@@ -15340,9 +15521,14 @@ No metadata is changed.`)) return;
                     x-text="mvMenuIds().length === 1 && mvMenu.m?.favorite ? '☆ Remove from favorites' : '★ Add to favorites'"></button>
             <button x-show="mvMenuIds().length > 1" @click="mvMenu.open = false; mvFavorite(mvMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
             <button @click="mvMenu.open = false; mvBulkSelected(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Link to ThePornDB…</button>
-            <button @click="mvMenu.open = false; mvCoversStart(mvMenuIds())" :disabled="mvCovers.status?.running" class="w-full text-left px-3 py-1.5 hover:bg-blue-600 disabled:opacity-50">Get covers from ThePornDB</button>
+            <button x-show="mvMenuIds().length > 1 || mvMenu.m?.linked" @click="mvMenu.open = false; mvTpdbRefresh(mvMenuIds())"
+                    :disabled="mvTpdb.status?.running" class="w-full text-left px-3 py-1.5 hover:bg-blue-600 disabled:opacity-50"
+                    :title="mvMenuIds().length > 1 ? 'Movies that are not linked are skipped' : 'Fetch the ThePornDB movie again: empty details, front and back covers (unless you set your own)'"
+                    x-text="'Refresh from ThePornDB' + (mvMenuIds().length > 1 ? ' (' + mvMenuIds().length + ')' : '')"></button>
             <button @click="mvMenu.open = false; mvToggleSel(mvMenu.m, mv.list.indexOf(mvMenu.m))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
                     x-text="mvSel[mvMenu.m?.id] ? 'Unselect' : 'Select'"></button>
+            <button x-show="mvSelIds.length > 1" @click="mvMenu.open = false; mvSel = {}" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                    x-text="'Clear selection (' + mvSelIds.length + ')'"></button>
             <div class="border-t border-gray-700 my-1"></div>
             <button @click="mvMenu.open = false; mvDeleteMovies(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-red-700 text-red-300"
                     x-text="mvMenuIds().length > 1 ? 'Delete ' + mvMenuIds().length + ' movies' : 'Delete movie'"></button>

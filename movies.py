@@ -765,7 +765,7 @@ _STATUS_ORDER = {'review': 0, 'unchecked': 1, 'not_found': 2, 'linked': 3}
 
 
 def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, status='', tags=None, tags_exclude=None,
-            sites=None, sites_exclude=None, favorites=False):
+            sites=None, sites_exclude=None, favorites=False, ids_only=False):
     """Movies with at least one video in this library / group (every movie for All Videos), filtered and sorted."""
     import home
     ensure_schema(conn)
@@ -782,6 +782,8 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, st
         out.sort(key=lambda m: _STATUS_ORDER.get(m['status'], 9))
     elif s == 'favorites':
         out.sort(key=lambda m: not m['favorite'])
+    if ids_only:                                       # "select all N": every matching movie
+        return {'ids': [m['id'] for m in out]}
     total = len(out)
     letters = _letter_index(out) if s == 'title' else []
     start = (max(1, page) - 1) * limit
@@ -1579,63 +1581,78 @@ def tpdb_covers(conn, mid, raw, front=True, back=True):
     return bool(got_f), bool(got_b)
 
 
-# Get covers: linked movies missing a front cover (and no video thumbnail chosen) or a back cover get them from ThePornDB.
-_covers = {'running': False, 'stop': False, 'total': 0, 'done': 0, 'fronts': 0, 'backs': 0, 'failed': 0, 'current': None, 'error': None}
+def refresh_one(conn, mid):
+    """Fetch the linked ThePornDB movie again: fills empty details, gets its front and back covers
+    unless you set your own (same as linking it)."""
+    m = get(conn, mid)
+    if not m['ext_id']:
+        raise ValueError('This movie is not linked to ThePornDB')
+    _raw_cache.pop(m['ext_id'], None)                  # fetch it fresh
+    return link_tpdb(conn, mid, m['ext_id'])
 
 
-def covers_targets(conn, ids=None):
-    ensure_schema(conn)
-    sql = ("SELECT id FROM movies WHERE ext_source = 'tpdb' AND ext_id IS NOT NULL AND ("
-           "(cover IS NULL AND cover_video_id IS NULL AND COALESCE(cover_source, '') != 'user') OR back_cover IS NULL)")
-    ids = [int(i) for i in ids or [] if i]
-    if ids:
-        sql += f" AND id IN ({','.join('?' * len(ids))})"
-    return [r[0] for r in conn.execute(sql + ' ORDER BY title', ids)]
+# Refresh from ThePornDB for several movies at once (in the background)
+_refresh = {'running': False, 'stop': False, 'total': 0, 'done': 0, 'refreshed': 0, 'skipped': 0, 'failed': 0,
+            'current': None, 'note': '', 'error': None}
 
 
-def covers_status():
-    return dict(_covers)
+def refresh_status():
+    return dict(_refresh)
 
 
-def start_covers(model, targets):
+def start_refresh(model, ids):
     import threading
-    if _covers['running']:
-        raise ValueError('Getting covers is already running')
-    _covers.update(running=True, stop=False, total=len(targets), done=0, fronts=0, backs=0, failed=0, current=None, error=None)
-    threading.Thread(target=_covers_worker, args=(model, list(targets)), daemon=True, name='movies-covers').start()
-    return covers_status()
+    if _refresh['running']:
+        raise ValueError('A refresh is already running')
+    ids = [int(i) for i in ids or [] if i]
+    _refresh.update(running=True, stop=False, total=len(ids), done=0, refreshed=0, skipped=0, failed=0, current=None, note='', error=None)
+    threading.Thread(target=_refresh_worker, args=(model, ids), daemon=True, name='movies-refresh').start()
+    return refresh_status()
 
 
-def stop_covers():
-    _covers['stop'] = True
+def stop_refresh():
+    _refresh['stop'] = True
 
 
-def _covers_worker(model, targets):
+def _refresh_worker(model, ids):
+    import time
     import ext_db
-    st = _covers
+    st = _refresh
     try:
         conn = model.db.get_connection()
-        for mid in targets:
+        ensure_schema(conn)
+        for mid in ids:
             if st['stop']:
                 break
-            r = conn.execute("SELECT title, ext_id, ext_raw_json, cover IS NULL AND cover_video_id IS NULL AND COALESCE(cover_source, '') != 'user', "
-                             'back_cover IS NULL FROM movies WHERE id = ?', (mid,)).fetchone()
-            if r and r[1]:
-                st['current'] = r[0]
+            r = conn.execute('SELECT title, ext_id FROM movies WHERE id = ?', (mid,)).fetchone()
+            if not r or not r[1]:
+                st['skipped'] += 1
+                st['done'] += 1
+                continue
+            st['current'] = r[0]
+            for attempt in range(3):
                 try:
-                    raw = json.loads(r[2] or '{}')
-                    if 'background_back' not in raw:       # linked from a scene: only a short record kept, fetch the full one
-                        raw = ext_db.tpdb_find('movie', r[1])
-                        conn.execute('UPDATE movies SET ext_raw_json = ? WHERE id = ?', (json.dumps(raw, ensure_ascii=False)[:500000], mid))
-                        conn.commit()
-                    f, b = tpdb_covers(conn, mid, raw, front=bool(r[3]), back=bool(r[4]))
-                    st['fronts'] += f
-                    st['backs'] += b
-                    if r[3] and not f:
-                        st['failed'] += 1
-                except Exception as e:
-                    print(f"[movies] covers: {r[0]}: {e}")
+                    refresh_one(conn, mid)
+                    st['refreshed'] += 1
+                    break
+                except ext_db.ExtDBError as e:
+                    msg = str(e)
+                    if ('rate limit' in msg.lower() or '429' in msg) and attempt < 2:
+                        st['note'] = 'Rate limited by ThePornDB - pausing for 60 seconds'
+                        end = time.monotonic() + 60
+                        while time.monotonic() < end and not st['stop']:
+                            time.sleep(0.5)
+                        st['note'] = ''
+                        continue
+                    if 'api key' in msg.lower():
+                        raise
+                    print(f"[movies] refresh: {r[0]}: {msg}")
                     st['failed'] += 1
+                    break
+                except Exception as e:
+                    print(f"[movies] refresh: {r[0]}: {e}")
+                    st['failed'] += 1
+                    break
             st['done'] += 1
     except Exception as e:
         st['error'] = str(e)

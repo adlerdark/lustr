@@ -47,10 +47,10 @@ def _changed():
 @router.get('')
 def list_movies(library: Optional[str] = None, q: str = '', sort: str = 'title', page: int = 1, limit: int = 120,
                 status: str = '', tags: str = '', tags_exclude: str = '', sites: str = '', sites_exclude: str = '',
-                favorites: bool = False, model=Depends(get_model)):
+                favorites: bool = False, ids_only: bool = False, model=Depends(get_model)):
     try:
         return {'success': True, **movies.listing(_model, _conn(), library, q, sort, max(1, page), max(1, min(limit, 10000)),
-                                                  status, tags, tags_exclude, sites, sites_exclude, favorites)}
+                                                  status, tags, tags_exclude, sites, sites_exclude, favorites, ids_only)}
     except Exception as e:
         return _err(e)
 
@@ -100,35 +100,27 @@ def bulk_status():
     return {'success': True, 'status': movies.bulk_status()}
 
 
-class CoversBody(BaseModel):
-    movie_ids: Optional[List[int]] = None
+class RefreshBody(BaseModel):
+    movie_ids: List[int] = []
 
 
-@router.post('/covers/preview')
-def covers_preview(body: CoversBody, model=Depends(get_model)):
+@router.post('/refresh/start')
+def refresh_start(body: RefreshBody, model=Depends(get_model)):
+    """Refresh from ThePornDB for several movies (in the background); unlinked ones are skipped."""
     try:
-        return {'success': True, 'count': len(movies.covers_targets(_conn(), body.movie_ids))}
+        return {'success': True, 'status': movies.start_refresh(_model, body.movie_ids)}
     except Exception as e:
         return _err(e)
 
 
-@router.post('/covers/start')
-def covers_start(body: CoversBody, model=Depends(get_model)):
-    """Linked movies missing a front or back cover get them from ThePornDB (in the background)."""
-    try:
-        return {'success': True, 'status': movies.start_covers(_model, movies.covers_targets(_conn(), body.movie_ids))}
-    except Exception as e:
-        return _err(e)
+@router.get('/refresh/status')
+def refresh_status():
+    return {'success': True, 'status': movies.refresh_status()}
 
 
-@router.get('/covers/status')
-def covers_status():
-    return {'success': True, 'status': movies.covers_status()}
-
-
-@router.post('/covers/stop')
-def covers_stop():
-    movies.stop_covers()
+@router.post('/refresh/stop')
+def refresh_stop():
+    movies.stop_refresh()
     return {'success': True}
 
 
@@ -397,11 +389,7 @@ def ext_link(mid: int, body: LinkBody, model=Depends(get_model)):
 @router.post('/{mid}/ext/refresh')
 def ext_refresh(mid: int, model=Depends(get_model)):
     try:
-        m = movies.get(_conn(), mid)
-        if not m['ext_id']:
-            return _err('This movie is not linked to ThePornDB')
-        movies._raw_cache.pop(m['ext_id'], None)          # fetch it fresh
-        return {'success': True, 'movie': movies.link_tpdb(_conn(), mid, m['ext_id'])}
+        return {'success': True, 'movie': movies.refresh_one(_conn(), mid)}
     except Exception as e:
         return _err(e)
 

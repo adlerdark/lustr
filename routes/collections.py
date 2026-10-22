@@ -109,9 +109,9 @@ def remove(body: VideosBody, model=Depends(get_model)):
 
 
 @router.get('/{cid}/items')
-def items(cid: int, request: Request, page: int = 1, limit: int = 100, seed: int = 0, model=Depends(get_model)):
+def items(cid: int, request: Request, page: int = 1, limit: int = 100, seed: int = 0, paths_only: bool = False, model=Depends(get_model)):
     try:
         return {'success': True, **cs.items(_model, _conn(), cid, request, check_auth(request), _watch_history,
-                                             max(1, page), max(1, min(limit, 500)), seed)}
+                                             max(1, page), max(1, min(limit, 500)), seed, paths_only)}
     except Exception as e:
         return _err(e)

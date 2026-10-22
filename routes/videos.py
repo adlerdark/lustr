@@ -498,7 +498,7 @@ def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.vide
 
 def _get_videos_sql_fast(
     query, sort_by, desc, library, tags, tags_exclude, sites, sites_exclude,
-    favorites_only, page, limit, hide_zero_length, length_filter, model, username, watch_history, seed=0
+    favorites_only, page, limit, hide_zero_length, length_filter, model, username, watch_history, seed=0, paths_only=False
 ):
     """
     SQL-optimized video list - uses same fast pattern as cast bio.
@@ -719,6 +719,8 @@ def _get_videos_sql_fast(
     else:
         rows.sort(key=lambda r: r['path'])       # ties keep a stable order (by path) across pages
         rows.sort(key=sort_key, reverse=desc)
+    if paths_only:                               # "select all N": every matching video, no records
+        return {'paths': [{'path': r['path'], 'video_id': r.get('video_id')} for r in rows]}
     letters = [] if special else _letter_index(rows, sort_field)
     total = len(rows)
     start = (page - 1) * limit
@@ -825,6 +827,7 @@ def get_videos(
     hide_zero_length: Optional[str] = None,
     length_filter: Optional[str] = None,  # Format: "min-max" in seconds, e.g., "60-300"
     seed: int = 0,                        # Random sort: same order for one seed (stable paging)
+    paths_only: bool = False,             # just {paths: [{path, video_id}]} for every match (select all N)
     watch_history = Depends(get_watch_history)
 ):
     """
@@ -851,7 +854,8 @@ def get_videos(
     if USE_SQLITE and not folder_mode and not base_query:
         return _get_videos_sql_fast(
             query, sort_by, desc, library, tags, tags_exclude, sites, sites_exclude,
-            favorites_only, page, limit, hide_zero_length, length_filter, model, username, watch_history, seed=seed
+            favorites_only, page, limit, hide_zero_length, length_filter, model, username, watch_history, seed=seed,
+            paths_only=paths_only
         )
     
     # ===== LEGACY PYTHON PATH =====
@@ -1153,6 +1157,8 @@ def get_videos(
         library_stats.special_sort(model.db.get_connection(), files_list, special, username, seed, desc)
     else:
         files_list.sort(key=sort_key, reverse=desc)
+    if paths_only:
+        return {'paths': [{'path': i['path'], 'video_id': i.get('video_id')} for i in files_list]}
     letters = [] if special else _letter_index(files_list, _sort_field_of(sort_by), len(folders_list))
     items = folders_list + files_list
     total = len(items)

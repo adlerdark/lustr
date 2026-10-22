@@ -489,19 +489,28 @@ class CoverTests(MovieBase):
         movies.link_tpdb(self.c, self.mid, 'm1')
         self.assertEqual(movies.cover(self.c, self.mid, back=True), (b'MINE', 'image/png'))
 
-    def test_get_covers_for_linked_movies(self):
-        movies._fill_from_tpdb(self.c, self.mid, {'id': 'm1', 'title': 'Adorable'}, 'm1')   # short record (linked from a scene)
+    def test_refresh_several(self):
+        movies._fill_from_tpdb(self.c, self.mid, {'id': 'm1', 'title': 'Adorable'}, 'm1')   # linked, no covers yet
         self.c.commit()
-        self.assertEqual(movies.covers_targets(self.c), [self.mid])
-        movies.start_covers(self.model, movies.covers_targets(self.c))
+        other = movies.set_video_movie(self.c, 'v2', 'Not Linked', scene=1)
+        movies.start_refresh(self.model, [self.mid, other])
         for _ in range(100):
-            if not movies.covers_status()['running']:
+            if not movies.refresh_status()['running']:
                 break
             time.sleep(0.05)
-        st = movies.covers_status()
-        self.assertEqual((st['done'], st['fronts'], st['backs'], st['failed'], st['error']), (1, 1, 1, 0, None))
-        self.assertEqual(movies.covers_targets(self.c), [])
-        self.assertIn('background_back', json.loads(self.c.execute('SELECT ext_raw_json FROM movies WHERE id = ?', (self.mid,)).fetchone()[0]))
+        st = movies.refresh_status()
+        self.assertEqual((st['done'], st['refreshed'], st['skipped'], st['failed'], st['error']), (2, 1, 1, 0, None))
+        m = movies.get(self.c, self.mid)
+        self.assertTrue(m['has_cover'] and m['has_back_cover'])
+        with self.assertRaises(ValueError):
+            movies.refresh_one(self.c, other)
+
+    def test_listing_ids_only(self):
+        movies.set_video_movie(self.c, 'v2', 'Another', scene=1)
+        self.model.db.get_file = self.db.get_file
+        ids = movies.listing(self.model, self.c, 'Lib', ids_only=True)['ids']
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(ids, [m['id'] for m in movies.listing(self.model, self.c, 'Lib')['movies']])
 
 
 class SameNameTests(MovieBase):

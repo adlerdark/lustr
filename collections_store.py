@@ -141,14 +141,14 @@ def remove(conn, cid, video_ids):
 # ---------------------------------------------------------------------------
 # items
 # ---------------------------------------------------------------------------
-def _smart_query(model, request, rules, page, limit, seed=0):
+def _smart_query(model, request, rules, page, limit, seed=0, paths_only=False):
     import routes.videos as rv
     r = clean_rules(rules)
     args = dict(query=r.get('query') or '', sort_by=r['sort_by'], desc=r['desc'], library=r['library'],
                 tags=r.get('tags'), tags_exclude=r.get('tags_exclude'), sites=r.get('sites'), sites_exclude=r.get('sites_exclude'),
                 tag_filter=None, tag_exclude=None, favorites_only=r['favorites_only'], page=page, limit=limit, folder_mode=False,
                 current_folder=None, hide_zero_length=r.get('hide_zero_length'), length_filter=r.get('length_filter'), seed=seed,
-                watch_history=rv._watch_history)
+                paths_only=paths_only, watch_history=rv._watch_history)
     return rv.get_videos(request or _NoAuth(), model=model, **args)
 
 
@@ -169,12 +169,20 @@ def _manual_paths(model, conn, c, library=None, username=None):
     return [r['path'] for r in rows]
 
 
-def items(model, conn, cid, request=None, username=None, watch_history=None, page=1, limit=100, seed=0):
+def items(model, conn, cid, request=None, username=None, watch_history=None, page=1, limit=100, seed=0, paths_only=False):
     c = get(conn, cid)
     if c['kind'] == 'smart':
-        d = _smart_query(model, request, c['rules'], page, limit, seed)
+        d = _smart_query(model, request, c['rules'], page, limit, seed, paths_only)
+        if paths_only:
+            return {'paths': d.get('paths', [])}
         return {'collection': c, 'items': d.get('items', []), 'total': d.get('total', 0)}
     paths = _manual_paths(model, conn, c, None, username)
+    if paths_only:                                   # "select all N": every video in it, no cards
+        ids = {}
+        for k in range(0, len(paths), 500):
+            chunk = paths[k:k + 500]
+            ids.update(conn.execute(f'SELECT path, video_id FROM file_versions WHERE path IN ({",".join("?" * len(chunk))})', chunk).fetchall())
+        return {'paths': [{'path': p, 'video_id': ids.get(p)} for p in paths]}
     start = (max(1, page) - 1) * limit
     cards = [x for x in (home.card(model, p, username, watch_history) for p in paths[start:start + limit]) if x]
     library_stats.add_play_stats(conn, username, cards)
