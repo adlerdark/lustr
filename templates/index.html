@@ -602,8 +602,8 @@
                 mvSel: {}, mvSelLast: null,   // selected movie cards (id -> true)
                 mvMenu: { open: false, x: 0, y: 0, m: null },
                 mvPoster: { open: false, side: 'front' },
-                mvTpdb: { status: null, timer: null },
-                mvCoverModal: { open: false, tab: 'upload', front: '', back: '', busy: false, msg: '' },   // Change covers    // Refresh from ThePornDB for several movies
+                mvTpdb: { status: null, timer: null },    // Refresh from ThePornDB for several movies
+                mvCoverModal: { open: false, tab: 'upload', front: '', back: '', busy: false, msg: '' },   // Change covers
                 collSel: {}, collSelLast: null, collMenu: { open: false, x: 0, y: 0, c: null },   // selecting collection cards
                 selAllOffer: null,               // after Select All on one page: { scope, n, noun } - "select all N?"
                 selAcrossPages: false, selVideoIds: {},   // videos selected beyond the loaded page (path -> video_id)
@@ -13538,7 +13538,7 @@ No metadata is changed.`)) return;
                                     </template>
                                 </div>
                                 <div class="flex flex-wrap items-center gap-2 text-xs">
-                                    <label class="flex items-center gap-1 text-gray-300 cursor-pointer"><input type="checkbox" class="rounded" :checked="coll.view?.show_on_home"
+                                    <label class="flex items-center gap-1 text-gray-300 cursor-pointer"><input type="checkbox" class="rounded" :checked="!!coll.view?.show_on_home"
                                            @change="collUpdate({ show_on_home: $event.target.checked })"> Show on Home</label>
                                     <select x-show="coll.view?.kind === 'collection'" :value="coll.view?.sort" @change="collUpdate({ sort: $event.target.value })"
                                             class="bg-gray-800 border border-gray-600 rounded px-1 py-1">
@@ -15027,7 +15027,7 @@ No metadata is changed.`)) return;
                                     <div class="text-xs text-gray-500">
                                         <label class="inline-flex items-center gap-2 cursor-pointer">
                                             <input type="checkbox" 
-                                                   :checked="libraryGroups[groupName]?.collapsed"
+                                                   :checked="!!libraryGroups[groupName]?.collapsed"
                                                    @change="libraryGroups[groupName].collapsed = $event.target.checked">
                                             <span>Start collapsed</span>
                                         </label>
@@ -15522,7 +15522,7 @@ No metadata is changed.`)) return;
             <button x-show="mvMenuIds().length > 1" @click="mvMenu.open = false; mvFavorite(mvMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
             <button @click="mvMenu.open = false; mvBulkSelected(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Link to ThePornDB…</button>
             <button x-show="mvMenuIds().length > 1 || mvMenu.m?.linked" @click="mvMenu.open = false; mvTpdbRefresh(mvMenuIds())"
-                    :disabled="mvTpdb.status?.running" class="w-full text-left px-3 py-1.5 hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="!!mvTpdb.status?.running" class="w-full text-left px-3 py-1.5 hover:bg-blue-600 disabled:opacity-50"
                     :title="mvMenuIds().length > 1 ? 'Movies that are not linked are skipped' : 'Fetch the ThePornDB movie again: empty details, front and back covers (unless you set your own)'"
                     x-text="'Refresh from ThePornDB' + (mvMenuIds().length > 1 ? ' (' + mvMenuIds().length + ')' : '')"></button>
             <button @click="mvMenu.open = false; mvToggleSel(mvMenu.m, mv.list.indexOf(mvMenu.m))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
@@ -15838,7 +15838,7 @@ No metadata is changed.`)) return;
                                 <template x-for="o in settingsPages.filter(p => p.group === g).flatMap(p => p.subs
                                                      ? p.subs.map(([k, label]) => ({ v: p.id + ':' + k, t: p.label + ' › ' + label, on: settingsPage === p.id && settingsSubOn(p, k) }))
                                                      : [{ v: p.id, t: p.icon + ' ' + p.label, on: settingsPage === p.id }])" :key="'m' + o.v">
-                                    <option :value="o.v" :selected="o.on" x-text="o.t"></option>
+                                    <option :value="o.v" :selected="!!o.on" x-text="o.t"></option>
                                 </template>
                             </optgroup>
                         </template>
@@ -18414,7 +18414,7 @@ No metadata is changed.`)) return;
                     :class="np.strip ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'" title="Preview strip under the player">Strip</button>
             <button @click="npToClassic()" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200" title="Open this video in the classic player">Classic<span class="hidden sm:inline"> player</span></button>
             <button x-show="np.data && !(np.data.captions?.tracks || []).length && (np.data.captions?.whisper || np.data.captions?.queued)"
-                    @click="npCCMake()" :disabled="np.data?.captions?.queued"
+                    @click="npCCMake()" :disabled="!!np.data?.captions?.queued"
                     class="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 disabled:opacity-70"
                     title="Make captions for this video on this server (Whisper) - the CC menu appears when they're ready" x-text="npCCLabel()"></button>
             <button x-show="np.data" @click="clipOpen()" class="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700"
@@ -19502,7 +19502,7 @@ No metadata is changed.`)) return;
                             <template x-for="it in g.items" :key="extSceneSuggestKey(it)">
                                 <label class="flex items-start gap-3 px-3 py-2 border-b border-gray-800"
                                        :class="it.already_set ? 'opacity-50' : 'cursor-pointer hover:bg-gray-800'">
-                                    <input type="checkbox" class="rounded mt-0.5 flex-shrink-0" :disabled="it.already_set"
+                                    <input type="checkbox" class="rounded mt-0.5 flex-shrink-0" :disabled="!!it.already_set"
                                            :checked="it.already_set || extSceneSuggestIsChecked(it)" @change="extSceneSuggestToggle(it)">
                                     <div class="flex-1 min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
@@ -20625,7 +20625,7 @@ No metadata is changed.`)) return;
                             <template x-for="it in g.items" :key="extDbSuggestKey(it)">
                                 <label class="flex items-start gap-3 px-3 py-2 border-b border-gray-800"
                                        :class="it.already_set ? 'opacity-50' : 'cursor-pointer hover:bg-gray-800'">
-                                    <input type="checkbox" class="rounded mt-0.5 flex-shrink-0" :disabled="it.already_set"
+                                    <input type="checkbox" class="rounded mt-0.5 flex-shrink-0" :disabled="!!it.already_set"
                                            :checked="it.already_set || extDbSuggestIsChecked(it)" @change="extDbSuggestToggle(it)">
                                     <div class="flex-1 min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
