@@ -6543,7 +6543,18 @@ No metadata is changed.`)) return;
                     this.loadMovies(1, 'keep');
                 },
 
-                mvRefresh() { if (this.mv.view) this.mvLoad(this.mv.view.id); else this.loadMovies(1); },
+                // the open movie again, or the loaded list pages fetched again in place (same page, same scroll spot)
+                mvRefresh() { if (this.mv.view) this.mvLoad(this.mv.view.id); else this.loadMovies(0, 'keep'); },
+
+                // one movie card in the list from a fresh movie record (cover, name, link) - nothing else reloads
+                mvCardUpdate(d) {
+                    const m = d && this.mv.list.find(x => x.id === d.id);
+                    if (!m) return;
+                    Object.assign(m, { title: d.title, edition: d.edition, display: d.display, year: d.year || '', studio: d.studio || '',
+                                       linked: !!d.ext_id, has_cover: d.has_cover, updated_at: d.updated_at, favorite: d.favorite });
+                    if (d.ext_id) m.status = 'linked';
+                    if (d.has_cover) m.cover = `/api/movies/${d.id}/cover?v=${encodeURIComponent(d.updated_at || Date.now())}`;
+                },
 
                 mvPartLabel(v) {
                     if (!v) return '';
@@ -6980,7 +6991,10 @@ No metadata is changed.`)) return;
                 async mvTpdbRefresh(ids) {
                     const linked = ids.filter(id => (this.mv.list.find(m => m.id === id) || {}).linked !== false);
                     if (ids.length === 1) {
-                        try { await this.mvPost(`/api/movies/${ids[0]}/ext/refresh`); this.mvRefresh(); }
+                        try {
+                            const d = await this.mvPost(`/api/movies/${ids[0]}/ext/refresh`);
+                            if (this.mv.view) this.mvLoad(this.mv.view.id); else this.mvCardUpdate(d.movie);
+                        }
                         catch (e) { this.mv.msg = 'Not refreshed: ' + e.message; }
                         return;
                     }

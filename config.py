@@ -11,7 +11,7 @@ environment variables override them:
 """
 import os
 
-VERSION = "0.12.0"
+VERSION = "0.12.1"
 
 # --- PATHS ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
