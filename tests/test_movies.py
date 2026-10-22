@@ -220,6 +220,28 @@ class MovieTests(MovieBase):
         self.assertEqual(d['letters'], [{'letter': '#', 'index': 0}, {'letter': 'A', 'index': 1}, {'letter': 'E', 'index': 2}])
         self.assertEqual(movies.listing(self.model, self.c, 'Lib', sort='year')['letters'], [])
 
+    def test_orientation_filter(self):
+        import display_filter as df
+        self.model.db.get_file = self.db.get_file
+        self.model.library_settings = {}
+        movies.set_video_movie(self.c, 'v1', 'Gay Movie', scene=1)
+        movies.set_video_movie(self.c, 'v2', 'Straight Movie', scene=1)
+        for vid, field, val in (('v1', 'orientation', 'Gay'), ('v2', 'orientation', 'Straight'), ('v1', 'tags', 'onlygay'), ('v2', 'tags', 'onlystraight')):
+            tid = (self.c.execute(f'SELECT id FROM video_{field} WHERE value = ?', (val,)).fetchone() or
+                   [self.c.execute(f'INSERT INTO video_{field} (value) VALUES (?)', (val,)).lastrowid])[0]
+            self.c.execute(f'INSERT INTO video_{field}_junction (video_id, {field}_id) VALUES (?, ?)', (vid, tid))
+        self.c.commit()
+        df.set_selection(self.c, 'jane', ['straight'])
+        token = df.CURRENT_USER.set('jane')
+        try:
+            self.assertEqual([m['title'] for m in movies.listing(self.model, self.c, 'Lib')['movies']], ['Straight Movie'])
+            self.assertEqual(movies.filter_counts(self.model, self.c, 'Lib')['tags'], {'straight': 1, 'onlystraight': 1})
+            self.assertEqual(movies.autocomplete(self.c, 'Movie', model=self.model), ['Straight Movie'])
+            self.assertEqual(movies.detail(self.model, self.c, movies.resolve_name(self.c, 'Gay Movie')[0])['items'], [])
+        finally:
+            df.CURRENT_USER.reset(token)
+        self.assertEqual(len(movies.listing(self.model, self.c, 'Lib')['movies']), 2)        # no user filter: both
+
     def test_scenes_from_two_libraries(self):
         self.c.execute("UPDATE videos SET library = 'Other' WHERE video_id = 'v2'")
         movies.set_video_movie(self.c, 'v1', 'Movie', scene=1)

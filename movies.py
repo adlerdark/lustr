@@ -456,13 +456,19 @@ def filter_sql(values, col='v.video_id'):
     return ('(' + ' OR '.join(ors) + ')', params) if ors else ('', [])
 
 
-def autocomplete(conn, q, limit=15):
+def autocomplete(conn, q, limit=15, model=None):
     ensure_schema(conn)
+    import display_filter
     q = (q or '').strip()
     if not q:
         return []
+    shown, sp = display_filter.shown_sql(conn, model) if model is not None else ('', [])
+    # with the orientation filter on: movies with a video it shows, or with no videos at all
+    only = (f'AND (id NOT IN (SELECT movie_id FROM video_movie) OR id IN (SELECT vm.movie_id FROM video_movie vm '
+            f'JOIN videos v ON v.video_id = vm.video_id WHERE {shown})) ') if shown else ''
     return [display_name(r[0], r[1]) for r in conn.execute(
-        'SELECT title, edition FROM movies WHERE title LIKE ? ORDER BY (title LIKE ?) DESC, title, edition LIMIT ?', (f'%{q}%', f'{q}%', limit))]
+        f'SELECT title, edition FROM movies WHERE title LIKE ? {only}ORDER BY (title LIKE ?) DESC, title, edition LIMIT ?',
+        [f'%{q}%'] + sp + [f'{q}%', limit])]
 
 
 # ---------------------------------------------------------------------------
@@ -721,15 +727,19 @@ def _tag_field_names():
         return ['tags']
 
 
-def tag_sets(conn, movie_ids=None):
+def tag_sets(conn, movie_ids=None, model=None):
     """({movie_id: {tag}}, {movie_id: {site lowercase: spelling}}): every tag / site of any of the movie's
-    videos (any library), plus its own movie tags and studio. Tags are lowercase, like the sidebar."""
+    videos (any library; with model, only the videos this user's orientation filter shows), plus its own
+    movie tags and studio. Tags are lowercase, like the sidebar."""
+    import display_filter
     want = None if movie_ids is None else set(movie_ids)
     tags, sites = {}, {}
+    shown, sp = display_filter.shown_sql(conn, model) if model is not None else ('', [])
+    only = f'JOIN videos v ON v.video_id = vm.video_id WHERE {shown}' if shown else ''
     for f in _tag_field_names() + ['site']:
         try:
             rows = conn.execute(f'SELECT vm.movie_id, t.value FROM video_movie vm JOIN video_{f}_junction j ON j.video_id = vm.video_id '
-                                f'JOIN video_{f} t ON t.id = j.{f}_id').fetchall()
+                                f'JOIN video_{f} t ON t.id = j.{f}_id {only}', sp).fetchall()
         except Exception:
             continue                                   # a field without a table yet
         for mid, val in rows:
@@ -766,7 +776,7 @@ def _filtered(model, conn, library, q='', status='', tags=None, tags_exclude=Non
     elif st:
         movies = [m for m in movies if m['status'] == st]
     inc_t, exc_t, inc_s, exc_s = _csv(tags), _csv(tags_exclude), _csv(sites), _csv(sites_exclude)
-    tsets, ssets = tag_sets(conn, [m['id'] for m in movies])
+    tsets, ssets = tag_sets(conn, [m['id'] for m in movies], model)
     if inc_t or exc_t or inc_s or exc_s:
         def ok(m):
             t, s = tsets.get(m['id'], set()), set(ssets.get(m['id'], {}))

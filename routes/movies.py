@@ -133,7 +133,7 @@ def bulk_stop():
 @router.get('/autocomplete')
 def autocomplete(q: str = '', model=Depends(get_model)):
     try:
-        return {'success': True, 'titles': movies.autocomplete(_conn(), q)}
+        return {'success': True, 'titles': movies.autocomplete(_conn(), q, model=_model)}
     except Exception as e:
         return _err(e)
 
