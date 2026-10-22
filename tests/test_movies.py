@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 
@@ -403,6 +404,62 @@ class BulkLinkTests(MovieBase):
         self.results = []
         self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'not_found')
 
+
+
+class CoverTests(MovieBase):
+    RAW = {'id': 'm1', 'title': 'Adorable', 'image': 'https://studio.example/dead.jpg', 'back_image': 'https://studio.example/dead-back.jpg',
+           'posters': {'large': 'https://cdn.theporndb.net/front-large.jpg', 'full': 'https://cdn.theporndb.net/front.webp'},
+           'background': {'large': 'https://cdn.theporndb.net/front-large.jpg'},
+           'background_back': {'large': 'https://cdn.theporndb.net/back-large.jpg', 'full': None}}
+
+    def setUp(self):
+        super().setUp()
+        import ext_db
+        self.ext = ext_db
+        self.saved = (ext_db.download_image, ext_db.tpdb_find)
+        self.fetched = []
+
+        def download(url):
+            self.fetched.append(url)
+            return None if 'studio.example' in url else (b'IMG:' + url.encode(), 'image/jpeg')
+        ext_db.download_image = download
+        ext_db.tpdb_find = lambda kind, i: dict(self.RAW)
+        self.mid = movies.set_video_movie(self.c, 'v1', 'Adorable 1', scene=1)
+
+    def tearDown(self):
+        (self.ext.download_image, self.ext.tpdb_find) = self.saved
+        super().tearDown()
+
+    def test_theporndb_copies_come_first(self):
+        front, back = self.ext.tpdb_movie_images(self.RAW)
+        self.assertEqual(front, ['https://cdn.theporndb.net/front-large.jpg', 'https://cdn.theporndb.net/front.webp', 'https://studio.example/dead.jpg'])
+        self.assertEqual(back, ['https://cdn.theporndb.net/back-large.jpg', 'https://studio.example/dead-back.jpg'])
+        self.assertEqual(self.ext._tpdb_compact(self.RAW, 'movie')['image_url'], 'https://cdn.theporndb.net/front-large.jpg')
+
+    def test_link_gets_front_and_back(self):
+        m = movies.link_tpdb(self.c, self.mid, 'm1')
+        self.assertTrue(m['has_cover'] and m['has_back_cover'])
+        self.assertEqual(movies.cover(self.c, self.mid, back=True)[0], b'IMG:https://cdn.theporndb.net/back-large.jpg')
+        self.assertTrue(m['back_image_url'].startswith(f'/api/movies/{self.mid}/cover/back'))
+
+    def test_link_keeps_your_own_back_cover(self):
+        movies.set_back_cover(self.c, self.mid, b'MINE', 'image/png')
+        movies.link_tpdb(self.c, self.mid, 'm1')
+        self.assertEqual(movies.cover(self.c, self.mid, back=True), (b'MINE', 'image/png'))
+
+    def test_get_covers_for_linked_movies(self):
+        movies._fill_from_tpdb(self.c, self.mid, {'id': 'm1', 'title': 'Adorable'}, 'm1')   # short record (linked from a scene)
+        self.c.commit()
+        self.assertEqual(movies.covers_targets(self.c), [self.mid])
+        movies.start_covers(self.model, movies.covers_targets(self.c))
+        for _ in range(100):
+            if not movies.covers_status()['running']:
+                break
+            time.sleep(0.05)
+        st = movies.covers_status()
+        self.assertEqual((st['done'], st['fronts'], st['backs'], st['failed'], st['error']), (1, 1, 1, 0, None))
+        self.assertEqual(movies.covers_targets(self.c), [])
+        self.assertIn('background_back', json.loads(self.c.execute('SELECT ext_raw_json FROM movies WHERE id = ?', (self.mid,)).fetchone()[0]))
 
 
 class SameNameTests(MovieBase):

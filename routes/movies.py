@@ -100,6 +100,38 @@ def bulk_status():
     return {'success': True, 'status': movies.bulk_status()}
 
 
+class CoversBody(BaseModel):
+    movie_ids: Optional[List[int]] = None
+
+
+@router.post('/covers/preview')
+def covers_preview(body: CoversBody, model=Depends(get_model)):
+    try:
+        return {'success': True, 'count': len(movies.covers_targets(_conn(), body.movie_ids))}
+    except Exception as e:
+        return _err(e)
+
+
+@router.post('/covers/start')
+def covers_start(body: CoversBody, model=Depends(get_model)):
+    """Linked movies missing a front or back cover get them from ThePornDB (in the background)."""
+    try:
+        return {'success': True, 'status': movies.start_covers(_model, movies.covers_targets(_conn(), body.movie_ids))}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/covers/status')
+def covers_status():
+    return {'success': True, 'status': movies.covers_status()}
+
+
+@router.post('/covers/stop')
+def covers_stop():
+    movies.stop_covers()
+    return {'success': True}
+
+
 @router.post('/bulk/stop')
 def bulk_stop():
     movies.stop_bulk()
@@ -272,6 +304,36 @@ class CoverUrlBody(BaseModel):
 def cover_from_url(mid: int, body: CoverUrlBody, model=Depends(get_model)):
     try:
         return {'success': True, 'movie': movies.set_cover_from_url(_conn(), mid, body.url)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/{mid}/cover/back')
+def get_back_cover(mid: int, model=Depends(get_model)):
+    c = movies.cover(_conn(), mid, back=True)
+    if not c:
+        return Response(status_code=404)
+    return Response(content=c[0], media_type=c[1], headers={'Cache-Control': 'private, max-age=86400'})
+
+
+@router.post('/{mid}/cover/back')
+async def upload_back_cover(mid: int, file: UploadFile = File(...), model=Depends(get_model)):
+    try:
+        if not (file.content_type or '').startswith('image/'):
+            return _err('The back cover must be an image')
+        data = await file.read()
+        if len(data) > MAX_COVER:
+            return _err('The image must be under 10 MB')
+        movies.set_back_cover(_conn(), mid, data, file.content_type)
+        return {'success': True, 'movie': movies.get(_conn(), mid)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.post('/{mid}/cover/back/url')
+def back_cover_from_url(mid: int, body: CoverUrlBody, model=Depends(get_model)):
+    try:
+        return {'success': True, 'movie': movies.set_cover_from_url(_conn(), mid, body.url, back=True)}
     except Exception as e:
         return _err(e)
 

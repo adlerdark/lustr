@@ -3406,6 +3406,27 @@ def _tpdb_image(x):
     return None
 
 
+def tpdb_movie_images(x):
+    """A ThePornDB movie -> ([front cover links], [back cover links]), best first: ThePornDB's own
+    copies (posters / background / background_back) before the studio's original links, which often fail."""
+    def sizes(d):
+        d = d if isinstance(d, dict) else {}
+        return [d.get('large'), d.get('full'), d.get('medium')]
+    uniq = lambda links: list(dict.fromkeys(u for u in links if isinstance(u, str) and u.startswith('http')))
+    front = sizes(x.get('posters')) + [x.get('poster')] + sizes(x.get('background')) + [x.get('image'), x.get('poster_image')]
+    return uniq(front), uniq(sizes(x.get('background_back')) + [x.get('back_image')])
+
+
+def download_first(urls):
+    """The first of these links that gives an image -> (bytes, mime), or None."""
+    for u in urls or []:
+        img = download_image(u)
+        mime = image_mime(img[0], img[1]) if img else None
+        if mime:
+            return img[0], mime
+    return None
+
+
 def _tpdb_compact(x, kind):
     site = x.get('site') or {}
     par = site.get('parent') or site.get('network') or {}
@@ -3417,7 +3438,7 @@ def _tpdb_compact(x, kind):
             'studio_id': str(site.get('id') or '') or None, 'studio_name': site.get('name'),
             'parent_id': None, 'parent_name': par.get('name') if par.get('name') != site.get('name') else None,
             'performers': [_tpdb_performer(p) for p in (x.get('performers') or []) if p],
-            'image_url': _tpdb_image(x), 'scenes': scenes,
+            'image_url': (tpdb_movie_images(x)[0] or [None])[0] if kind == 'movie' else _tpdb_image(x), 'scenes': scenes,
             'tags': [t.get('name') for t in (x.get('tags') or []) if isinstance(t, dict) and t.get('name')],
             'details': (x.get('description') or '')[:600],
             'page_url': f"https://theporndb.net/{'movies' if kind == 'movie' else 'scenes'}/{x.get('slug') or x.get('id')}"}

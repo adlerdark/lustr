@@ -602,6 +602,7 @@
                 mvSel: {}, mvSelLast: null,   // selected movie cards (id -> true)
                 mvMenu: { open: false, x: 0, y: 0, m: null },
                 mvPoster: { open: false, side: 'front' },
+                mvCovers: { status: null, timer: null },
                 mvHover: { c: null, x: 0, y: 0 },   // ThePornDB candidate popover (tags, scenes)
                 mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '', ids: null },
                 mvSug: { tags: [], details: [], loading: false }, mvTagInput: '',
@@ -6484,14 +6485,14 @@ No metadata is changed.`)) return;
                     catch (e) { M.msg = e.message; }
                 },
 
-                async mvCoverUpload(ev) {
+                async mvCoverUpload(ev, back = false) {
                     const f = ev.target.files && ev.target.files[0];
                     ev.target.value = '';
                     if (!f) return;
                     const fd = new FormData();
                     fd.append('file', f);
                     try {
-                        const d = await (await fetch(`/api/movies/${this.mv.view.id}/cover`, { method: 'POST', body: fd })).json();
+                        const d = await (await fetch(`/api/movies/${this.mv.view.id}/cover${back ? '/back' : ''}`, { method: 'POST', body: fd })).json();
                         if (!d.success) throw new Error(d.error);
                         await this.mvLoad(this.mv.view.id);
                     } catch (e) { this.mv.msg = 'Cover not changed: ' + e.message; }
@@ -6834,12 +6835,35 @@ No metadata is changed.`)) return;
                     } catch (e) { alert(e.message); }
                 },
 
-                async mvCoverFromLink() {
-                    const url = prompt('Link to the cover image (http:// or https://):');
+                async mvCoverFromLink(back = false) {
+                    const url = prompt(`Link to the ${back ? 'back cover' : 'cover'} image (http:// or https://):`);
                     if (!url || !url.trim()) return;
-                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/cover/url`, { url: url.trim() }); await this.mvLoad(this.mv.view.id); }
+                    try { await this.mvPost(`/api/movies/${this.mv.view.id}/cover${back ? '/back' : ''}/url`, { url: url.trim() }); await this.mvLoad(this.mv.view.id); }
                     catch (e) { this.mv.msg = 'Cover not changed: ' + e.message; }
                 },
+
+                // ----- Get covers: linked movies missing a front or back cover get them from ThePornDB -----
+                async mvCoversStart(ids = null) {
+                    try {
+                        const p = await this.mvPost('/api/movies/covers/preview', { movie_ids: ids });
+                        if (!p.count) { alert(ids ? 'None of these are linked movies missing a cover.' : 'No linked movies are missing a front or back cover.'); return; }
+                        if (!ids && !confirm(`Get covers from ThePornDB for ${p.count} linked movie${p.count === 1 ? '' : 's'} missing a front or back cover?\n`
+                                             + '(Some may have no back cover on ThePornDB. Covers you set yourself are kept.)')) return;
+                        this.mvCovers.status = (await this.mvPost('/api/movies/covers/start', { movie_ids: ids })).status;
+                        this.mvCoversPoll();
+                    } catch (e) { this.mv.msg = 'Could not get covers: ' + e.message; }
+                },
+
+                mvCoversPoll() {
+                    clearTimeout(this.mvCovers.timer);
+                    this.mvCovers.timer = setTimeout(async () => {
+                        try { this.mvCovers.status = (await (await fetch('/api/movies/covers/status')).json()).status; } catch (e) {}
+                        if (this.mvCovers.status?.running) this.mvCoversPoll();
+                        else if (this.mvTabActive()) this.mvRefresh();
+                    }, 1500);
+                },
+
+                mvCoversStop() { fetch('/api/movies/covers/stop', { method: 'POST' }); },
 
                 mvPosterSrc() {
                     const v = this.mv.view;
@@ -13371,12 +13395,24 @@ No metadata is changed.`)) return;
                                 </select>
                                 <button @click="mvBulkOpen()" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-200"
                                         title="Look up every unlinked movie here on ThePornDB; sure matches are linked, the rest are kept for you to review">Link to ThePornDB…</button>
+                                <button @click="mvCoversStart()" :disabled="mvCovers.status?.running" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50"
+                                        title="Linked movies missing a front or back cover get them from ThePornDB (covers you set yourself are kept)">Get covers</button>
                                 <button @click="mvFindOpen()" class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-500 text-white"
                                         title="Find movies in your video titles, filenames and ThePornDB links, and review them before they're applied">Find movies…</button>
+                            </div>
+                            <div x-show="mvCovers.status" class="flex flex-wrap items-center gap-3 mb-3 px-3 py-2 rounded bg-gray-800 border border-gray-700 text-sm text-gray-300">
+                                <span x-text="(mvCovers.status?.running ? 'Getting covers: ' + mvCovers.status.done + ' / ' + mvCovers.status.total
+                                                + (mvCovers.status.current ? ' · ' + mvCovers.status.current : '') : 'Covers done')
+                                               + ' · ' + (mvCovers.status?.fronts || 0) + ' front, ' + (mvCovers.status?.backs || 0) + ' back added'
+                                               + (mvCovers.status?.failed ? ' · ' + mvCovers.status.failed + ' front not found' : '')"></span>
+                                <span x-show="mvCovers.status?.error" class="text-red-400" x-text="mvCovers.status?.error"></span>
+                                <button x-show="mvCovers.status?.running" @click="mvCoversStop()" class="px-2 py-0.5 rounded bg-red-700 hover:bg-red-600 text-white text-xs">Stop</button>
+                                <button x-show="!mvCovers.status?.running" @click="mvCovers.status = null" class="text-gray-500 hover:text-white">✕</button>
                             </div>
                             <div x-show="mvSelIds.length" class="flex flex-wrap items-center gap-2 mb-3 px-3 py-2 rounded bg-blue-900/40 border border-blue-800 text-sm">
                                 <b x-text="mvSelIds.length + ' selected'"></b>
                                 <button @click="mvBulkSelected(mvSelIds)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">Link to ThePornDB…</button>
+                                <button @click="mvCoversStart(mvSelIds)" :disabled="mvCovers.status?.running" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs disabled:opacity-50">Get covers</button>
                                 <button @click="mvFavorite(mvSelIds, true)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">★ Favorite</button>
                                 <button @click="mvFavorite(mvSelIds, false)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">Unfavorite</button>
                                 <button @click="mvSelectAllShown()" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs" x-text="'Select all shown (' + mv.list.length + ')'"></button>
@@ -13433,6 +13469,14 @@ No metadata is changed.`)) return;
                                         <button @click="mvCoverFromLink()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="Use an image from a web link as the cover">Cover from link…</button>
                                         <button x-show="mv.view?.has_cover || mv.view?.cover_video_id" @click="mvCoverFromVideo(null)"
                                                 class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400" title="Back to the first scene's thumbnail">Reset</button>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-1 mt-1 text-[11px]">
+                                        <button x-show="mv.view?.back_image_url" @click="mvPoster = { open: true, side: 'back' }" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
+                                                title="Show the back cover">Back cover</button>
+                                        <span x-show="!mv.view?.back_image_url" class="text-gray-500 px-1">No back cover</span>
+                                        <label class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 cursor-pointer" title="Use an image of your own as the back cover">
+                                            Upload<input type="file" accept="image/*" class="hidden" @change="mvCoverUpload($event, true)"></label>
+                                        <button @click="mvCoverFromLink(true)" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="Use an image from a web link as the back cover">From link…</button>
                                     </div>
                                     <p class="text-[10px] text-gray-500 mt-1">Or right-click a video below → Use as movie cover.</p>
                                 </div>
@@ -15180,6 +15224,7 @@ No metadata is changed.`)) return;
                     x-text="mvMenuIds().length === 1 && mvMenu.m?.favorite ? '☆ Remove from favorites' : '★ Add to favorites'"></button>
             <button x-show="mvMenuIds().length > 1" @click="mvMenu.open = false; mvFavorite(mvMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
             <button @click="mvMenu.open = false; mvBulkSelected(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Link to ThePornDB…</button>
+            <button @click="mvMenu.open = false; mvCoversStart(mvMenuIds())" :disabled="mvCovers.status?.running" class="w-full text-left px-3 py-1.5 hover:bg-blue-600 disabled:opacity-50">Get covers from ThePornDB</button>
             <button @click="mvMenu.open = false; mvToggleSel(mvMenu.m, mv.list.indexOf(mvMenu.m))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
                     x-text="mvSel[mvMenu.m?.id] ? 'Unselect' : 'Select'"></button>
             <div class="border-t border-gray-700 my-1"></div>

@@ -37,6 +37,7 @@ _MOVIES_TABLE = '''CREATE TABLE IF NOT EXISTS {name} (
         year TEXT, studio TEXT, director TEXT, description TEXT,
         cover BLOB, cover_mime TEXT, cover_source TEXT,          -- 'user' | 'ext'
         cover_video_id TEXT,
+        back_cover BLOB, back_cover_mime TEXT, back_cover_source TEXT,
         ext_source TEXT, ext_id TEXT, ext_url TEXT, ext_raw_json TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''
@@ -67,13 +68,18 @@ def ensure_schema(conn):
     have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE name IN "
                                        "('movies', 'video_movie', 'idx_video_movie_movie', 'movie_tags', 'movie_ext_check', "
                                        "'ux_movies_name')")}
-    if len(have) == 6:                       # already there: no commit (it could split a caller's transaction)
+    cols = {r[1] for r in conn.execute('PRAGMA table_info(movies)')} if 'movies' in have else set()
+    if len(have) == 6 and 'back_cover' in cols:   # already there: no commit (it could split a caller's transaction)
         _schema_ready.add(id(conn))
         return
     conn.commit()
     if 'movies' in have and 'edition' not in {r[1] for r in conn.execute('PRAGMA table_info(movies)')}:
         _migrate_names(conn)
     conn.execute(_MOVIES_TABLE.format(name='movies'))
+    cols = {r[1] for r in conn.execute('PRAGMA table_info(movies)')}
+    for col, typ in (('back_cover', 'BLOB'), ('back_cover_mime', 'TEXT'), ('back_cover_source', 'TEXT')):
+        if col not in cols:
+            conn.execute(f'ALTER TABLE movies ADD COLUMN {col} {typ}')
     conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS ux_movies_name ON movies(title_key, edition_key)')
     conn.execute('''CREATE TABLE IF NOT EXISTS video_movie (
         video_id TEXT PRIMARY KEY,
@@ -468,20 +474,27 @@ _FIELDS = ('title', 'edition', 'year', 'studio', 'director', 'description', 'cov
 def get(conn, mid):
     ensure_schema(conn)
     cur = conn.execute('SELECT id, title, edition, favorite, year, studio, director, description, cover IS NOT NULL, cover_source, '
+                       'back_cover IS NOT NULL, back_cover_source, '
                        'cover_video_id, ext_source, ext_id, ext_url, ext_raw_json, created_at, updated_at FROM movies WHERE id = ?', (mid,))
     r = cur.fetchone()
     if not r:
         raise ValueError('That movie no longer exists')
     d = dict(zip([c[0] for c in cur.description], r))
     d['has_cover'] = bool(d.pop('cover IS NOT NULL'))
+    d['has_back_cover'] = bool(d.pop('back_cover IS NOT NULL'))
     d['favorite'] = bool(d['favorite'])
     d['display'] = display_name(d['title'], d['edition'])
     raw = d.pop('ext_raw_json')
     d['ext_scenes'] = _ext_scenes(raw)
-    try:
-        d['back_image_url'] = (json.loads(raw).get('back_image') or None) if raw else None
-    except (ValueError, AttributeError):
-        d['back_image_url'] = None
+    d['back_image_url'] = None
+    if d['has_back_cover']:
+        d['back_image_url'] = f"/api/movies/{mid}/cover/back?v={d['updated_at'] or ''}"
+    elif raw:
+        import ext_db
+        try:
+            d['back_image_url'] = (ext_db.tpdb_movie_images(json.loads(raw))[1] or [None])[0]
+        except (ValueError, AttributeError):
+            pass
     return d
 
 
@@ -555,8 +568,9 @@ def merge_into(conn, source_ids, target_id):
     for s in src:
         conn.execute(f"UPDATE movies SET {', '.join(f'{c} = COALESCE({c}, (SELECT {c} FROM movies WHERE id = ?))' for c in cols)} "
                      f'WHERE id = ?', [s] * len(cols) + [target_id])
-        conn.execute('UPDATE movies SET cover = (SELECT cover FROM movies WHERE id = ?), cover_mime = (SELECT cover_mime FROM movies WHERE id = ?), '
-                     'cover_source = (SELECT cover_source FROM movies WHERE id = ?) WHERE id = ? AND cover IS NULL', (s, s, s, target_id))
+        for c in ('cover', 'back_cover'):
+            conn.execute(f'UPDATE movies SET {c} = (SELECT {c} FROM movies WHERE id = ?), {c}_mime = (SELECT {c}_mime FROM movies WHERE id = ?), '
+                         f'{c}_source = (SELECT {c}_source FROM movies WHERE id = ?) WHERE id = ? AND {c} IS NULL', (s, s, s, target_id))
     ph = ','.join('?' * len(src))
     n = conn.execute(f'UPDATE video_movie SET movie_id = ? WHERE movie_id IN ({ph})', [target_id] + src).rowcount
     conn.execute(f'UPDATE OR IGNORE movie_tags SET movie_id = ? WHERE movie_id IN ({ph})', [target_id] + src)
@@ -598,8 +612,8 @@ def split_off(conn, video_ids, edition):
     return mid
 
 
-def set_cover_from_url(conn, mid, url):
-    """Your own cover from an image link (downloaded once and kept)."""
+def set_cover_from_url(conn, mid, url, back=False):
+    """Your own cover (or back cover) from an image link (downloaded once and kept)."""
     import ext_db
     get(conn, mid)
     url = (url or '').strip()
@@ -611,7 +625,7 @@ def set_cover_from_url(conn, mid, url):
     mime = ext_db.image_mime(img[0], img[1])
     if not mime:
         raise ValueError('That link is not an image')
-    set_cover(conn, mid, img[0], mime)
+    (set_back_cover if back else set_cover)(conn, mid, img[0], mime)
     return get(conn, mid)
 
 
@@ -622,9 +636,16 @@ def set_cover(conn, mid, data, mime, source='user'):
     conn.commit()
 
 
-def cover(conn, mid):
+def set_back_cover(conn, mid, data, mime, source='user'):
     ensure_schema(conn)
-    r = conn.execute('SELECT cover, cover_mime FROM movies WHERE id = ?', (mid,)).fetchone()
+    conn.execute('UPDATE movies SET back_cover = ?, back_cover_mime = ?, back_cover_source = ?, updated_at = CURRENT_TIMESTAMP '
+                 'WHERE id = ?', (data, mime if data else None, source if data else None, mid))
+    conn.commit()
+
+
+def cover(conn, mid, back=False):
+    ensure_schema(conn)
+    r = conn.execute(f"SELECT {'back_cover, back_cover_mime' if back else 'cover, cover_mime'} FROM movies WHERE id = ?", (mid,)).fetchone()
     return (r[0], r[1] or 'image/jpeg') if r and r[0] else None
 
 
@@ -1478,14 +1499,88 @@ def link_tpdb(conn, mid, ext_id_or_url, keep_cover=None, raw=None):
     if other:
         raise ValueError(f'That ThePornDB movie is already linked to "{other[1]}"')
     _fill_from_tpdb(conn, mid, raw, real_id)
-    r = conn.execute('SELECT cover_source FROM movies WHERE id = ?', (mid,)).fetchone()
-    if (r[0] or '') != 'user':
-        img_url = raw.get('image') or ext_db._tpdb_image(raw)
-        img = ext_db.download_image(img_url) if img_url else None
-        if img:
-            set_cover(conn, mid, img[0], img[1] or 'image/jpeg', source='ext')
+    r = conn.execute('SELECT cover_source, back_cover_source FROM movies WHERE id = ?', (mid,)).fetchone()
+    tpdb_covers(conn, mid, raw, front=(r[0] or '') != 'user', back=(r[1] or '') != 'user')
     conn.commit()
     return get(conn, mid)
+
+
+def tpdb_covers(conn, mid, raw, front=True, back=True):
+    """Download the ThePornDB movie's front and/or back cover into the movie -> (got front, got back)."""
+    import ext_db
+    fronts, backs = ext_db.tpdb_movie_images(raw or {})
+    got_f = ext_db.download_first(fronts) if front else None
+    if got_f:
+        set_cover(conn, mid, got_f[0], got_f[1], source='ext')
+    got_b = ext_db.download_first(backs) if back else None
+    if got_b:
+        set_back_cover(conn, mid, got_b[0], got_b[1], source='ext')
+    return bool(got_f), bool(got_b)
+
+
+# Get covers: linked movies missing a front cover (and no video thumbnail chosen) or a back cover get them from ThePornDB.
+_covers = {'running': False, 'stop': False, 'total': 0, 'done': 0, 'fronts': 0, 'backs': 0, 'failed': 0, 'current': None, 'error': None}
+
+
+def covers_targets(conn, ids=None):
+    ensure_schema(conn)
+    sql = ("SELECT id FROM movies WHERE ext_source = 'tpdb' AND ext_id IS NOT NULL AND ("
+           "(cover IS NULL AND cover_video_id IS NULL AND COALESCE(cover_source, '') != 'user') OR back_cover IS NULL)")
+    ids = [int(i) for i in ids or [] if i]
+    if ids:
+        sql += f" AND id IN ({','.join('?' * len(ids))})"
+    return [r[0] for r in conn.execute(sql + ' ORDER BY title', ids)]
+
+
+def covers_status():
+    return dict(_covers)
+
+
+def start_covers(model, targets):
+    import threading
+    if _covers['running']:
+        raise ValueError('Getting covers is already running')
+    _covers.update(running=True, stop=False, total=len(targets), done=0, fronts=0, backs=0, failed=0, current=None, error=None)
+    threading.Thread(target=_covers_worker, args=(model, list(targets)), daemon=True, name='movies-covers').start()
+    return covers_status()
+
+
+def stop_covers():
+    _covers['stop'] = True
+
+
+def _covers_worker(model, targets):
+    import ext_db
+    st = _covers
+    try:
+        conn = model.db.get_connection()
+        for mid in targets:
+            if st['stop']:
+                break
+            r = conn.execute("SELECT title, ext_id, ext_raw_json, cover IS NULL AND cover_video_id IS NULL AND COALESCE(cover_source, '') != 'user', "
+                             'back_cover IS NULL FROM movies WHERE id = ?', (mid,)).fetchone()
+            if r and r[1]:
+                st['current'] = r[0]
+                try:
+                    raw = json.loads(r[2] or '{}')
+                    if 'background_back' not in raw:       # linked from a scene: only a short record kept, fetch the full one
+                        raw = ext_db.tpdb_find('movie', r[1])
+                        conn.execute('UPDATE movies SET ext_raw_json = ? WHERE id = ?', (json.dumps(raw, ensure_ascii=False)[:500000], mid))
+                        conn.commit()
+                    f, b = tpdb_covers(conn, mid, raw, front=bool(r[3]), back=bool(r[4]))
+                    st['fronts'] += f
+                    st['backs'] += b
+                    if r[3] and not f:
+                        st['failed'] += 1
+                except Exception as e:
+                    print(f"[movies] covers: {r[0]}: {e}")
+                    st['failed'] += 1
+            st['done'] += 1
+    except Exception as e:
+        st['error'] = str(e)
+    finally:
+        st['running'] = False
+        st['current'] = None
 
 
 def unlink_tpdb(conn, mid):
@@ -1494,6 +1589,9 @@ def unlink_tpdb(conn, mid):
                  "cover = CASE WHEN cover_source = 'ext' THEN NULL ELSE cover END, "
                  "cover_mime = CASE WHEN cover_source = 'ext' THEN NULL ELSE cover_mime END, "
                  "cover_source = CASE WHEN cover_source = 'ext' THEN NULL ELSE cover_source END, "
+                 "back_cover = CASE WHEN back_cover_source = 'ext' THEN NULL ELSE back_cover END, "
+                 "back_cover_mime = CASE WHEN back_cover_source = 'ext' THEN NULL ELSE back_cover_mime END, "
+                 "back_cover_source = CASE WHEN back_cover_source = 'ext' THEN NULL ELSE back_cover_source END, "
                  'updated_at = CURRENT_TIMESTAMP WHERE id = ?', (mid,))
     conn.commit()
     return get(conn, mid)
