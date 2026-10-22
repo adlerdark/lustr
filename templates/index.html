@@ -7071,15 +7071,18 @@ No metadata is changed.`)) return;
 
                 get mvSelIds() { return Object.keys(this.mvSel).filter(k => this.mvSel[k]).map(Number); },
 
+                // like the library grid: a click selects just this one, Ctrl toggles, Shift selects the range; double-click opens it
                 mvCardClick(m, idx, ev) {
-                    if (ev.shiftKey && this.mvSelLast !== null) {
-                        const [a, b] = [Math.min(this.mvSelLast, idx), Math.max(this.mvSelLast, idx)];
-                        for (const x of this.mv.list.slice(a, b + 1)) this.mvSel[x.id] = true;
-                        this.mvSel = { ...this.mvSel };
-                    } else if (ev.ctrlKey || ev.metaKey) {
+                    if (ev.ctrlKey || ev.metaKey) {
                         this.mvToggleSel(m, idx);
+                    } else if (ev.shiftKey && this.mvSelLast !== null) {
+                        const [a, b] = [Math.min(this.mvSelLast, idx), Math.max(this.mvSelLast, idx)];
+                        const sel = {};
+                        for (const x of this.mv.list.slice(a, b + 1)) sel[x.id] = true;
+                        this.mvSel = sel;
                     } else {
-                        this.mvOpen(m.id);
+                        this.mvSel = { [m.id]: true };
+                        this.mvSelLast = idx;
                     }
                 },
 
@@ -13677,15 +13680,16 @@ No metadata is changed.`)) return;
                             </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                                 <template x-for="(m, idx) in mv.list" :key="m.id">
-                                    <div :data-midx="idx" :style="`scroll-margin-top:${tabsH + ($refs.mvToolbar?.offsetHeight || 0) + 8}px`" @click="mvCardClick(m, idx, $event)" @contextmenu.prevent.stop="mvMenuOpen($event, m)"
+                                    <div :data-midx="idx" :style="`scroll-margin-top:${tabsH + ($refs.mvToolbar?.offsetHeight || 0) + 8}px`"
+                                         @click="mvCardClick(m, idx, $event)" @dblclick="mvOpen(m.id)" @contextmenu.prevent.stop="mvMenuOpen($event, m)"
                                          class="bg-gray-800 rounded-lg border overflow-hidden cursor-pointer select-none group"
-                                         :class="mvSel[m.id] ? 'border-blue-400 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
+                                         :class="mvSel[m.id] ? 'selected-card border-blue-400 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
                                         <div class="relative w-full bg-gray-900 overflow-hidden" style="aspect-ratio: 2 / 3">   <!-- portrait, like a DVD cover -->
                                             <img x-show="m.cover" :src="m.cover" loading="lazy" class="absolute inset-0 w-full h-full object-cover">
-                                            <button @click.stop="mvToggleSel(m, idx)" class="absolute top-1 left-1 w-6 h-6 rounded border-2 flex items-center justify-center text-xs z-10"
-                                                    :class="mvSel[m.id] ? 'bg-blue-600 border-blue-400 text-white opacity-100' : 'bg-black/50 border-gray-300 text-transparent ' + (mvSelIds.length ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')"
-                                                    title="Select (Ctrl-click / Shift-click work too)">✓</button>
-                                            <span x-show="m.favorite" class="absolute bottom-1 right-1 text-yellow-400 text-xl drop-shadow" title="Favorite">★</span>
+                                            <div class="check-overlay" :class="mvSel[m.id] ? 'checked opacity-100' : 'opacity-0'" @click.stop="mvToggleSel(m, idx)" @dblclick.stop title="Select">
+                                                <svg x-show="mvSel[m.id]" class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                            </div>
+                                            <span x-show="m.favorite" class="absolute bottom-1.5 right-1.5 w-7 h-7 rounded-full bg-black/70 ring-1 ring-yellow-400/60 flex items-center justify-center text-yellow-300 text-base leading-none shadow-lg pointer-events-none" title="Favorite">★</span>
                                             <div x-show="!m.cover" class="absolute inset-0 flex items-center justify-center text-4xl text-gray-600">🎞</div>
                                             <span x-show="m.linked" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-white" title="Linked to ThePornDB">TPDB</span>
                                             <span x-show="m.status === 'review'" class="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white" title="Possible ThePornDB matches to review">Review</span>
@@ -13890,14 +13894,13 @@ No metadata is changed.`)) return;
                                 <template x-for="video in mv.items" :key="'mi|' + video.path">
                                     <div class="bg-gray-800 rounded-lg border overflow-hidden relative group cursor-pointer select-none"
                                          :class="isSelected(video.path) ? 'selected-card' : 'border-gray-700 hover:border-blue-500'"
-                                         @click="if ($event.ctrlKey || $event.metaKey || $event.shiftKey) handleCardClick(video, $event)"
+                                         @click="handleCardClick(video, $event)"
                                          @dblclick="openPlayer(video)" @contextmenu.prevent.stop="handleRightClick($event, video)"
                                          @mouseenter="startHover(video)" @mouseleave="stopHover()">
-                                        <!-- scenes are selected with the circle, Ctrl-click or Shift-click; a plain click does nothing -->
                                         <div class="video-card-thumb">
                                             <img :src="getThumb(video)" loading="lazy">
-                                            <div class="check-overlay" style="top: auto; bottom: 0.75rem" :class="isSelected(video.path) ? 'checked opacity-100' : (mvSelCount ? 'opacity-100' : 'opacity-0')"
-                                                 @click.stop="toggleSelection(video.path)" title="Select">
+                                            <div class="check-overlay" style="top: auto; bottom: 0.75rem" :class="isSelected(video.path) ? 'checked opacity-100' : 'opacity-0'"
+                                                 @click.stop="toggleSelection(video.path)" @dblclick.stop title="Select">
                                                 <svg x-show="isSelected(video.path)" class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
                                             </div>
                                             <span x-show="mvPartLabel(video)" class="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white" x-text="mvPartLabel(video)"></span>
@@ -15641,7 +15644,7 @@ No metadata is changed.`)) return;
         <div x-show="mvMenu.open" x-cloak class="fixed z-[96] bg-gray-800 border border-gray-600 rounded shadow-2xl py-1 text-sm w-56"
              :style="`left: ${mvMenu.x}px; top: ${mvMenu.y}px`" @click.outside="mvMenu.open = false" @keydown.escape.window="mvMenu.open = false">
             <div class="px-3 py-1 text-xs text-gray-400 truncate" x-text="mvMenuIds().length > 1 ? mvMenuIds().length + ' movies' : (mvMenu.m?.display || '')"></div>
-            <button x-show="mvMenuIds().length === 1" @click="mvMenu.open = false; mvLoad(mvMenu.m.id)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Open</button>
+            <button x-show="mvMenuIds().length === 1" @click="mvMenu.open = false; mvOpen(mvMenu.m.id)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Open</button>
             <button @click="mvMenu.open = false; mvFavorite(mvMenuIds(), !(mvMenuIds().length === 1 && mvMenu.m?.favorite))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
                     x-text="mvMenuIds().length === 1 && mvMenu.m?.favorite ? '☆ Remove from favorites' : '★ Add to favorites'"></button>
             <button x-show="mvMenuIds().length > 1" @click="mvMenu.open = false; mvFavorite(mvMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
