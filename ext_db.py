@@ -3430,15 +3430,33 @@ def download_first(urls):
 _SCENE_NO = re.compile(r'(?i)\b(?:scene|chapter|part)\s*#?\s*0*(\d{1,3})\b')
 
 
-def tpdb_scene_order(scenes):
+def tpdb_scene_order(scenes, local=None):
     """A ThePornDB movie's scenes -> [(scene number, scene)] in scene order. ThePornDB lists them by
     release date, so the number comes from the titles ('Scene 1 (Anal Farm Girls)') when every scene
-    has a different one; otherwise their position in the list."""
+    has a different one. Otherwise, with local ({your scene number: {normalised performer names}}),
+    a scene that shares a performer with one of your numbered scenes takes that number and the rest
+    fill the free numbers in listed order; without a match, their position in the list."""
     scenes = [s for s in (scenes or []) if isinstance(s, dict)]
     nums = [_SCENE_NO.search(s.get('title') or '') for s in scenes]
     if scenes and all(nums) and len({int(m.group(1)) for m in nums}) == len(scenes):
         return sorted(((int(m.group(1)), s) for m, s in zip(nums, scenes)), key=lambda t: t[0])
-    return list(enumerate(scenes, 1))
+    taken = {}                                         # index in the list -> your scene number
+    for n in sorted(k for k in (local or {}) if isinstance(k, int) and k > 0):
+        mine = local[n] - {''}
+        for i, s in enumerate(scenes):
+            if i in taken:
+                continue
+            names = {norm_name(x) for p in (s.get('performers') or []) if isinstance(p, dict)
+                     for x in (p.get('name'), (p.get('parent') or {}).get('name')) if x}
+            if mine & names:
+                taken[i] = n
+                break
+    if not taken:
+        return list(enumerate(scenes, 1))
+    used = set(taken.values())
+    free = (k for k in range(1, 10000) if k not in used)
+    out = [(taken[i] if i in taken else next(free), s) for i, s in enumerate(scenes)]
+    return sorted(out, key=lambda t: t[0])
 
 
 def _tpdb_compact(x, kind):

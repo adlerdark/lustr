@@ -77,6 +77,16 @@ class ParseTests(unittest.TestCase):
         self.assertEqual([n for n, _ in ext_db.tpdb_scene_order(plain)], [1, 2, 3])
         self.assertEqual([sc['title'] for _, sc in ext_db.tpdb_scene_order(plain)], ['Opening', 'Scene 2', 'Finale'])
 
+    def test_tpdb_scene_order_from_your_scenes(self):
+        import ext_db
+        listed = [{'title': t, 'performers': [{'name': who, 'parent': {'name': main}}]} for t, who, main in (
+            ('Abella Got It', 'Abella Danger', 'Abella Danger'), ('Super Hot Kleio', 'Kleio Valentien', 'Kleio Valentien'),
+            ('Round Ass', 'Gabi Paltrova', 'Gabriella Paltrova'), ('Fishnets', 'Britney Amber', 'Britney Amber'))]
+        local = {4: {'abelladanger'}, 2: {'gabriellapaltrova'}}                    # your videos: scene 4 and scene 2
+        self.assertEqual([(n, sc['performers'][0]['name']) for n, sc in ext_db.tpdb_scene_order(listed, local)],
+                         [(1, 'Kleio Valentien'), (2, 'Gabi Paltrova'), (3, 'Britney Amber'), (4, 'Abella Danger')])
+        self.assertEqual([n for n, _ in ext_db.tpdb_scene_order(listed, {7: {'nobody'}})], [1, 2, 3, 4])   # no match: listed order
+
     def test_first_of_series(self):
         for t in ('Night Shift 1', 'Night Shift 01', 'Night Shift #1', 'Night Shift Vol. 1', 'Night Shift: Part 1'):
             self.assertEqual(movies.first_of_series(t), 'Night Shift', t)

@@ -485,7 +485,7 @@ def get(conn, mid):
     d['favorite'] = bool(d['favorite'])
     d['display'] = display_name(d['title'], d['edition'])
     raw = d.pop('ext_raw_json')
-    d['ext_scenes'] = _ext_scenes(raw)
+    d['ext_scenes'] = _ext_scenes(raw, _local_scene_cast(conn, mid) if raw else None)
     d['back_image_url'] = None
     if d['has_back_cover']:
         d['back_image_url'] = f"/api/movies/{mid}/cover/back?v={d['updated_at'] or ''}"
@@ -508,14 +508,29 @@ def set_favorite(conn, ids, favorite=True):
     return len(ids)
 
 
-def _ext_scenes(raw):
+def _local_scene_cast(conn, mid):
+    """Your scene number -> its performers (normalised, main names too), for ordering ThePornDB scenes."""
+    import ext_db
+    out = {}
+    for scene, name in conn.execute('SELECT vm.scene, t.value FROM video_movie vm JOIN video_cast_junction j ON j.video_id = vm.video_id '
+                                    'JOIN video_cast t ON t.id = j.cast_id WHERE vm.movie_id = ? AND vm.scene IS NOT NULL', (mid,)):
+        names = out.setdefault(scene, set())
+        names.add(ext_db.norm_name(name))
+        try:
+            names.add(ext_db.norm_name(ext_db.resolve_primary(conn, name)))
+        except Exception:
+            pass
+    return out
+
+
+def _ext_scenes(raw, local=None):
     try:
         x = json.loads(raw) if raw else {}
     except ValueError:
         return []
     import ext_db
     out = []
-    for i, sc in ext_db.tpdb_scene_order(x.get('scenes')):
+    for i, sc in ext_db.tpdb_scene_order(x.get('scenes'), local):
         perfs = []
         for p in sc.get('performers') or []:
             if isinstance(p, dict):
@@ -936,10 +951,7 @@ def _movie_context(conn, mid):
             pass
     top_scene = conn.execute('SELECT MAX(scene) FROM video_movie WHERE movie_id = ?', (mid,)).fetchone()[0] or 0
     studios = {ext_db.norm_name(x) for x in ([m[2]] if m[2] else []) + [s for s, _n in sites.most_common(2)] if x}
-    scene_cast = {}                                    # your scene number -> its performers (normalised)
-    for scene, name in conn.execute('SELECT vm.scene, t.value FROM video_movie vm JOIN video_cast_junction j ON j.video_id = vm.video_id '
-                                    'JOIN video_cast t ON t.id = j.cast_id WHERE vm.movie_id = ? AND vm.scene IS NOT NULL', (mid,)):
-        scene_cast.setdefault(scene, set()).add(ext_db.norm_name(name))
+    scene_cast = _local_scene_cast(conn, mid)          # your scene number -> its performers (normalised)
     one = first_of_series(m[0])
     return {'title': m[0], 'key': title_key(m[0]), 'key_one': title_key(one) if one else None, 'year': (m[1] or '')[:4], 'studios': studios, 'cast': cast, 'top_scene': top_scene,
             'scene_cast': scene_cast}
@@ -968,7 +980,7 @@ def details_from_raw(conn, ctx, raw, vocab=None):
     """A full ThePornDB movie against your movie: its scenes (which match yours), tags and performers."""
     import ext_db
     rows, matched = [], 0
-    for i, sc in ext_db.tpdb_scene_order(raw.get('scenes')):
+    for i, sc in ext_db.tpdb_scene_order(raw.get('scenes'), ctx['scene_cast']):
         perfs = [p for p in (sc.get('performers') or []) if isinstance(p, dict)]
         names = {ext_db.norm_name(n) for p in perfs for n in (p.get('name'), (p.get('parent') or {}).get('name')) if n}
         match = bool((ctx['scene_cast'].get(i, set()) | ctx['cast']) & names)
