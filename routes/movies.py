@@ -100,6 +100,19 @@ def bulk_status():
     return {'success': True, 'status': movies.bulk_status()}
 
 
+class IdsBody(BaseModel):
+    ids: List[int] = []
+
+
+@router.post('/videos')
+def movie_videos(body: IdsBody, request: Request, model=Depends(get_model)):
+    """The scenes of these movies as video cards (Edit metadata for scenes)."""
+    try:
+        return {'success': True, 'items': movies.videos_of(_model, _conn(), body.ids, check_auth(request), _watch_history)}
+    except Exception as e:
+        return _err(e)
+
+
 class BulkTagsBody(BaseModel):
     ids: List[int] = []
     add: List[str] = []
@@ -111,6 +124,23 @@ def bulk_tags_info(body: BulkTagsBody, model=Depends(get_model)):
     """Edit tags window: the selected movies' tags and ThePornDB suggestions, with how many of them each applies to."""
     try:
         return {'success': True, **movies.bulk_tag_info(_conn(), body.ids)}
+    except Exception as e:
+        return _err(e)
+
+
+class BulkTagMapBody(BaseModel):
+    ids: List[int] = []
+    tag: str
+    field: Optional[str] = None
+    value: Optional[str] = None
+    ignore: bool = False
+
+
+@router.post('/tags/map')
+def bulk_tagmap(body: BulkTagMapBody, model=Depends(get_model)):
+    """Map / ignore a ThePornDB tag from the Edit tags window (the selected movies' unmapped tag is renamed)."""
+    try:
+        return {'success': True, **movies.map_movie_tag(_conn(), list(body.ids), body.tag, body.field, body.value, body.ignore)}
     except Exception as e:
         return _err(e)
 
@@ -230,6 +260,32 @@ def merge(body: MergeBody, model=Depends(get_model)):
 def detail(mid: int, request: Request, model=Depends(get_model)):
     try:
         return {'success': True, **movies.detail(_model, _conn(), mid, check_auth(request), _watch_history)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/{mid}/scene_tags')
+def scene_tags(mid: int, request: Request, model=Depends(get_model)):
+    """Tags -> scenes: the movie's tags with the field each means on a scene, and its scenes."""
+    try:
+        return {'success': True, **movies.scene_tag_plan(_model, _conn(), mid, check_auth(request), _watch_history)}
+    except Exception as e:
+        return _err(e)
+
+
+class MovieTagMapBody(BaseModel):
+    tag: str
+    field: Optional[str] = None
+    value: Optional[str] = None
+    ignore: bool = False
+
+
+@router.post('/{mid}/tagmap')
+def movie_tagmap(mid: int, body: MovieTagMapBody, model=Depends(get_model)):
+    """Map / ignore a ThePornDB tag from the movie page (the same mapping scenes use)."""
+    try:
+        return {'success': True, **movies.map_movie_tag(_conn(), mid, body.tag, body.field, body.value, body.ignore),
+                'tags': movies.movie_tags(_conn(), mid)}
     except Exception as e:
         return _err(e)
 

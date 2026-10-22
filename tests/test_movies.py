@@ -611,6 +611,55 @@ class BulkTagTests(MovieBase):
         self.assertNotIn('outdoor', {s['value'] for s in movies.bulk_tag_info(self.c, [self.a, self.b])['suggested']})
 
 
+class SceneTagTests(MovieBase):
+    def setUp(self):
+        super().setUp()
+        import ext_db
+        self.ext = ext_db
+        self.saved = (ext_db._model, ext_db._schema_ready)
+        ext_db._model, ext_db._schema_ready = self.model, False
+        ext_db.ensure_schema()                                    # ext_tag_map in this test database
+        self.model.db.get_file = self.db.get_file
+        self.mid = movies.set_video_movie(self.c, 'v1', 'Alpha', scene=1)
+        movies.set_video_movie(self.c, 'v2', 'Alpha', scene=2)
+        movies._fill_from_tpdb(self.c, self.mid, {'id': 'x', 'title': 'Alpha', 'tags': [{'name': 'Big Tits'}, {'name': 'Oral Sex'}]}, 'x')
+        self.c.execute("INSERT INTO ext_tag_map (ext_source, ext_tag, field, value, status) VALUES ('any', 'big tits', 'tits', 'big.tits', 'confirmed')")
+        cid = self.c.execute("INSERT INTO video_outfit (value) VALUES ('stockings')").lastrowid
+        self.c.execute("INSERT INTO video_outfit_junction (video_id, outfit_id) VALUES ('v2', ?)", (cid,))
+        self.c.commit()
+        movies.set_tags(self.c, self.mid, add=['big.tits', 'oral.sex', 'stockings', 'my.own'])
+
+    def tearDown(self):
+        self.ext._model, self.ext._schema_ready = self.saved
+        super().tearDown()
+
+    def test_plan(self):
+        p = movies.scene_tag_plan(self.model, self.c, self.mid)
+        rows = {r['value']: (r['status'], r['field'], r['values']) for r in p['tags']}
+        self.assertEqual(rows['big.tits'], ('mapped', 'tits', ['big.tits']))
+        self.assertEqual(rows['oral.sex'][0], 'unmapped')                      # a ThePornDB tag without a mapping
+        self.assertEqual(rows['stockings'], ('vocab', 'outfit', ['stockings']))  # your own tag, used in one field
+        self.assertEqual(rows['my.own'], ('choose', 'tags', ['my.own']))
+        self.assertEqual([i['path'] for i in p['items']], [A, B])              # scene order
+        self.assertIn('outfit', p['fields'])
+
+    def test_map_from_the_movie_page(self):
+        r = movies.map_movie_tag(self.c, self.mid, 'Oral Sex', 'feature', 'Blowjob')
+        self.assertEqual((r['field'], r['value'], r['status']), ('feature', 'blowjob', 'confirmed'))
+        self.assertIn('blowjob', movies.movie_tags(self.c, self.mid))           # the movie's unmapped tag became the mapped value
+        self.assertNotIn('oral.sex', movies.movie_tags(self.c, self.mid))
+        rows = {r['value']: (r['status'], r['field']) for r in movies.scene_tag_plan(self.model, self.c, self.mid)['tags']}
+        self.assertEqual(rows['blowjob'], ('mapped', 'feature'))
+        movies.map_movie_tag(self.c, self.mid, 'Big Tits', ignore=True)
+        self.assertEqual(tuple(self.c.execute("SELECT status, field FROM ext_tag_map WHERE ext_tag = 'big tits'").fetchone()), ('ignored', 'tits'))
+        with self.assertRaises(ValueError):
+            movies.map_movie_tag(self.c, self.mid, 'Oral Sex', 'nofield', 'x')
+
+    def test_videos_of(self):
+        other = movies.set_video_movie(self.c, 'v3', 'Beta', scene=1)
+        self.assertEqual([i['path'] for i in movies.videos_of(self.model, self.c, [self.mid, other, 999])], [A, B, C])
+
+
 class SameNameTests(MovieBase):
     def test_old_table_is_migrated(self):
         c = self.c

@@ -918,8 +918,17 @@ def _tpdb_tag_values(conn, raw, vocab=None, mapped_only=False):
             v = tag_format(v)
             if v and v not in seen:
                 seen.add(v)
-                out.append({'ext': name, 'value': v, 'mapped': bool(mapped)})
+                out.append({'ext': name, 'value': v, 'mapped': bool(mapped), 'status': m['status'],
+                            'field': m.get('field') or ((m.get('choices') or [{}])[0].get('field')), 'choices': m.get('choices') or []})
     return out
+
+
+def _map_controls(conn):
+    """Fields and your values for the Map controls next to unmapped ThePornDB tags."""
+    import ext_db
+    fields = ext_db._tag_fields()
+    vocab = ext_db._video_vocab(conn, fields)
+    return {'fields': fields, 'vocab': {f: sorted(vocab.get(f, {}), key=str.lower) for f in fields}}
 
 
 def suggestions(conn, mid):
@@ -927,7 +936,7 @@ def suggestions(conn, mid):
     d = get(conn, mid)
     raw = _raw(conn, mid)
     if not raw:
-        return {'tags': [], 'details': []}
+        return {'tags': [], 'details': [], 'fields': [], 'vocab': {}}
     have = set(movie_tags(conn, mid))
     tags = [t for t in _tpdb_tag_values(conn, raw) if t['value'] not in have]
     site = raw.get('site') or {}
@@ -938,7 +947,7 @@ def suggestions(conn, mid):
                        ('director', director), ('description', (raw.get('description') or '').strip())):
         if val and val != (d.get(field) or ''):
             details.append({'field': field, 'value': val, 'current': d.get(field) or ''})
-    return {'tags': tags, 'details': details}
+    return {'tags': tags, 'details': details, **(_map_controls(conn) if any(not t['mapped'] for t in tags) else {'fields': [], 'vocab': {}})}
 
 
 def bulk_tag_info(conn, ids):
@@ -958,7 +967,8 @@ def bulk_tag_info(conn, ids):
         for t in _tpdb_tag_values(conn, raw, vocab):
             if t['value'] in mine:
                 continue
-            s = sugg.setdefault(t['value'], {'value': t['value'], 'ext': t['ext'], 'mapped': t['mapped'], 'ids': []})
+            s = sugg.setdefault(t['value'], {'value': t['value'], 'ext': t['ext'], 'mapped': t['mapped'], 'status': t['status'],
+                                             'field': t['field'], 'choices': t['choices'], 'ids': []})
             s['mapped'] = s['mapped'] or t['mapped']
             s['ids'].append(mid)
     current = sorted(({'value': v, 'n': n} for v, n in have.items()), key=lambda x: (-x['n'], x['value']))
@@ -966,7 +976,8 @@ def bulk_tag_info(conn, ids):
     for s in suggested:
         s['n'] = len(s['ids'])
     return {'count': len(ids), 'linked': sum(1 for i in ids if (conn.execute('SELECT ext_id FROM movies WHERE id = ?', (i,)).fetchone() or [None])[0]),
-            'current': current, 'suggested': suggested}
+            'current': current, 'suggested': suggested,
+            **(_map_controls(conn) if any(not s['mapped'] for s in suggested) else {'fields': [], 'vocab': {}})}
 
 
 def bulk_set_tags(conn, ids, add=(), remove=()):
@@ -1383,6 +1394,98 @@ def _bulk_worker(model, targets, add_tags, delay):
         ext_db._pace_interval = 0.0
         st.update(running=False, current=None, note='', finished_at=time.time())
         print(f"[movies] bulk link {st['run_id']} finished: {st['done']}/{st['total']} {st['counts']}")
+
+
+def _tpdb_tag_info(conn, raw, vocab):
+    """The ThePornDB tags of a movie record with their current mapping:
+    [{ext, status, field, values, plain (the tag in your format, unmapped), choices}]."""
+    import ext_db
+    out = []
+    for t in raw.get('tags') or []:
+        name = ((t.get('name') if isinstance(t, dict) else t) or '').strip()
+        if not name:
+            continue
+        m = ext_db._tag_mapping(conn, 'tpdb', name, vocab)
+        mapped = m['status'] in ('auto', 'confirmed') and m.get('field') and m.get('value')
+        out.append({'ext': name, 'status': 'mapped' if mapped else m['status'], 'field': m.get('field'),
+                    'values': [tag_format(v) for v in ext_db.split_values(m['value'])] if mapped else [],
+                    'plain': tag_format(ext_db.user_tag_format(name)), 'choices': m.get('choices') or []})
+    return out
+
+
+def scene_tag_plan(model, conn, mid, username=None, watch_history=None):
+    """Tags -> scenes: each movie tag with the field and value(s) it means on a scene, and the movie's scenes.
+    A tag from one of the movie's ThePornDB tags follows that tag's mapping (mapped / unmapped / ambiguous /
+    ignored); your own tag goes to the one field you already use it in ('vocab'), else you choose ('choose')."""
+    import ext_db
+    fields = ext_db._tag_fields()
+    vocab = ext_db._video_vocab(conn, fields)
+    info = _tpdb_tag_info(conn, _raw(conn, mid), vocab)
+    rows = []
+    for v in movie_tags(conn, mid):
+        t = next((x for x in info if v in x['values']), None) or next((x for x in info if v == x['plain']), None)
+        if t and t['status'] == 'mapped':
+            rows.append({'value': v, 'ext': t['ext'], 'status': 'mapped', 'field': t['field'],
+                         'values': [v] if v in t['values'] else t['values']})
+        elif t:
+            pick = t['field'] or (t['choices'][0]['field'] if t['choices'] else 'tags')
+            rows.append({'value': v, 'ext': t['ext'], 'status': t['status'], 'field': pick, 'values': [v], 'choices': t['choices']})
+        else:
+            hits = [(f, s) for f in fields for s in [ext_db._vocab_lookup(vocab, f, v)] if s]
+            if len(hits) == 1:
+                rows.append({'value': v, 'ext': None, 'status': 'vocab', 'field': hits[0][0], 'values': [hits[0][1]]})
+            else:
+                rows.append({'value': v, 'ext': None, 'status': 'choose', 'field': hits[0][0] if hits else 'tags', 'values': [v],
+                             'choices': [{'field': f, 'value': s} for f, s in hits]})
+    items = detail(model, conn, mid, username, watch_history)['items']
+    return {'tags': rows, 'items': items, 'fields': fields, 'vocab': {f: sorted(vocab.get(f, {}), key=str.lower) for f in fields}}
+
+
+def map_movie_tag(conn, mid, ext, field=None, value=None, ignore=False):
+    """Map (or ignore) a ThePornDB tag from a movie's page (or the Edit tags window: mid can be a list),
+    through the shared tag mapping; the movie's tag under the unmapped name ('oral.sex') becomes the mapped value(s)."""
+    import ext_db
+    key = (ext or '').strip().lower()
+    if not key:
+        raise ValueError('No tag given')
+    if ignore:
+        field = value = None
+    else:
+        field = (field or '').strip().lower()
+        if field not in ext_db._tag_fields():
+            raise ValueError(f'Unknown field: {field}')
+        value = ext_db._format_map_value(conn, field, value)          # 'Thigh Highs, boots' -> 'thigh.highs, boots'
+        if not value:
+            raise ValueError('No value given')
+    # same as Suggest Metadata's mapping (ext_db.scene_tagmap): ignoring keeps an existing field / value
+    conn.execute('INSERT INTO ext_tag_map (ext_source, ext_tag, field, value, status, updated_at) '
+                 'VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(ext_source, ext_tag) DO UPDATE SET '
+                 'field = COALESCE(excluded.field, ext_tag_map.field), value = COALESCE(excluded.value, ext_tag_map.value), '
+                 'status = excluded.status, updated_at = CURRENT_TIMESTAMP',
+                 (ext_db.TAG_MAP_SOURCE, key, field, value, 'ignored' if ignore else 'confirmed'))
+    conn.commit()
+    plain = tag_format(ext_db.user_tag_format(ext))
+    for m in (mid if isinstance(mid, (list, tuple)) else [mid]):
+        if not ignore and plain in movie_tags(conn, m):
+            new = [tag_format(v) for v in ext_db.split_values(value)]
+            set_tags(conn, m, add=new, remove=[] if plain in new else [plain])
+    return {'tag': key, 'field': field, 'value': value, 'status': 'ignored' if ignore else 'confirmed'}
+
+
+def videos_of(model, conn, ids, username=None, watch_history=None):
+    """The video cards of every scene in these movies (each movie's page items: every library, what the
+    orientation filter shows), for editing their metadata together."""
+    out, seen = [], set()
+    for mid in [int(i) for i in ids or [] if i]:
+        try:
+            items = detail(model, conn, mid, username, watch_history)['items']
+        except ValueError:
+            continue                                   # deleted meanwhile
+        for it in items:
+            if it['path'] not in seen:
+                seen.add(it['path'])
+                out.append(it)
+    return out
 
 
 def detail(model, conn, mid, username=None, watch_history=None):

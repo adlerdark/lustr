@@ -604,13 +604,14 @@
                 mvPoster: { open: false, side: 'front' },
                 mvTpdb: { status: null, timer: null },    // Refresh from ThePornDB for several movies
                 mvCoverModal: { open: false, tab: 'upload', front: '', back: '', busy: false, msg: '' },   // Change covers
-                mvBT: { open: false, ids: [], info: null, busy: false, input: '', msg: '' },   // Edit tags for one or more movies
+                mvBT: { open: false, ids: [], info: null, busy: false, input: '', msg: '', drafts: {} },   // Edit tags for one or more movies
+                mvST: { open: false, plan: null, cells: {}, drafts: {}, busy: false, msg: '' },   // movie tags -> its scenes
                 collSel: {}, collSelLast: null, collMenu: { open: false, x: 0, y: 0, c: null },   // selecting collection cards
                 selAllOffer: null,               // after Select All on one page: { scope, n, noun } - "select all N?"
                 selAcrossPages: false, selVideoIds: {},   // videos selected beyond the loaded page (path -> video_id)
                 mvHover: { c: null, x: 0, y: 0 },   // ThePornDB candidate popover (tags, scenes)
                 mvBulk: { open: false, skip: true, addTags: true, delay: 1, preview: null, status: null, timer: null, msg: '', ids: null },
-                mvSug: { tags: [], details: [], loading: false }, mvTagInput: '',
+                mvSug: { tags: [], details: [], loading: false, fields: [], vocab: {}, drafts: {}, msg: '' }, mvTagInput: '',
                 
                 // Cast functionality
                 castBioMode: false,
@@ -6525,7 +6526,7 @@ No metadata is changed.`)) return;
                         const d = await (await fetch('/api/movies/' + id)).json();
                         if (!d.success) throw new Error(d.error);
                         Object.assign(M, { view: d.movie, items: d.items, editing: false, msg: '' });
-                        this.mvSug = { tags: [], details: [], loading: !!d.movie.ext_id };
+                        this.mvSug = { tags: [], details: [], loading: !!d.movie.ext_id, fields: [], vocab: {}, drafts: {}, msg: '' };
                         if (d.movie.ext_id) this.mvLoadSuggestions(d.movie.id);
                         else if (d.movie.check?.candidates?.length) this.mvLoadDetails(d.movie.check.candidates);
                         this.continueWatching = M.items;                 // right-click / edit lookups
@@ -6544,7 +6545,24 @@ No metadata is changed.`)) return;
                 },
 
                 // the open movie again, or the loaded list pages fetched again in place (same page, same scroll spot)
-                mvRefresh() { if (this.mv.view) this.mvLoad(this.mv.view.id); else this.loadMovies(0, 'keep'); },
+                mvRefresh() {
+                    if (this.mv.view) { this.mvLoad(this.mv.view.id); return; }
+                    if (this._mvScenesEdit) { this._mvScenesEdit = false; this.selectedPaths = new Set(); }   // Edit metadata for scenes is done
+                    this.loadMovies(0, 'keep');
+                },
+
+                // right-click > Edit metadata for scenes: the library's bulk editor on every scene of these movies
+                async mvEditScenes(ids) {
+                    try {
+                        const d = await this.mvPost('/api/movies/videos', { ids });
+                        if (!d.items.length) { alert('None of your videos are in ' + (ids.length === 1 ? 'this movie.' : 'these movies.')); return; }
+                        this.continueWatching = d.items;                 // the editor's common values come from these cards
+                        this.recentlyWatched = [];
+                        this.selectedPaths = new Set(d.items.map(v => v.path));
+                        this._mvScenesEdit = true;
+                        this.openMetadataEditor();
+                    } catch (e) { this.mv.msg = 'Could not load their scenes: ' + e.message; }
+                },
 
                 // one movie card in the list from a fresh movie record (cover, name, link) - nothing else reloads
                 mvCardUpdate(d) {
@@ -6701,8 +6719,24 @@ No metadata is changed.`)) return;
                     try {
                         const d = await (await fetch(`/api/movies/${id}/suggest`)).json();
                         if (!d.success) throw new Error(d.error);
-                        if (this.mv.view?.id === id) this.mvSug = { tags: d.tags, details: d.details, loading: false };
-                    } catch (e) { this.mvSug = { tags: [], details: [], loading: false }; }
+                        if (this.mv.view?.id !== id) return;
+                        const drafts = {};
+                        for (const t of d.tags) if (!t.mapped) drafts[t.ext] = this.mvSug.drafts?.[t.ext] || { field: t.field || 'tags', value: t.value };
+                        this.mvSug = { tags: d.tags, details: d.details, loading: false, fields: d.fields || [], vocab: d.vocab || {}, drafts, msg: '' };
+                    } catch (e) { this.mvSug = { tags: [], details: [], loading: false, fields: [], vocab: {}, drafts: {}, msg: '' }; }
+                },
+
+                // map (or ignore) an unmapped ThePornDB tag from the movie page - the same mapping scenes use
+                async mvSugMap(t, ignore = false) {
+                    const dr = this.mvSug.drafts[t.ext] || {};
+                    if (!ignore && !(dr.field && (dr.value || '').trim())) return;
+                    try {
+                        const d = await this.mvPost(`/api/movies/${this.mv.view.id}/tagmap`, { tag: t.ext, field: dr.field, value: dr.value, ignore });
+                        this.mv.view.tags = d.tags;
+                        await this.mvLoadSuggestions(this.mv.view.id);
+                        this.mvSug.msg = ignore ? `"${t.ext}" will be ignored from now on.` : `"${t.ext}" → ${d.field}: ${d.value} (remembered for scenes and movies)`;
+                        this.mvFetchFilters();
+                    } catch (e) { this.mvSug.msg = e.message; }
                 },
 
                 async mvTags(add = [], remove = []) {
@@ -7015,6 +7049,76 @@ No metadata is changed.`)) return;
 
                 mvTpdbStop() { fetch('/api/movies/refresh/stop', { method: 'POST' }); },
 
+                // ----- Tags -> scenes (movie page): put some / all / none of the movie's tags on its scenes, in the fields their mappings say -----
+                async mvSTOpen() {
+                    Object.assign(this.mvST, { open: true, plan: null, cells: {}, drafts: {}, msg: '' });
+                    await this.mvSTLoad();
+                },
+
+                async mvSTLoad(keep = false) {
+                    const S = this.mvST;
+                    try {
+                        const d = await (await fetch(`/api/movies/${this.mv.view.id}/scene_tags`)).json();
+                        if (!d.success) throw new Error(d.error);
+                        const cells = keep ? S.cells : {}, drafts = {};
+                        for (const r of d.tags) {
+                            const on = ['mapped', 'vocab', 'choose'].includes(r.status);
+                            for (const it of d.items) { const k = r.value + '|' + it.path; if (!(k in cells)) cells[k] = on; }
+                            if (r.ext && r.status !== 'mapped') drafts[r.value] = S.drafts[r.value] || { field: r.field, value: r.value };
+                        }
+                        Object.assign(S, { plan: d, cells: { ...cells }, drafts });
+                    } catch (e) { S.msg = e.message; }
+                },
+
+                mvSTHas(r, it) {                                   // the scene already has every value of this tag
+                    const have = (it[r.field] || []).map(v => String(v).toLowerCase());
+                    return r.values.every(v => have.includes(String(v).toLowerCase()));
+                },
+                mvSTOn(r, it) { return this.mvSTHas(r, it) || !!this.mvST.cells[r.value + '|' + it.path]; },
+                mvSTSet(rows, items, on) {
+                    const c = { ...this.mvST.cells };
+                    for (const r of rows) for (const it of items) c[r.value + '|' + it.path] = on;
+                    this.mvST.cells = c;
+                },
+
+                async mvSTMap(r, ignore = false) {
+                    const S = this.mvST, dr = S.drafts[r.value] || {};
+                    if (!ignore && !(dr.field && (dr.value || '').trim())) return;
+                    S.busy = true; S.msg = '';
+                    try {
+                        const d = await this.mvPost(`/api/movies/${this.mv.view.id}/tagmap`, { tag: r.ext, field: dr.field, value: dr.value, ignore });
+                        this.mv.view.tags = d.tags;
+                        S.msg = ignore ? `"${r.ext}" will be ignored from now on.` : `"${r.ext}" → ${d.field}: ${d.value} (remembered for scenes and movies)`;
+                        await this.mvSTLoad(true);
+                    } catch (e) { S.msg = e.message; }
+                    S.busy = false;
+                },
+
+                async mvSTApply() {
+                    const S = this.mvST, P = S.plan;
+                    if (!P) return;
+                    S.busy = true; S.msg = '';
+                    let n = 0;
+                    try {
+                        for (const it of P.items) {
+                            const addTo = {};
+                            for (const r of P.tags) {
+                                if (!S.cells[r.value + '|' + it.path] || this.mvSTHas(r, it)) continue;
+                                addTo[r.field] = [...new Set([...(addTo[r.field] || []), ...r.values])];
+                            }
+                            if (!Object.keys(addTo).length) continue;
+                            const res = await fetch('/api/metadata/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                              body: JSON.stringify({ paths: [it.path], updates: {}, add_to_lists: addTo }) });
+                            if (!res.ok) throw new Error('Saving failed (HTTP ' + res.status + ')');
+                            n++;
+                        }
+                        S.msg = n ? `Added to ${n} scene${n === 1 ? '' : 's'}.` : 'Nothing new to add.';
+                        await this.mvLoad(this.mv.view.id);
+                        await this.mvSTLoad(true);
+                    } catch (e) { S.msg = e.message; }
+                    S.busy = false;
+                },
+
                 // ----- Edit tags (right-click): tags of one or more movies, ThePornDB suggestions, a tag of your own -----
                 async mvBTOpen(ids) {
                     Object.assign(this.mvBT, { open: true, ids: [...ids], info: null, input: '', msg: '' });
@@ -7022,8 +7126,25 @@ No metadata is changed.`)) return;
                 },
 
                 async mvBTLoad() {
-                    try { this.mvBT.info = await this.mvPost('/api/movies/tags/info', { ids: this.mvBT.ids }); }
-                    catch (e) { this.mvBT.msg = e.message; }
+                    const B = this.mvBT;
+                    try {
+                        B.info = await this.mvPost('/api/movies/tags/info', { ids: B.ids });
+                        const drafts = {};
+                        for (const t of B.info.suggested) if (!t.mapped) drafts[t.ext] = B.drafts[t.ext] || { field: t.field || 'tags', value: t.value };
+                        B.drafts = drafts;
+                    } catch (e) { B.msg = e.message; }
+                },
+
+                async mvBTMap(t, ignore = false) {
+                    const B = this.mvBT, dr = B.drafts[t.ext] || {};
+                    if (!ignore && !(dr.field && (dr.value || '').trim())) return;
+                    B.busy = true; B.msg = '';
+                    try {
+                        await this.mvPost('/api/movies/tags/map', { ids: B.ids, tag: t.ext, field: dr.field, value: dr.value, ignore });
+                        await this.mvBTLoad();
+                        this.mvFetchFilters();
+                    } catch (e) { B.msg = e.message; }
+                    B.busy = false;
                 },
 
                 // add / remove on these movies (default: all the selected ones), then show the new state
@@ -9275,6 +9396,7 @@ No metadata is changed.`)) return;
                 closeMetadata() {
                     if (this.hasUnsavedChanges()) { if (!window.confirm("Unsaved changes. Close?")) return; }
                     this.modals.metadata = false;
+                    if (this._mvScenesEdit) { this._mvScenesEdit = false; this.selectedPaths = new Set(); }
                 },
 
                 async saveMetadata() {
@@ -13770,7 +13892,9 @@ No metadata is changed.`)) return;
                                             <p class="text-[11px] text-gray-500 mt-3">These are the movie's own details; they aren't copied to its scenes.</p>
                                             <!-- movie tags -->
                                             <div class="mt-3">
-                                                <div class="text-xs text-gray-400 mb-1">Movie tags <span class="text-gray-500">(for the Movies tab's tag filter, with the tags of its scenes)</span></div>
+                                                <div class="text-xs text-gray-400 mb-1 flex items-center gap-2">Movie tags <span class="text-gray-500">(for the Movies tab's tag filter, with the tags of its scenes)</span>
+                                                    <button x-show="(mv.view?.tags || []).length && mv.items.length" @click="mvSTOpen()" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                                                            title="Put some or all of these tags on the movie's scenes, in the fields their tag mappings say">Tags → scenes…</button></div>
                                                 <div class="flex flex-wrap items-center gap-1">
                                                     <template x-for="t in mv.view?.tags || []" :key="'mt' + t">
                                                         <span class="bg-gray-700 px-2 py-0.5 rounded text-xs flex items-center gap-1"><span x-text="t"></span>
@@ -13787,13 +13911,34 @@ No metadata is changed.`)) return;
                                                     <button x-show="mvSug.tags.some(t => t.mapped)" @click="mvTags(mvSug.tags.filter(t => t.mapped).map(t => t.value))"
                                                             class="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 text-white">Add all mapped tags</button></div>
                                                 <div class="flex flex-wrap gap-1">
-                                                    <template x-for="t in mvSug.tags" :key="'sg' + t.value">
+                                                    <template x-for="t in mvSug.tags.filter(t => t.mapped)" :key="'sg' + t.value">
                                                         <button @click="mvTags([t.value])" class="px-2 py-0.5 rounded text-xs border"
                                                                 :class="t.mapped ? 'border-blue-600 text-blue-200 hover:bg-blue-800' : 'border-gray-600 text-gray-300 hover:bg-gray-700'"
                                                                 :title="t.mapped ? 'ThePornDB \'' + t.ext + '\' maps to your tag ' + t.value : 'ThePornDB \'' + t.ext + '\' (not mapped to one of your tags yet)'"
                                                                 x-text="'+ ' + t.value"></button>
                                                     </template>
                                                 </div>
+                                                <div x-show="mvSug.tags.some(t => !t.mapped)" class="mt-2">
+                                                    <div class="text-[11px] text-gray-400 mb-1">Not mapped yet <span class="text-gray-500">- map a ThePornDB tag to one of your fields once (used for scenes too), add it as it is, or ignore it</span></div>
+                                                    <template x-for="t in mvSug.tags.filter(t => !t.mapped)" :key="'sgu' + t.ext">
+                                                        <div class="flex flex-wrap items-center gap-1 py-0.5 text-xs">
+                                                            <span class="w-40 truncate text-gray-200" :title="t.ext" x-text="t.ext"></span>
+                                                            <span x-show="t.choices?.length" class="text-yellow-400" :title="'Found in several fields: ' + (t.choices || []).map(c => c.field).join(', ')">several fields</span>
+                                                            <select @change="mvSug.drafts[t.ext].field = $event.target.value" class="bg-gray-700 border border-gray-600 rounded px-1 py-0.5">
+                                                                <template x-for="f in mvSug.fields" :key="'sgf' + f"><option :value="f" x-text="extSceneFieldLabel(f)" :selected="f === mvSug.drafts[t.ext]?.field"></option></template>
+                                                            </select>
+                                                            <input type="text" :value="mvSug.drafts[t.ext]?.value" @input="mvSug.drafts[t.ext].value = $event.target.value" @keydown.enter="mvSugMap(t)"
+                                                                   :list="'mvsug-vocab-' + (mvSug.drafts[t.ext]?.field || '')" placeholder="your value(s)" class="w-36 bg-gray-700 border border-gray-600 rounded px-1 py-0.5">
+                                                            <button @click="mvSugMap(t)" class="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 rounded text-white">Map</button>
+                                                            <button @click="mvTags([t.value])" class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded" :title="'Add ' + t.value + ' to the movie without mapping it'">+ as is</button>
+                                                            <button @click="mvSugMap(t, true)" class="px-1 text-gray-400 hover:text-white" title="Never suggest this tag">Ignore</button>
+                                                        </div>
+                                                    </template>
+                                                    <template x-for="f in mvSug.fields" :key="'sgv' + f">
+                                                        <datalist :id="'mvsug-vocab-' + f"><template x-for="v in (mvSug.vocab[f] || [])" :key="v"><option :value="v"></option></template></datalist>
+                                                    </template>
+                                                </div>
+                                                <p x-show="mvSug.msg" class="text-xs text-emerald-300 mt-1" x-text="mvSug.msg"></p>
                                                 <div class="mt-2 space-y-1 text-xs">
                                                     <template x-for="d in mvSug.details" :key="'sd' + d.field">
                                                         <div class="flex items-baseline gap-2">
@@ -15489,6 +15634,91 @@ No metadata is changed.`)) return;
             </template>
         </div>
 
+        <!-- MOVIE TAGS -> ITS SCENES (movies.scene_tag_plan) -->
+        <div x-show="mvST.open" x-cloak class="fixed inset-0 z-[88] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvST.open = false">
+            <div class="bg-gray-800 rounded-lg w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl" @click.outside="if (!mvST.busy) mvST.open = false">
+                <div class="p-4 border-b border-gray-700 flex items-center">
+                    <span class="font-bold flex-1" x-text="'Movie tags → scenes · ' + (mv.view?.display || '')"></span>
+                    <button @click="mvST.open = false" class="text-gray-400 hover:text-white">✕</button>
+                </div>
+                <div class="p-4 overflow-auto scroller text-sm flex-1" :class="mvST.busy ? 'opacity-60 pointer-events-none' : ''">
+                    <p x-show="!mvST.plan && !mvST.msg" class="text-gray-400">Loading…</p>
+                    <template x-if="mvST.plan">
+                        <div>
+                            <p class="text-xs text-gray-400 mb-3">Tick the scenes each tag goes on. A tag goes into the field its tag mapping says;
+                                map unmapped ones here (remembered for scenes and movies). <span class="text-emerald-400">✓</span> = the scene already has it. Nothing is removed.</p>
+                            <table class="border-collapse text-xs">
+                                <thead>
+                                    <tr>
+                                        <th class="sticky left-0 bg-gray-800 text-left p-1 min-w-[20rem]">
+                                            <span class="text-gray-400 font-normal">Tag → field: value</span>
+                                            <span class="ml-2 font-normal"><button @click="mvSTSet(mvST.plan.tags, mvST.plan.items, true)" class="text-blue-300 hover:underline">all</button> ·
+                                                <button @click="mvSTSet(mvST.plan.tags, mvST.plan.items, false)" class="text-blue-300 hover:underline">none</button></span></th>
+                                        <template x-for="(it, ci) in mvST.plan.items" :key="'sth' + it.path">
+                                            <th class="p-1 text-center align-bottom w-16" :title="it.title || it.filename">
+                                                <div class="text-gray-200 whitespace-nowrap" x-text="mvPartLabel(it).replace('Scene ', 'Sc ') || ('#' + (ci + 1))"></div>
+                                                <div class="font-normal text-[10px]"><button @click="mvSTSet(mvST.plan.tags, [it], true)" class="text-blue-300 hover:underline">all</button>
+                                                    <button @click="mvSTSet(mvST.plan.tags, [it], false)" class="text-blue-300 hover:underline">none</button></div>
+                                            </th>
+                                        </template>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="r in mvST.plan.tags" :key="'str' + r.value">
+                                        <tr class="border-t border-gray-700/70">
+                                            <td class="sticky left-0 bg-gray-800 p-1 align-top">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="text-gray-100" x-text="r.value"></span>
+                                                    <span class="text-gray-500">→</span>
+                                                    <template x-if="r.status === 'choose'">
+                                                        <select x-model="r.field" class="bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-xs" title="Your own tag: pick the field (for this time)">
+                                                            <template x-for="f in mvST.plan.fields" :key="'stf' + f"><option :value="f" x-text="extSceneFieldLabel(f)" :selected="f === r.field"></option></template>
+                                                        </select>
+                                                    </template>
+                                                    <span x-show="r.status !== 'choose'" :class="r.status === 'mapped' || r.status === 'vocab' ? 'text-blue-200' : 'text-amber-300'"
+                                                          x-text="extSceneFieldLabel(r.field) + ': ' + r.values.join(', ')"></span>
+                                                    <span class="text-[10px] px-1 rounded" :class="{ 'bg-gray-700 text-gray-300': ['mapped', 'vocab'].includes(r.status), 'bg-amber-800 text-amber-100': ['unmapped', 'ambiguous'].includes(r.status), 'bg-gray-700 text-gray-400': r.status === 'ignored' || r.status === 'choose' }"
+                                                          :title="r.ext ? 'ThePornDB tag: ' + r.ext : 'Your own movie tag'"
+                                                          x-text="{ mapped: 'mapped', vocab: 'your field', unmapped: 'not mapped', ambiguous: 'several fields', ignored: 'ignored', choose: 'pick field' }[r.status]"></span>
+                                                    <button @click="mvSTSet([r], mvST.plan.items, true)" class="ml-auto text-blue-300 hover:underline">all</button>
+                                                    <button @click="mvSTSet([r], mvST.plan.items, false)" class="text-blue-300 hover:underline">none</button>
+                                                </div>
+                                                <div x-show="mvST.drafts[r.value]" class="flex items-center gap-1 mt-1">
+                                                    <span class="text-gray-500 truncate max-w-[7rem]" :title="r.ext" x-text="r.ext"></span>
+                                                    <select @change="mvST.drafts[r.value].field = $event.target.value" class="bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-xs">
+                                                        <template x-for="f in mvST.plan.fields" :key="'stm' + f"><option :value="f" x-text="extSceneFieldLabel(f)" :selected="f === mvST.drafts[r.value]?.field"></option></template>
+                                                    </select>
+                                                    <input type="text" :value="mvST.drafts[r.value]?.value" @input="mvST.drafts[r.value].value = $event.target.value" @keydown.enter="mvSTMap(r)"
+                                                           :list="'mvst-vocab-' + (mvST.drafts[r.value]?.field || '')" class="w-32 bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-xs">
+                                                    <button @click="mvSTMap(r)" class="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 rounded">Map</button>
+                                                    <button @click="mvSTMap(r, true)" class="px-1 text-gray-400 hover:text-white" title="Never suggest this tag">Ignore</button>
+                                                </div>
+                                            </td>
+                                            <template x-for="it in mvST.plan.items" :key="'stc' + r.value + it.path">
+                                                <td class="text-center p-1 align-top">
+                                                    <span x-show="mvSTHas(r, it)" class="text-emerald-400" title="Already has it">✓</span>
+                                                    <input x-show="!mvSTHas(r, it)" type="checkbox" class="rounded" :checked="!!mvST.cells[r.value + '|' + it.path]"
+                                                           @change="mvST.cells = { ...mvST.cells, [r.value + '|' + it.path]: $event.target.checked }">
+                                                </td>
+                                            </template>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                            <template x-for="f in mvST.plan.fields" :key="'stv' + f">
+                                <datalist :id="'mvst-vocab-' + f"><template x-for="v in (mvST.plan.vocab[f] || [])" :key="v"><option :value="v"></option></template></datalist>
+                            </template>
+                        </div>
+                    </template>
+                    <p x-show="mvST.msg" class="mt-3" :class="/fail|error|unknown|no value/i.test(mvST.msg) ? 'text-red-400' : 'text-emerald-300'" x-text="mvST.msg"></p>
+                </div>
+                <div class="p-4 border-t border-gray-700 flex justify-end gap-2">
+                    <button @click="mvST.open = false" class="px-4 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Close</button>
+                    <button @click="mvSTApply()" :disabled="mvST.busy || !mvST.plan" class="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm disabled:opacity-50">Apply to scenes</button>
+                </div>
+            </div>
+        </div>
+
         <!-- EDIT TAGS FOR ONE OR MORE MOVIES (movies.bulk_tag_info / bulk_set_tags) -->
         <div x-show="mvBT.open" x-cloak class="fixed inset-0 z-[88] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="mvBT.open = false">
             <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl" @click.outside="mvBT.open = false">
@@ -15538,6 +15768,25 @@ No metadata is changed.`)) return;
                                             </template>
                                         </div>
                                     </div>
+                                </template>
+                            </div>
+                            <!-- unmapped suggestions: map them here -->
+                            <div x-show="mvBT.info.suggested.some(t => !t.mapped)">
+                                <div class="text-xs text-gray-400 mb-1">Not mapped yet <span class="text-gray-500">- map a ThePornDB tag to one of your fields once (used for scenes too); their tag under the unmapped name is renamed</span></div>
+                                <template x-for="t in mvBT.info.suggested.filter(t => !t.mapped)" :key="'btu' + t.ext">
+                                    <div class="flex flex-wrap items-center gap-1 py-0.5 text-xs">
+                                        <span class="w-40 truncate text-gray-200" :title="t.ext" x-text="t.ext + (t.n < mvBT.info.count ? ' (' + t.n + ')' : '')"></span>
+                                        <select @change="mvBT.drafts[t.ext].field = $event.target.value" class="bg-gray-700 border border-gray-600 rounded px-1 py-0.5">
+                                            <template x-for="f in mvBT.info.fields" :key="'btf' + f"><option :value="f" x-text="extSceneFieldLabel(f)" :selected="f === mvBT.drafts[t.ext]?.field"></option></template>
+                                        </select>
+                                        <input type="text" :value="mvBT.drafts[t.ext]?.value" @input="mvBT.drafts[t.ext].value = $event.target.value" @keydown.enter="mvBTMap(t)"
+                                               :list="'mvbt-vocab-' + (mvBT.drafts[t.ext]?.field || '')" placeholder="your value(s)" class="w-36 bg-gray-700 border border-gray-600 rounded px-1 py-0.5">
+                                        <button @click="mvBTMap(t)" class="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 rounded text-white">Map</button>
+                                        <button @click="mvBTMap(t, true)" class="px-1 text-gray-400 hover:text-white" title="Never suggest this tag">Ignore</button>
+                                    </div>
+                                </template>
+                                <template x-for="f in (mvBT.info.fields || [])" :key="'btv' + f">
+                                    <datalist :id="'mvbt-vocab-' + f"><template x-for="v in (mvBT.info.vocab[f] || [])" :key="v"><option :value="v"></option></template></datalist>
                                 </template>
                             </div>
                             <!-- your own -->
@@ -15648,6 +15897,8 @@ No metadata is changed.`)) return;
             <button @click="mvMenu.open = false; mvFavorite(mvMenuIds(), !(mvMenuIds().length === 1 && mvMenu.m?.favorite))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
                     x-text="mvMenuIds().length === 1 && mvMenu.m?.favorite ? '☆ Remove from favorites' : '★ Add to favorites'"></button>
             <button x-show="mvMenuIds().length > 1" @click="mvMenu.open = false; mvFavorite(mvMenuIds(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
+            <button @click="mvMenu.open = false; mvEditScenes(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                    x-text="mvMenuIds().length > 1 ? 'Edit metadata for scenes (' + mvMenuIds().length + ' movies)…' : 'Edit metadata for scenes…'"></button>
             <button @click="mvMenu.open = false; mvBTOpen(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
                     x-text="mvMenuIds().length > 1 ? 'Edit tags (' + mvMenuIds().length + ')…' : 'Edit tags…'"></button>
             <button @click="mvMenu.open = false; mvBulkSelected(mvMenuIds())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Link to ThePornDB…</button>
