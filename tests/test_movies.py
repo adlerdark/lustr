@@ -64,6 +64,19 @@ class ParseTests(unittest.TestCase):
         for t in ('SCENE 1 - JANE DOE, JOHN ROE', 'Jane Doe solo', 'Obscene 2', ''):
             self.assertIsNone(movies.parse_movie(t), t)
 
+    def test_tpdb_scene_order(self):
+        import ext_db
+        listed = [{'title': f'Scene {n} (Anal Farm Girls)', 'performers': [{'name': who}]}
+                  for n, who in ((2, 'Eliska Cross'), (3, 'Bellina'), (5, 'Valentina Blue'), (4, 'Aliz'), (1, 'Honey Demon'))]
+        self.assertEqual([(n, sc['performers'][0]['name']) for n, sc in ext_db.tpdb_scene_order(listed)][:2], [(1, 'Honey Demon'), (2, 'Eliska Cross')])
+        self.assertEqual([(s['n'], s['performers']) for s in movies._ext_scenes(json.dumps({'scenes': listed}))][0], (1, ['Honey Demon']))
+        compact = ext_db._tpdb_compact({'id': 'x', 'scenes': listed}, 'movie')
+        self.assertEqual(ext_db._movie_scene_pick(compact, {'cast': [], 'scene_number': 1})[1]['title'], 'Scene 1 (Anal Farm Girls)')
+        # titles without (distinct) numbers: the listed order
+        plain = [{'title': 'Opening'}, {'title': 'Scene 2'}, {'title': 'Finale'}]
+        self.assertEqual([n for n, _ in ext_db.tpdb_scene_order(plain)], [1, 2, 3])
+        self.assertEqual([sc['title'] for _, sc in ext_db.tpdb_scene_order(plain)], ['Opening', 'Scene 2', 'Finale'])
+
     def test_first_of_series(self):
         for t in ('Night Shift 1', 'Night Shift 01', 'Night Shift #1', 'Night Shift Vol. 1', 'Night Shift: Part 1'):
             self.assertEqual(movies.first_of_series(t), 'Night Shift', t)

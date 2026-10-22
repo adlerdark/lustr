@@ -3427,12 +3427,26 @@ def download_first(urls):
     return None
 
 
+_SCENE_NO = re.compile(r'(?i)\b(?:scene|chapter|part)\s*#?\s*0*(\d{1,3})\b')
+
+
+def tpdb_scene_order(scenes):
+    """A ThePornDB movie's scenes -> [(scene number, scene)] in scene order. ThePornDB lists them by
+    release date, so the number comes from the titles ('Scene 1 (Anal Farm Girls)') when every scene
+    has a different one; otherwise their position in the list."""
+    scenes = [s for s in (scenes or []) if isinstance(s, dict)]
+    nums = [_SCENE_NO.search(s.get('title') or '') for s in scenes]
+    if scenes and all(nums) and len({int(m.group(1)) for m in nums}) == len(scenes):
+        return sorted(((int(m.group(1)), s) for m, s in zip(nums, scenes)), key=lambda t: t[0])
+    return list(enumerate(scenes, 1))
+
+
 def _tpdb_compact(x, kind):
     site = x.get('site') or {}
     par = site.get('parent') or site.get('network') or {}
-    scenes = [{'id': sc_.get('id'), 'title': sc_.get('title') or '', 'duration': _int(sc_.get('duration')),
+    scenes = [{'id': sc_.get('id'), 'n': n, 'title': sc_.get('title') or '', 'duration': _int(sc_.get('duration')),
                'performers': [_tpdb_performer(p) for p in (sc_.get('performers') or []) if p]}
-              for sc_ in (x.get('scenes') or []) if sc_]
+              for n, sc_ in tpdb_scene_order(x.get('scenes'))]
     return {'id': x.get('id'), 'source': 'tpdb', 'kind': kind, 'title': x.get('title') or '', 'date': x.get('date') or '',
             'duration': _int(x.get('duration')), 'code': x.get('sku') or '',
             'studio_id': str(site.get('id') or '') or None, 'studio_name': site.get('name'),
@@ -3466,12 +3480,13 @@ def _movie_scene_pick(movie, clues):
     mine = {norm_name(c['name']) for c in clues['cast']}
     has_me = lambda sc_: bool(mine & ({norm_name(p['name']) for p in sc_['performers']} | {norm_name(p['as']) for p in sc_['performers'] if p['as']}))
     n = clues.get('scene_number')
-    if n and 1 <= n <= len(scenes) and (not mine or has_me(scenes[n - 1])):
-        return n, scenes[n - 1]
-    hits = [(i + 1, sc_) for i, sc_ in enumerate(scenes) if has_me(sc_)]
+    by_n = {sc_.get('n') or i: sc_ for i, sc_ in enumerate(scenes, 1)}       # 'n': the scene's number (tpdb_scene_order)
+    if n in by_n and (not mine or has_me(by_n[n])):
+        return n, by_n[n]
+    hits = [(k, sc_) for k, sc_ in by_n.items() if has_me(sc_)]
     if len(hits) == 1:
         return hits[0]
-    return n, (scenes[n - 1] if n and 1 <= n <= len(scenes) else None)
+    return n, by_n.get(n)
 
 
 def find_scene_candidates(conn, source, clues, query=None, which='both'):
@@ -3627,8 +3642,8 @@ def _store_tpdb(conn, video_id, kind, raw, clues, score=None, scene_number=None,
     c = _tpdb_compact(raw, kind)
     n, picked = _movie_scene_pick(c, clues) if kind == 'movie' else (None, None)
     n = scene_number or n or (clues.get('scene_number') if kind == 'movie' else None)
-    if kind == 'movie' and n and c['scenes'] and 1 <= n <= len(c['scenes']) and not picked:
-        picked = c['scenes'][n - 1]
+    if kind == 'movie' and n and c['scenes'] and not picked:
+        picked = next((sc_ for sc_ in c['scenes'] if sc_.get('n') == n), None)
     title = (picked or {}).get('title') or c['title']
     perfs = (picked or {}).get('performers') or c['performers']
     scope = 'scene' if (kind == 'scene' or picked) else 'movie'

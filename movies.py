@@ -513,15 +513,14 @@ def _ext_scenes(raw):
         x = json.loads(raw) if raw else {}
     except ValueError:
         return []
+    import ext_db
     out = []
-    for i, sc in enumerate(x.get('scenes') or []):
-        if not isinstance(sc, dict):
-            continue
+    for i, sc in ext_db.tpdb_scene_order(x.get('scenes')):
         perfs = []
         for p in sc.get('performers') or []:
             if isinstance(p, dict):
                 perfs.append(((p.get('parent') or {}).get('name')) or p.get('name') or '')
-        out.append({'n': i + 1, 'title': sc.get('title') or '', 'duration': sc.get('duration'),
+        out.append({'n': i, 'title': sc.get('title') or '', 'duration': sc.get('duration'),
                     'performers': [p for p in perfs if p]})
     return out
 
@@ -969,7 +968,7 @@ def details_from_raw(conn, ctx, raw, vocab=None):
     """A full ThePornDB movie against your movie: its scenes (which match yours), tags and performers."""
     import ext_db
     rows, matched = [], 0
-    for i, sc in enumerate([x for x in (raw.get('scenes') or []) if isinstance(x, dict)], 1):
+    for i, sc in ext_db.tpdb_scene_order(raw.get('scenes')):
         perfs = [p for p in (sc.get('performers') or []) if isinstance(p, dict)]
         names = {ext_db.norm_name(n) for p in perfs for n in (p.get('name'), (p.get('parent') or {}).get('name')) if n}
         match = bool((ctx['scene_cast'].get(i, set()) | ctx['cast']) & names)
