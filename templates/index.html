@@ -13750,7 +13750,14 @@ No metadata is changed.`)) return;
                                         </div>
                                         <div class="p-2">
                                             <h3 class="font-bold text-sm truncate" :title="video.title || video.filename" x-text="video.title || video.filename"></h3>
-                                            <p class="text-xs text-gray-400 mt-0.5 truncate" x-text="orderedCast(video).map(c => castLabel(c)).join(', ')"></p>
+                                            <p class="text-xs text-gray-400 mt-0.5 truncate" @dblclick.stop>
+                                                <template x-for="(member, idx) in orderedCast(video)" :key="idx">
+                                                    <span>
+                                                        <a @click.stop="castPeekEnd(); searchCastMember(member)" @mouseenter="castPeekStart(member, $event)" @mouseleave="castPeekEnd()" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
+                                                           x-text="castLabel(member)"></a><span x-show="idx < orderedCast(video).length - 1">, </span>
+                                                    </span>
+                                                </template>
+                                            </p>
                                         </div>
                                     </div>
                                 </template>
@@ -14089,7 +14096,14 @@ No metadata is changed.`)) return;
                                         </div>
                                         <div class="p-2">
                                             <h3 class="font-bold text-sm truncate" :title="video.title || video.filename" x-text="video.title || video.filename"></h3>
-                                            <p class="text-xs text-gray-400 mt-0.5 truncate" x-text="orderedCast(video).map(c => castLabel(c)).join(', ')"></p>
+                                            <p class="text-xs text-gray-400 mt-0.5 truncate" @dblclick.stop>
+                                                <template x-for="(member, idx) in orderedCast(video)" :key="idx">
+                                                    <span>
+                                                        <a @click.stop="castPeekEnd(); searchCastMember(member)" @mouseenter="castPeekStart(member, $event)" @mouseleave="castPeekEnd()" class="cast-member-link" :class="isMaleCast(video, member) ? 'opacity-60' : ''"
+                                                           x-text="castLabel(member)"></a><span x-show="idx < orderedCast(video).length - 1">, </span>
+                                                    </span>
+                                                </template>
+                                            </p>
                                             <p class="text-[11px] text-gray-500 truncate" x-text="video.library"></p>
                                             <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[11px] text-gray-400 cursor-default" @click.stop @dblclick.stop>
                                                 <label class="flex items-center gap-1">Scene
