@@ -1163,6 +1163,37 @@ def ext_cast(conn, mid, raw):
     return out
 
 
+def shared_with(conn, mid, ext_id):
+    """Your other movies linked to the same ThePornDB movie."""
+    if not ext_id:
+        return []
+    return [{'id': r[0], 'display': display_name(r[1], r[2])} for r in conn.execute(
+        "SELECT id, title, edition FROM movies WHERE ext_source = 'tpdb' AND ext_id = ? AND id != ? ORDER BY title_key, edition_key",
+        (ext_id, mid))]
+
+
+def _shared_scenes(conn, mid, others):
+    """One ThePornDB movie for several of yours: your scene numbers are not its numbers, so its
+    scenes are matched to your videos by performers - in this movie (have) or another one (in)."""
+    import ext_db
+    names = {o['id']: o['display'] for o in others}
+    ids = [mid] + list(names)
+    vids = {}                                          # (movie id, video id) -> normalised names
+    for m, v, name in conn.execute(f'SELECT vm.movie_id, vm.video_id, t.value FROM video_movie vm '
+                                   f'JOIN video_cast_junction j ON j.video_id = vm.video_id JOIN video_cast t ON t.id = j.cast_id '
+                                   f'WHERE vm.movie_id IN ({",".join("?" * len(ids))})', ids):
+        cast = vids.setdefault((m, v), set())
+        cast.add(ext_db.norm_name(name))
+        cast.add(ext_db.norm_name(ext_db.resolve_primary(conn, name)))
+    out = _ext_scenes(json.dumps(_raw(conn, mid)))
+    for sc in out:
+        perfs = {ext_db.norm_name(p) for p in sc['performers']} - {''}
+        best = max(((len(perfs & cast), m) for (m, _), cast in vids.items()), key=lambda t: (t[0], t[1] == mid), default=(0, None))
+        sc['have'] = bool(best[0]) and best[1] == mid
+        sc['in'] = names.get(best[1]) if best[0] and best[1] != mid else None
+    return out
+
+
 def _movie_performers(conn, mid, n=3):
     """Your performers in this movie (their main names), the ones in most of its videos first."""
     import ext_db
@@ -1548,9 +1579,12 @@ def detail(model, conn, mid, username=None, watch_history=None):
     d['check'] = None if d['ext_id'] else check_of(conn, mid)
     d['cast'] = [] if d['ext_id'] else _movie_performers(conn, mid, n=12)     # performer picks in the ThePornDB search window
     d['ext_cast'] = ext_cast(conn, mid, _raw(conn, mid)) if d['ext_id'] else []
+    d['shared_with'] = shared_with(conn, mid, d['ext_id'])
     have = {r[1] for r in rows if r[1]}
     for sc in d['ext_scenes']:
         sc['have'] = sc['n'] in have
+    if d['shared_with']:
+        d['ext_scenes'] = _shared_scenes(conn, mid, d['shared_with'])
     d['runtime'] = sum(r[5] or 0 for r in rows)
     d['count'] = len(items)
     pick = next((r for r in rows if r[6] == d['cover_video_id']), rows[0] if rows else None)
@@ -1788,9 +1822,18 @@ def _tpdb_id(text):
     return m.group(1) if m else t
 
 
-def link_tpdb(conn, mid, ext_id_or_url, keep_cover=None, raw=None):
+class AlreadyLinked(ValueError):
+    """The ThePornDB movie is linked to another of your movies (link with share=True to link both)."""
+    def __init__(self, other_id, other_title):
+        super().__init__(f'That ThePornDB movie is already linked to "{other_title}"')
+        self.other = {'id': other_id, 'title': other_title}
+
+
+def link_tpdb(conn, mid, ext_id_or_url, keep_cover=None, raw=None, share=False):
     """Link a movie to a ThePornDB movie (by id, slug or page link): its details fill the movie's
-    empty ones and its front cover becomes the cover unless you set your own. Scenes aren't touched."""
+    empty ones and its front cover becomes the cover unless you set your own. Scenes aren't touched.
+    share=True: also when another of your movies is linked to it (ThePornDB has 'Vol. 15-20' as one
+    movie, you have 'Vol. 15' and 'Vol. 16')."""
     import ext_db
     get(conn, mid)
     ext_id = _tpdb_id(ext_id_or_url)
@@ -1799,8 +1842,8 @@ def link_tpdb(conn, mid, ext_id_or_url, keep_cover=None, raw=None):
     raw = raw or _raw_cache.get(ext_id) or ext_db.tpdb_find('movie', ext_id)
     real_id = str(raw.get('id') or ext_id)
     other = conn.execute("SELECT id, title FROM movies WHERE ext_source = 'tpdb' AND ext_id = ? AND id != ?", (real_id, mid)).fetchone()
-    if other:
-        raise ValueError(f'That ThePornDB movie is already linked to "{other[1]}"')
+    if other and not share:
+        raise AlreadyLinked(other[0], other[1])
     _fill_from_tpdb(conn, mid, raw, real_id)
     r = conn.execute('SELECT cover_source, back_cover_source FROM movies WHERE id = ?', (mid,)).fetchone()
     tpdb_covers(conn, mid, raw, front=(r[0] or '') != 'user', back=(r[1] or '') != 'user')
@@ -1828,7 +1871,7 @@ def refresh_one(conn, mid):
     if not m['ext_id']:
         raise ValueError('This movie is not linked to ThePornDB')
     _raw_cache.pop(m['ext_id'], None)                  # fetch it fresh
-    return link_tpdb(conn, mid, m['ext_id'])
+    return link_tpdb(conn, mid, m['ext_id'], share=True)
 
 
 # Refresh from ThePornDB for several movies at once (in the background)

@@ -455,12 +455,15 @@ def ext_details(mid: int, body: DetailsBody, model=Depends(get_model)):
 
 class LinkBody(BaseModel):
     ext_id: str
+    share: bool = False                 # link it although another of your movies is linked to it
 
 
 @router.post('/{mid}/ext/link')
 def ext_link(mid: int, body: LinkBody, model=Depends(get_model)):
     try:
-        return {'success': True, 'movie': movies.link_tpdb(_conn(), mid, body.ext_id)}
+        return {'success': True, 'movie': movies.link_tpdb(_conn(), mid, body.ext_id, share=body.share)}
+    except movies.AlreadyLinked as e:
+        return {**_err(e), 'linked_to': e.other}
     except Exception as e:
         return _err(e)
 

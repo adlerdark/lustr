@@ -365,6 +365,27 @@ class ExtTests(MovieBase):
         self.assertEqual([p['name'] for p in movies.ext_cast(self.c, mid, scenes_only)], ['Kim Lee'])
 
 
+    def test_one_tpdb_movie_for_several_of_yours(self):
+        for vid, name in (('v1', 'Ann A'), ('v2', 'Bea B'), ('v3', 'Cat C')):
+            cid = self.c.execute('INSERT INTO video_cast (value) VALUES (?)', (name,)).lastrowid
+            self.c.execute('INSERT INTO video_cast_junction (video_id, cast_id) VALUES (?, ?)', (vid, cid))
+        m15 = movies.set_video_movie(self.c, 'v1', 'Series Vol. 15', scene=1)
+        movies.set_video_movie(self.c, 'v2', 'Series Vol. 15', scene=2)
+        m16 = movies.set_video_movie(self.c, 'v3', 'Series Vol. 16', scene=1)
+        raw = {'id': 'big', 'title': 'Series Volumes 15-20', 'scenes': [
+            {'title': 'Scene 1', 'performers': [{'name': 'Ann A'}]}, {'title': 'Scene 2', 'performers': [{'name': 'Bea B'}]},
+            {'title': 'Scene 3', 'performers': [{'name': 'Cat C'}]}, {'title': 'Scene 4', 'performers': [{'name': 'Dee D'}]}]}
+        movies.link_tpdb(self.c, m15, 'big', raw=raw)
+        with self.assertRaises(movies.AlreadyLinked) as e:
+            movies.link_tpdb(self.c, m16, 'big', raw=raw)
+        self.assertEqual(e.exception.other['id'], m15)
+        movies.link_tpdb(self.c, m16, 'big', raw=raw, share=True)
+        self.assertEqual(movies.shared_with(self.c, m16, 'big'), [{'id': m15, 'display': 'Series Vol. 15'}])
+        scenes = movies._shared_scenes(self.c, m16, movies.shared_with(self.c, m16, 'big'))
+        self.assertEqual([(sc['n'], sc['have'], sc['in']) for sc in scenes],
+                         [(1, False, 'Series Vol. 15'), (2, False, 'Series Vol. 15'), (3, True, None), (4, False, None)])
+
+
 class TagFilterTests(MovieBase):
     def field(self, field, vid, *vals):
         for v in vals:

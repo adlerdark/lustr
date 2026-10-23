@@ -6605,7 +6605,7 @@ No metadata is changed.`)) return;
                 async mvPost(url, body) {
                     const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
                     const d = await r.json();
-                    if (!d.success) throw new Error(d.error || 'Failed');
+                    if (!d.success) throw Object.assign(new Error(d.error || 'Failed'), { data: d });
                     return d;
                 },
 
@@ -6851,11 +6851,20 @@ No metadata is changed.`)) return;
                     if (!extId || X.busy) return;          // one click is enough: the rest wait for it
                     X.busy = true; X.msg = ''; X.linking = extId; this.mv.msg = '';
                     try {
-                        await this.mvPost(`/api/movies/${this.mv.view.id}/ext/link`, { ext_id: extId });
+                        const url = `/api/movies/${this.mv.view.id}/ext/link`;
+                        try { await this.mvPost(url, { ext_id: extId }); }
+                        catch (e) {
+                            const other = e.data?.linked_to;
+                            if (!other) throw e;
+                            if (!confirm(`This ThePornDB movie is already linked to "${other.title}".\n\nLink "${this.mv.view.display}" to it too? `
+                                         + 'Use this when ThePornDB has several of your movies as one (it has "Vol. 15-20", you have "Vol. 15" and "Vol. 16"). '
+                                         + 'Both stay linked; their scenes are matched to it by performers.')) return;
+                            await this.mvPost(url, { ext_id: extId, share: true });
+                        }
                         X.open = false;
                         await this.mvLoad(this.mv.view.id);
                     } catch (e) { if (X.open) X.msg = e.message; else this.mv.msg = 'Not linked: ' + e.message; }
-                    X.busy = false; X.linking = null;
+                    finally { X.busy = false; X.linking = null; }
                 },
 
                 async mvExtRefresh() {
@@ -13901,6 +13910,11 @@ No metadata is changed.`)) return;
                                                 <span class="px-1.5 py-0.5 rounded bg-emerald-700 text-white">ThePornDB</span>
                                                 <a :href="mv.view?.ext_url" target="_blank" rel="noopener noreferrer" class="text-blue-300 hover:underline ml-1">open on ThePornDB ↗</a>
                                             </p>
+                                            <p x-show="mv.view?.shared_with?.length" class="text-xs text-gray-400 mt-1">Also linked to it:
+                                                <template x-for="(o, i) in mv.view?.shared_with || []" :key="'sw' + o.id">
+                                                    <span><a @click="mvOpen(o.id)" class="text-blue-300 hover:underline cursor-pointer" x-text="o.display"></a><span x-show="i < mv.view.shared_with.length - 1">, </span></span>
+                                                </template>
+                                            </p>
                                             <p x-show="mv.view?.description" class="text-sm text-gray-300 mt-3 whitespace-pre-line max-w-3xl" x-text="mv.view?.description"></p>
                                             <!-- cast, from the ThePornDB movie -->
                                             <div x-show="mv.view?.ext_cast?.length" class="mt-3 max-w-4xl">
@@ -14129,11 +14143,15 @@ No metadata is changed.`)) return;
                                             <span class="w-16 shrink-0 text-xs" x-text="'Scene ' + s.n"></span>
                                             <span class="w-4 shrink-0" x-text="s.have ? '✓' : ''" :title="s.have ? 'You have this scene' : ''"></span>
                                             <span class="truncate flex-1" x-text="s.performers.join(', ') || s.title"></span>
+                                            <a x-show="s.in" @click="mvOpen((mv.view.shared_with.find(o => o.display === s.in) || {}).id)" class="text-xs shrink-0 text-blue-300 hover:underline cursor-pointer"
+                                               :title="'You have this scene in ' + s.in" x-text="'in ' + s.in"></a>
                                             <span class="text-xs shrink-0" x-show="s.duration" x-text="fmtRuntime(s.duration)"></span>
                                         </div>
                                     </template>
                                 </div>
-                                <p class="text-[11px] text-gray-500 mt-1">Matched by scene number. Set a video's scene number in Edit Metadata if one is wrong.</p>
+                                <p class="text-[11px] text-gray-500 mt-1" x-text="mv.view?.shared_with?.length
+                                    ? 'Several of your movies are linked to this ThePornDB movie, so its scenes are matched to your videos by their performers.'
+                                    : 'Matched by scene number. Set a video\'s scene number in Edit Metadata if one is wrong.'"></p>
                             </div>
                         </div>
                         <!-- link to ThePornDB -->
