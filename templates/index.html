@@ -594,7 +594,7 @@
                         form: { name: '', description: '' }, msg: '' },
                 collModal: { open: false, list: [], name: '', busy: false },
                 mv: { list: [], total: 0, page: 1, loading: false, q: '', qTimer: null, sort: 'title', view: null, items: [], msg: '', editing: false, backScroll: null, startPage: 1, letters: [], pageEdit: false, pageInput: 1,
-                      form: {}, ext: { open: false, query: '', performer: '', paste: '', list: [], busy: false, msg: '' } },        // Movies tab (movies.py)
+                      form: {}, ext: { open: false, query: '', performer: '', paste: '', list: [], busy: false, msg: '', linking: null, refreshing: false } },        // Movies tab (movies.py)
                 mvFind: { open: false, library: '', whole: false, loading: false, busy: false, groups: [], msg: '', done: '', filter: 'all', q: '', shown: 200 },
                 mvTitles: [], mvTitlesTimer: null,
                 mvPick: { open: false, q: '', list: [], scene: '', busy: false, msg: '', paths: [], timer: null },   // right-click -> Add to movie…
@@ -6848,19 +6848,22 @@ No metadata is changed.`)) return;
 
                 async mvExtLink(extId) {
                     const X = this.mv.ext;
-                    if (!extId) return;
-                    X.busy = true; X.msg = '';
+                    if (!extId || X.busy) return;          // one click is enough: the rest wait for it
+                    X.busy = true; X.msg = ''; X.linking = extId; this.mv.msg = '';
                     try {
                         await this.mvPost(`/api/movies/${this.mv.view.id}/ext/link`, { ext_id: extId });
                         X.open = false;
                         await this.mvLoad(this.mv.view.id);
-                    } catch (e) { X.msg = e.message; }
-                    X.busy = false;
+                    } catch (e) { if (X.open) X.msg = e.message; else this.mv.msg = 'Not linked: ' + e.message; }
+                    X.busy = false; X.linking = null;
                 },
 
                 async mvExtRefresh() {
+                    if (this.mv.ext.refreshing) return;
+                    this.mv.ext.refreshing = true;
                     try { await this.mvPost(`/api/movies/${this.mv.view.id}/ext/refresh`); await this.mvLoad(this.mv.view.id); }
                     catch (e) { this.mv.msg = e.message; }
+                    this.mv.ext.refreshing = false;
                 },
 
                 async mvExtUnlink() {
@@ -14004,7 +14007,8 @@ No metadata is changed.`)) return;
                                                                      x-text="c.details ? (c.details.scenes ? c.details.scenes + ' scenes' + (c.details.matched ? ' · ' + c.details.matched + ' match yours' : '') : 'No scene list') : ''"></div>
                                                                 <div class="text-gray-500 truncate" :title="(c.reasons || []).join(', ')" x-text="'score ' + c.score + ' · ' + (c.reasons || []).join(', ')"></div>
                                                                 <div class="flex gap-1 mt-1">
-                                                                    <button @click="mvExtLink(c.id)" class="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white">Link</button>
+                                                                    <button @click="mvExtLink(c.id)" :disabled="!!mv.ext.busy" class="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-wait"
+                                                                            x-text="mv.ext.linking === c.id ? 'Linking…' : 'Link'"></button>
                                                                     <a :href="c.page_url" target="_blank" rel="noopener noreferrer" class="px-1 py-0.5 text-blue-300 hover:underline">View ↗</a>
                                                                 </div>
                                                             </div>
@@ -14041,8 +14045,8 @@ No metadata is changed.`)) return;
                                 <div class="flex flex-wrap items-center gap-2 text-xs">
                                     <button @click="mvStartEdit()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Edit</button>
                                     <button x-show="!mv.view?.ext_id" @click="mvExtOpen()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Link to ThePornDB…</button>
-                                    <button x-show="mv.view?.ext_id" @click="mvExtRefresh()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
-                                            title="Fetch the ThePornDB movie again (fills empty details, updates its cover unless you set your own)">Refresh from ThePornDB</button>
+                                    <button x-show="mv.view?.ext_id" @click="mvExtRefresh()" :disabled="!!mv.ext.refreshing" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-60 disabled:cursor-wait"
+                                            title="Fetch the ThePornDB movie again (fills empty details, updates its cover unless you set your own)" x-text="mv.ext.refreshing ? 'Refreshing…' : 'Refresh from ThePornDB'"></button>
                                     <button x-show="mv.view?.ext_id" @click="mvExtUnlink()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400">Unlink</button>
                                     <button @click="mvDelete()" class="px-2 py-1 rounded bg-gray-800 hover:bg-red-800 text-red-300">Delete movie</button>
                                 </div>
@@ -14142,9 +14146,10 @@ No metadata is changed.`)) return;
                                     </div>
                                     <div class="flex gap-2">
                                         <input type="text" x-model="mv.ext.paste" placeholder="…or paste a ThePornDB movie link / ID" class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm">
-                                        <button @click="mvExtLink(mv.ext.paste)" :disabled="mv.ext.busy || !mv.ext.paste.trim()" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-50">Link</button>
+                                        <button @click="mvExtLink(mv.ext.paste)" :disabled="!!(mv.ext.busy || !mv.ext.paste.trim())" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm disabled:opacity-50"
+                                                x-text="mv.ext.linking && mv.ext.linking === mv.ext.paste ? 'Linking…' : 'Link'"></button>
                                     </div>
-                                    <p x-show="mv.ext.busy" class="text-sm text-gray-400">Asking ThePornDB…</p>
+                                    <p x-show="mv.ext.busy" class="text-sm text-gray-400" x-text="mv.ext.linking ? 'Linking… getting its details and covers from ThePornDB, this takes a few seconds' : 'Asking ThePornDB…'"></p>
                                     <p x-show="mv.ext.msg" class="text-sm text-amber-300" x-text="mv.ext.msg"></p>
                                     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                                         <template x-for="c in mv.ext.list" :key="c.id">
@@ -14164,7 +14169,8 @@ No metadata is changed.`)) return;
                                                                      x-text="c.details ? (c.details.scenes ? c.details.scenes + ' scenes' + (c.details.matched ? ' · ' + c.details.matched + ' match yours' : '') : 'No scene list') : ''"></div>
                                                 </div>
                                                 <div class="p-2 pt-0 flex gap-2 text-xs">
-                                                    <button @click="mvExtLink(c.id)" :disabled="mv.ext.busy" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50">Link</button>
+                                                    <button @click="mvExtLink(c.id)" :disabled="!!mv.ext.busy" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-wait"
+                                                            x-text="mv.ext.linking === c.id ? 'Linking…' : 'Link'"></button>
                                                     <a :href="c.page_url" target="_blank" rel="noopener noreferrer" class="px-2 py-1 text-blue-300 hover:underline">View ↗</a>
                                                 </div>
                                             </div>
