@@ -340,6 +340,31 @@ class ExtTests(MovieBase):
 
 
 
+    def test_unlink_clears_the_details_but_not_the_name(self):
+        raw = {'id': 'tp-1', 'title': 'Big Movie 2', 'date': '2014-07-14', 'site': {'name': 'Studio'}, 'description': 'About it',
+               'directors': [{'name': 'Someone'}]}
+        mid = movies.on_video_linked(self.c, 'v1', 'movie', raw, 3)
+        m = movies.unlink_tpdb(self.c, mid)
+        self.assertEqual((m['title'], m['ext_id'], m['year'], m['studio'], m['director'], m['description']),
+                         ('Big Movie 2', None, None, None, None, None))
+        self.assertEqual(self.movie_of('v1'), ('Big Movie 2', 3, None, 0))
+
+    def test_ext_cast_matched_to_yours(self):
+        for vid, name in (('v1', 'Jane Doe'), ('v2', 'Kim Lee')):
+            cid = self.c.execute('INSERT INTO video_cast (value) VALUES (?)', (name,)).lastrowid
+            self.c.execute('INSERT INTO video_cast_junction (video_id, cast_id) VALUES (?, ?)', (vid, cid))
+        mid = movies.set_video_movie(self.c, 'v1', 'Some Movie')
+        raw = {'performers': [{'name': 'Janey', 'parent': {'name': 'Jane Doe', 'extras': {'gender': 'Female'}, 'face': 'http://x/f.jpg'}},
+                              {'name': 'Kim Lee'}, {'name': 'Nobody Here'}, {'name': 'Jane Doe'}]}
+        mid = movies.find_movie(self.c, 'Some Movie')
+        cast = movies.ext_cast(self.c, mid, raw)
+        self.assertEqual([(p['name'], p['credited'], p['local'], p['in_movie']) for p in cast],
+                         [('Jane Doe', 'Janey', 'Jane Doe', True), ('Kim Lee', '', 'Kim Lee', False), ('Nobody Here', '', None, False)])
+        self.assertEqual((cast[0]['gender'], cast[0]['image']), ('Female', 'http://x/f.jpg'))
+        scenes_only = {'scenes': [{'performers': [{'name': 'Kim Lee'}]}]}
+        self.assertEqual([p['name'] for p in movies.ext_cast(self.c, mid, scenes_only)], ['Kim Lee'])
+
+
 class TagFilterTests(MovieBase):
     def field(self, field, vid, *vals):
         for v in vals:

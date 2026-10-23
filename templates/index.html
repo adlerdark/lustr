@@ -823,6 +823,7 @@
                     defaultLengthSlider: { min: 0, max: 40 },    // slider mode: minutes (40 = 40+)
                     sceneTickTitle: false,       // Suggest metadata / bulk matching: tick the scene's title by default
                     sceneTickMaleCast: false,    // ...and every male performer of a straight scene (Male Cast)
+                    mvUnlinkConfirm: true,       // movie page: ask before Unlink clears the movie's details
                     playerMode: 'new'            // 'new' (the video.js player, roadmap #8) | 'classic'
                 },
                 // New player (np*): its own state, nothing shared with the classic player
@@ -6863,7 +6864,8 @@ No metadata is changed.`)) return;
                 },
 
                 async mvExtUnlink() {
-                    if (!confirm('Unlink this movie from ThePornDB? Its details stay; a cover that came from ThePornDB is removed.')) return;
+                    if (this.appSettings.mvUnlinkConfirm !== false
+                        && !confirm('Unlink this movie from ThePornDB?\n\nIts year, studio, director and description are cleared, and a cover that came from ThePornDB is removed. Its name stays.\n\n(This question can be turned off in Settings → External DB.)')) return;
                     try { await this.mvPost(`/api/movies/${this.mv.view.id}/ext/unlink`); await this.mvLoad(this.mv.view.id); }
                     catch (e) { this.mv.msg = e.message; }
                 },
@@ -13890,6 +13892,25 @@ No metadata is changed.`)) return;
                                                 <a :href="mv.view?.ext_url" target="_blank" rel="noopener noreferrer" class="text-blue-300 hover:underline ml-1">open on ThePornDB ↗</a>
                                             </p>
                                             <p x-show="mv.view?.description" class="text-sm text-gray-300 mt-3 whitespace-pre-line max-w-3xl" x-text="mv.view?.description"></p>
+                                            <!-- cast, from the ThePornDB movie -->
+                                            <div x-show="mv.view?.ext_cast?.length" class="mt-3 max-w-4xl">
+                                                <div class="text-xs text-gray-400 mb-1">Cast <span class="text-gray-500">(from ThePornDB · green: in your videos of this movie · faded: not in your cast)</span></div>
+                                                <div class="flex flex-wrap gap-1.5">
+                                                    <template x-for="p in mv.view?.ext_cast || []" :key="'xc' + p.name">
+                                                        <button @click="p.local && searchCastMember(p.local)" :disabled="!p.local"
+                                                                class="flex items-center gap-1.5 pl-0.5 pr-2 py-0.5 rounded-full border text-xs"
+                                                                :class="p.in_movie ? 'border-emerald-600 bg-emerald-900/30 text-gray-100 hover:bg-emerald-800/40'
+                                                                        : (p.local ? 'border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700' : 'border-gray-700 text-gray-500 cursor-default')"
+                                                                :title="(p.local ? (p.local !== p.name ? 'Yours: ' + p.local + ' · ' : '') + 'Open their page' : 'Not in your cast')
+                                                                        + (p.gender ? ' · ' + p.gender : '')">
+                                                            <img x-show="p.image" :src="p.image" loading="lazy" referrerpolicy="no-referrer" class="w-6 h-6 rounded-full object-cover" :class="p.local ? '' : 'opacity-50'">
+                                                            <span x-show="!p.image" class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px]">👤</span>
+                                                            <span x-text="p.name"></span>
+                                                            <span x-show="p.credited" class="text-gray-500" x-text="'as ' + p.credited"></span>
+                                                        </button>
+                                                    </template>
+                                                </div>
+                                            </div>
                                             <p class="text-[11px] text-gray-500 mt-3">These are the movie's own details; they aren't copied to its scenes.</p>
                                             <!-- movie tags -->
                                             <div class="mt-3">
@@ -17422,6 +17443,12 @@ No metadata is changed.`)) return;
                                 <p class="text-xs text-gray-400 mb-2" x-text="extCfgCacheText()"></p>
                                 <button @click="extCfgClearCache()" :disabled="!extCfg.cache?.performers"
                                         class="px-3 py-1.5 rounded text-xs bg-red-700 hover:bg-red-600 disabled:opacity-40">Clear cache</button>
+                            </div>
+                            <div class="bg-gray-900 p-4 rounded space-y-1 text-xs">
+                                <h4 class="font-bold mb-2 text-blue-400 text-sm">Movies</h4>
+                                <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="rounded" :checked="appSettings.mvUnlinkConfirm !== false"
+                                       @change="appSettings.mvUnlinkConfirm = $event.target.checked; localStorage.setItem('appSettings', JSON.stringify(appSettings))"> Ask before Unlink clears a movie's year, studio, director and description</label>
+                                <p class="text-gray-500">Unlinking always clears them (the name stays). Saved in this browser.</p>
                             </div>
                             <div class="bg-gray-900 p-4 rounded space-y-1 text-xs">
                                 <h4 class="font-bold mb-2 text-blue-400 text-sm">Suggest metadata defaults</h4>

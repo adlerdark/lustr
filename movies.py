@@ -1127,6 +1127,42 @@ def score_candidate(ctx, cand):
     return pts, why
 
 
+def ext_cast(conn, mid, raw):
+    """The ThePornDB movie's cast (or, with none listed, its scenes' performers), each matched by name
+    to your performers: [{name, credited, gender, image, local, in_movie}]. local: your name for them."""
+    import ext_db
+    perfs = [p for p in (raw.get('performers') or []) if isinstance(p, dict)]
+    if not perfs:
+        perfs = [p for sc in (raw.get('scenes') or []) if isinstance(sc, dict) for p in (sc.get('performers') or []) if isinstance(p, dict)]
+    if not perfs:
+        return []
+    yours = {}                                         # normalised name -> your main name
+    for (name,) in conn.execute('SELECT DISTINCT value FROM video_cast'):
+        yours.setdefault(ext_db.norm_name(name), name)
+    for alias, primary in conn.execute('SELECT alias_name, primary_name FROM cast_aliases'):
+        yours[ext_db.norm_name(alias)] = primary
+        yours[ext_db.norm_name(primary)] = primary
+    in_movie = {ext_db.norm_name(ext_db.resolve_primary(conn, n)) for (n,) in conn.execute(
+        'SELECT DISTINCT t.value FROM video_movie vm JOIN video_cast_junction j ON j.video_id = vm.video_id '
+        'JOIN video_cast t ON t.id = j.cast_id WHERE vm.movie_id = ?', (mid,))}
+    out, seen = [], set()
+    for p in perfs:
+        parent = p.get('parent') or {}
+        name = _perf_name(p)
+        credited = (p.get('name') or '').strip()
+        if not name or ext_db.norm_name(name) in seen:
+            continue
+        seen.add(ext_db.norm_name(name))
+        local = yours.get(ext_db.norm_name(name)) or yours.get(ext_db.norm_name(credited))
+        if local:
+            local = ext_db.resolve_primary(conn, local)
+        out.append({'name': name, 'credited': credited if ext_db.norm_name(credited) != ext_db.norm_name(name) else '',
+                    'gender': ((parent.get('extras') or {}).get('gender') or (p.get('extra') or {}).get('gender') or ''),
+                    'image': parent.get('face') or parent.get('thumbnail') or p.get('face') or p.get('thumbnail') or None,
+                    'local': local, 'in_movie': bool(local and ext_db.norm_name(local) in in_movie)})
+    return out
+
+
 def _movie_performers(conn, mid, n=3):
     """Your performers in this movie (their main names), the ones in most of its videos first."""
     import ext_db
@@ -1511,6 +1547,7 @@ def detail(model, conn, mid, username=None, watch_history=None):
     d['tags'] = movie_tags(conn, mid)
     d['check'] = None if d['ext_id'] else check_of(conn, mid)
     d['cast'] = [] if d['ext_id'] else _movie_performers(conn, mid, n=12)     # performer picks in the ThePornDB search window
+    d['ext_cast'] = ext_cast(conn, mid, _raw(conn, mid)) if d['ext_id'] else []
     have = {r[1] for r in rows if r[1]}
     for sc in d['ext_scenes']:
         sc['have'] = sc['n'] in have
@@ -1865,8 +1902,11 @@ def _refresh_worker(model, ids):
 
 
 def unlink_tpdb(conn, mid):
+    """Unlink from ThePornDB: the details it may have filled (year, studio, director, description)
+    and its covers go too; the name stays."""
     ensure_schema(conn)
     conn.execute("UPDATE movies SET ext_source = NULL, ext_id = NULL, ext_url = NULL, ext_raw_json = NULL, "
+                 "year = NULL, studio = NULL, director = NULL, description = NULL, "
                  "cover = CASE WHEN cover_source = 'ext' THEN NULL ELSE cover END, "
                  "cover_mime = CASE WHEN cover_source = 'ext' THEN NULL ELSE cover_mime END, "
                  "cover_source = CASE WHEN cover_source = 'ext' THEN NULL ELSE cover_source END, "
