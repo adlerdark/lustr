@@ -104,6 +104,57 @@ def import_file(conn, path, force=False):
     return added
 
 
+def _has_table(conn, name):
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone())
+
+
+def counts(conn, video_ids=None):
+    """-> ({video_id: chapters in its files}, {video_id: chapter markers}).
+    Chapters: the most any live file of the video has; a video none of whose files was checked is left out."""
+    ch, mk = {}, {}
+    vids = list(video_ids) if video_ids is not None else None
+    chunks = [vids[k:k + 500] for k in range(0, len(vids), 500)] if vids is not None else [None]
+    for chunk in chunks:
+        if chunk == []:
+            continue
+        where, params = ('', []) if chunk is None else (f' AND fv.video_id IN ({",".join("?" * len(chunk))})', chunk)
+        if _has_table(conn, 'chapter_checks'):
+            for r in conn.execute('SELECT fv.video_id, MAX(c.chapters) FROM file_versions fv JOIN chapter_checks c ON c.path = fv.path '
+                                  f'WHERE fv.deleted_at IS NULL{where} GROUP BY fv.video_id', params):
+                ch[r[0]] = r[1] or 0
+        if _markers_ready(conn):
+            mwhere = where.replace('fv.video_id', 'video_id')
+            for r in conn.execute(f"SELECT video_id, COUNT(*) FROM video_markers WHERE source = 'chapter'{mwhere} GROUP BY video_id",
+                                  params):
+                mk[r[0]] = r[1]
+    return ch, mk
+
+
+def add_info(conn, items):
+    """Put chapters (None = file not checked yet) / chapter_markers on list items (dicts with video_id)."""
+    ch, mk = counts(conn, {i.get('video_id') for i in items if i.get('video_id')})
+    for i in items:
+        vid = i.get('video_id')
+        i['chapters'] = ch.get(vid)
+        i['chapter_markers'] = mk.get(vid, 0)
+    return items
+
+
+def _markers_ready(conn):
+    return _has_table(conn, 'video_markers') and 'source' in {r[1] for r in conn.execute('PRAGMA table_info(video_markers)')}
+
+
+def filter_sql(conn, kind, has, col='v.video_id'):
+    """chapters:yes|no (kind 'file') / chaptermarkers:yes|no (kind 'markers') -> SQL condition on col."""
+    ensure_schema(conn)
+    if kind == 'markers':
+        sub = "SELECT video_id FROM video_markers WHERE source = 'chapter'" if _markers_ready(conn) else 'SELECT NULL WHERE 0'
+    else:
+        sub = ('SELECT fv2.video_id FROM file_versions fv2 JOIN chapter_checks c ON c.path = fv2.path '
+               'WHERE fv2.deleted_at IS NULL AND c.chapters > 0')
+    return f"{col} {'IN' if has else 'NOT IN'} ({sub})"
+
+
 def dismiss(conn, marker_id):
     """A chapter marker you delete stays deleted (call before deleting it)."""
     ensure_schema(conn)

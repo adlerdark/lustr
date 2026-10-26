@@ -7,7 +7,7 @@ UI routes for templates and initial data.
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from helpers import check_auth
 
 # Two routers: one for root paths, one for /api paths
@@ -165,6 +165,12 @@ class UIConfigRequest(BaseModel):
     column_widths: Dict[str, int]
     view_mode: str
     quick_tag_order: Optional[str] = None      # 'custom' (as listed in Settings) or 'alpha' (#, A-Z)
+    # what a library opens with (Settings -> Browsing), and per-library overrides {library: {sort, desc, view, tab}}
+    default_sort: Optional[str] = None
+    default_sort_desc: Optional[bool] = None
+    default_view: Optional[str] = None
+    default_tab: Optional[str] = None
+    library_defaults: Optional[Dict[str, Dict[str, Any]]] = None
 
 
 class LibrarySetting(BaseModel):
@@ -217,6 +223,26 @@ def _display_filter_init(model):
         return {}
 
 
+_TABS = ('recommended', 'library', 'collections', 'movies')
+
+
+def _clean_library_defaults(d):
+    """Keep only the overrides that are set (missing = use the default)."""
+    out = {}
+    for lib, o in (d or {}).items():
+        o = o or {}
+        c = {}
+        if o.get('sort'):
+            c['sort'], c['desc'] = str(o['sort']), bool(o.get('desc'))
+        if o.get('view') in ('grid', 'list'):
+            c['view'] = o['view']
+        if o.get('tab') in _TABS:
+            c['tab'] = o['tab']
+        if c:
+            out[str(lib)] = c
+    return out
+
+
 @api_router.post("/config/save")
 def save_ui_config(req: UIConfigRequest, model = Depends(get_model)):
     """Save UI configuration preferences."""
@@ -229,6 +255,11 @@ def save_ui_config(req: UIConfigRequest, model = Depends(get_model)):
         "column_widths": req.column_widths,
         "view_mode": req.view_mode,
         "quick_tag_order": req.quick_tag_order if req.quick_tag_order in ('custom', 'alpha') else 'custom',
+        "default_sort": req.default_sort or 'Filename',
+        "default_sort_desc": bool(req.default_sort_desc),
+        "default_view": req.default_view if req.default_view in ('grid', 'list') else '',
+        "default_tab": req.default_tab if req.default_tab in _TABS else 'recommended',
+        "library_defaults": _clean_library_defaults(req.library_defaults),
     }
     
     if USE_SQLITE:

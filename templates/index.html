@@ -801,6 +801,12 @@
                 specialSorts: ['Recently Added', 'Most Played', 'Last Played', 'Time Watched', 'Random'],
                 sortDesc: false,
                 librarySortSettings: {},  // Session-based sort retention per library 
+                libraryViewModes: {},     // ...and view (thumbnails / list) chosen per library this session
+                // what a library opens with (Settings -> Browsing; view '' = the one you used last) + per-library overrides
+                libDefaults: { sort: 'Filename', desc: false, view: '', tab: 'recommended' },
+                libraryDefaults: {},      // {library: {sort, desc, view, tab}} - only what's overridden
+                configPending: false,     // a saveConfig is waiting (refreshAll mustn't undo it)
+                libTabNames: [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections'], ['movies', 'Movies']],
                 availableColumns: [], 
                 visibleColumns: ["Fav", "Title", "Cast", "Date Created", "File Size"], 
                 columnWidths: {}, 
@@ -932,7 +938,8 @@
                     { id: 'account', label: 'Account & Security', group: 'Personal', icon: '🔒' },
                     { id: 'appearance', label: 'Appearance', group: 'Personal', icon: '🎨' },
                     { id: 'browsing', label: 'Browsing', group: 'Personal', icon: '🗂️' },
-                    { id: 'libraries', label: 'Libraries & Scans', group: 'Library', icon: '📚' },
+                    { id: 'libraries', label: 'Libraries & Scans', group: 'Library', icon: '📚',
+                      subs: [['libraries', 'Libraries'], ['groups', 'Groups'], ['settings', 'Library settings'], ['scans', 'Scans']] },
                     { id: 'thumbnails', label: 'Thumbnails', group: 'Library', icon: '🖼️' },
                     { id: 'metadata', label: 'Metadata', group: 'Library', icon: '🏷️' },
                     { id: 'playhistory', label: 'Play History', group: 'Library', icon: '🕘' },
@@ -1842,6 +1849,8 @@
                 async init() {
                     console.log('App init starting');
                     this.$nextTick(() => this.autoDraggables());
+                    // Libraries (Settings): your edits to the order / groups are saved however Settings is closed
+                    this.$watch('modals.settings', open => { if (!open && this.modals.library) this.closeLibraryModal(); });
                     
                     // Call onAlpineInit immediately since Alpine is already initialized when init() runs
                     this.onAlpineInit();
@@ -2170,11 +2179,7 @@
                     this.showManageGroup = true;
                 },
 
-                openLibraryTypes() {
-                    if (this.settingsLayout !== 'page') this.modals.settings = false;    // the Settings page stays underneath
-                    this.openLibraryModal();
-                    this.libraryManagementTab = 'settings';
-                },
+                openLibraryTypes() { this.openLibraryModal('settings'); },
 
                 async refreshAfterDisplayChange() {
                     this.libraryDataVersion = (this.libraryDataVersion || 0) + 1;      // rebuild the sidebar
@@ -2437,7 +2442,6 @@
                     else if (this.modals.fileInfo && this.modals.metadata) this.modals.fileInfo = false;   // opened from Edit Metadata
                     else if (this.modals.metadata) this.closeMetadata();
                     else if (this.modals.columns) this.modals.columns = false;
-                    else if (this.modals.library) this.closeLibraryModal();
                     else if (this.modals.manageLib) this.modals.manageLib = false;
                     else if (this.modals.fileInfo) this.modals.fileInfo = false;
                     else if (this.modals.playHistory) { if (this.ph.colMenu) this.ph.colMenu = null; else this.phClose(); }
@@ -2452,7 +2456,9 @@
                 saveConfig() {
                     if (!this.isLoggedIn) return;
                     clearTimeout(this.saveTimeout);
+                    this.configPending = true;                 // refreshAll keeps what's on screen until this is saved
                     this.saveTimeout = setTimeout(() => {
+                        this.configPending = false;
                         fetch('/api/config/save', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
@@ -2462,7 +2468,12 @@
                                 visible_columns: this.visibleColumns,
                                 column_widths: this.columnWidths,
                                 view_mode: this.viewMode,
-                                quick_tag_order: this.quickTagOrder
+                                quick_tag_order: this.quickTagOrder,
+                                default_sort: this.libDefaults.sort,
+                                default_sort_desc: this.libDefaults.desc,
+                                default_view: this.libDefaults.view,
+                                default_tab: this.libDefaults.tab,
+                                library_defaults: this.libraryDefaults
                             })
                         }).catch(e => console.error("Save Config Failed", e));
                     }, 1000); 
@@ -2548,6 +2559,10 @@
                             if (initData.config.column_widths) this.columnWidths = initData.config.column_widths;
                             if (initData.config.view_mode) this.viewMode = initData.config.view_mode;
                             if (initData.config.quick_tag_order) this.quickTagOrder = initData.config.quick_tag_order;
+                            const c = initData.config;
+                            if (!this.configPending) this.libDefaults = { sort: c.default_sort || 'Filename', desc: !!c.default_sort_desc,
+                                                 view: c.default_view || '', tab: c.default_tab || 'recommended' };
+                            if (!this.configPending) this.libraryDefaults = c.library_defaults || {};
                         
                         const savedSettings = localStorage.getItem('appSettings');
                         if (savedSettings) {
@@ -2573,7 +2588,7 @@
                             .catch(e => console.error('Failed to load favorite cast:', e));
 
                         const dynamicCols = this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1)); 
-                        const baseCols = ["Fav", "CC", "Versions", "Filename", "Title", "Movie", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
+                        const baseCols = ["Fav", "CC", "Chapters", "Chapter Markers", "Versions", "Filename", "Title", "Movie", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
                         this.availableColumns = [...new Set([...baseCols, ...dynamicCols])];
 
                         // --- STARTUP FIX: Check for hidden 'All Videos' ---
@@ -2595,7 +2610,7 @@
                         this.hasMore = true;
                         this.videos = [];
                         await this.fetchVideos('reset');
-                        if (this.currentLibrary !== 'Home') this.setLibraryTab('recommended', false);   // started in a library: Recommended
+                        if (this.currentLibrary !== 'Home') this.setLibraryTab(this.libOpenPrefs(this.currentLibrary).tab, false);   // started in a library
                         
                         try {
                             const notepadRes = await fetch('/api/config/get?key=notepad_content');
@@ -2837,15 +2852,17 @@
                     this.castBioMode = false;
                     this.showCastBrowserModal = false;
 
-                    // Restore saved sort settings for this library, or use defaults
+                    // Sort / view: what you picked in this library this session, else its override, else the default
+                    const prefs = this.libOpenPrefs(item.name);
                     if (this.librarySortSettings[item.name]) {
                         this.sortField = this.librarySortSettings[item.name].field;
                         this.sortDesc = this.librarySortSettings[item.name].desc;
                     } else {
-                        // Default sort
-                        this.sortField = 'Filename';
-                        this.sortDesc = false;
-                    }    
+                        this.sortField = prefs.sort;
+                        this.sortDesc = prefs.desc;
+                        if (prefs.sort === 'Random') this.sortSeed = Math.floor(Math.random() * 1e9);
+                    }
+                    if (this.libraryViewModes[item.name] || prefs.view) this.viewMode = this.libraryViewModes[item.name] || prefs.view;
 
                     // Clear all active filters when switching libraries
                     this.activeTags = {};
@@ -2859,7 +2876,7 @@
                     this.fetchVideos('reset');
                     this.mobileSidebar = false;
                     this.coll.view = null;
-                    this.setLibraryTab(this.libraryTabs[item.name] || 'recommended', false);   // a library opens on Recommended
+                    this.setLibraryTab(this.libraryTabs[item.name] || prefs.tab, false);   // ...and the same for the tab
                     
                     // Update available filters if filters are active
                     // if (Object.keys(this.activeTags).length > 0 || Object.keys(this.activeSites).length > 0) {
@@ -7598,6 +7615,7 @@ No metadata is changed.`)) return;
 
                 switchView(mode) { 
                     this.viewMode = mode; 
+                    if (this.currentLibrary && this.currentLibrary !== 'Home') this.libraryViewModes[this.currentLibrary] = mode;
                     this.saveConfig(); 
                     
                     // NEW: Scroll to first selected item when view changes
@@ -7683,6 +7701,8 @@ No metadata is changed.`)) return;
                     }
                     
                     if (col === 'CC') return this.hasCC(video) ? 'CC' : '';
+                    if (col === 'Chapters') return video.chapters || '';               // chapters.py: in the file
+                    if (col === 'Chapter Markers') return video.chapter_markers || ''; // ...markers made from them
                     // Favorite column
                     if (col === 'Fav') {
                         return video.favorite ? '★' : '';
@@ -8288,6 +8308,11 @@ No metadata is changed.`)) return;
 
                 // open a sidebar page (and sub-page) and load what it shows
                 settingsGo(id, sub) {
+                    if (id !== 'libraries' && this.modals.library) this.closeLibraryModal();   // leaving Libraries: save your edits
+                    if (id === 'libraries') {
+                        if (sub) this.libraryManagementTab = sub;
+                        if (!this.modals.library && !this.libEditStart()) return;
+                    }
                     this.settingsPage = id;
                     try { localStorage.setItem('settingsPage', id); } catch (e) { /* ignore */ }
                     if (id === 'player' || id === 'captions') this.npSettingsLoad();
@@ -8308,10 +8333,16 @@ No metadata is changed.`)) return;
                     if (this.$refs.settingsBody) this.$refs.settingsBody.scrollTop = 0;
                 },
 
-                settingsSubOn(p, k) { return p.id === 'extdb' ? this.extCfg.tab === k : this.maint.view === k; },
+                settingsSubOn(p, k) {
+                    if (p.id === 'libraries') return this.libraryManagementTab === k;
+                    return p.id === 'extdb' ? this.extCfg.tab === k : this.maint.view === k;
+                },
                 settingsInfo() { return this.settingsPages.find(p => p.id === this.settingsPage) || this.settingsPages[0]; },
                 // a section that belongs to one sidebar page (the popup shows it in its tab, as before)
-                sPage(id) { return this.settingsLayout !== 'page' || this.settingsPage === id; },
+                sPage(id) {
+                    if (this.settingsLayout !== 'page') return true;
+                    return this.settingsPage === id && (id !== 'libraries' || this.libraryManagementTab === 'scans');   // Libraries & Scans › Scans
+                },
                 // a popup tab's block: in page mode it shows on any of the pages its sections belong to
                 sShow(tab, pages) { return this.settingsLayout === 'page' ? [].concat(pages).includes(this.settingsPage) : this.settingsTab === tab; },
 
@@ -8775,10 +8806,49 @@ No metadata is changed.`)) return;
                     setTimeout(() => messageBox.classList.add('hidden'), 3000);
                 },
 
+                // What a library opens with: its override (Settings -> Libraries) over the default (Settings -> Browsing)
+                libOpenPrefs(lib) {
+                    const o = this.libraryDefaults[lib] || {}, d = this.libDefaults;
+                    return { sort: o.sort || d.sort || 'Filename', desc: o.sort ? !!o.desc : !!d.desc,
+                             view: o.view || d.view || '', tab: o.tab || d.tab || 'recommended' };
+                },
+                setLibDefault(lib, key, value) {
+                    const o = { ...(this.libraryDefaults[lib] || {}) };
+                    if (key === 'sort') {
+                        if (value) { o.sort = value; o.desc = this.specialSorts.includes(value) || ['Plays', 'Chapters', 'Chapter Markers'].includes(value); }
+                        else { delete o.sort; delete o.desc; }
+                    } else if (value === '' || value === null) delete o[key];
+                    else o[key] = value;
+                    const all = { ...this.libraryDefaults };
+                    if (Object.keys(o).length) all[lib] = o; else delete all[lib];
+                    this.libraryDefaults = all;
+                    this.saveConfig();
+                },
+
+                // Sort-by dropdown in sections. Properties = every metadata field not placed elsewhere
+                // (Appearance, Attributes and any field you add later); anything else unplaced goes to Other.
+                sortGroups(cols = this.availableColumns) {
+                    const fixed = [
+                        ['Activity', this.specialSorts],
+                        ['Main', ['Cast', 'Male_cast', 'Title', 'Movie', 'Filename', 'Year']],
+                        ['Dates', ['Date Added', 'Date Created', 'Date Modified', 'Date Edited']],
+                        ['Details', ['Rating', 'Orientation', 'Site', 'Tags', 'Fav']],
+                        ['Properties', null],
+                        ['File', ['Resolution', 'Length', 'File Size', 'Codec', 'Total Bitrate', 'Extension', 'Versions', 'CC',
+                                  'Chapters', 'Chapter Markers', 'Path']],
+                    ];
+                    const placed = new Set(['Plays', ...fixed.flatMap(([, c]) => c || [])]);   // Plays = Most Played
+                    const fields = new Set(this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1)));
+                    const props = cols.filter(c => fields.has(c) && !placed.has(c));
+                    const other = cols.filter(c => !fields.has(c) && !placed.has(c) && !this.specialSorts.includes(c));
+                    return [...fixed.map(([g, c]) => [g, c ? (g === 'Activity' ? c : c.filter(x => cols.includes(x))) : props]),
+                            ['Other', other]].filter(([, c]) => c.length);
+                },
+
                 sortBy(field) {
                     if (field === 'Random') { this.sortField = field; this.sortSeed = Math.floor(Math.random() * 1e9); }   // pick again = reshuffle
                     else if (this.sortField === field) this.sortDesc = !this.sortDesc;
-                    else { this.sortField = field; this.sortDesc = this.specialSorts.includes(field) || field === 'Plays'; }   // newest / most first
+                    else { this.sortField = field; this.sortDesc = this.specialSorts.includes(field) || ['Plays', 'Chapters', 'Chapter Markers'].includes(field); }   // newest / most first
                     
                     // Save sort settings for current library (session-based)
                     if (this.currentLibrary && this.currentLibrary !== 'Home') {
@@ -9114,6 +9184,12 @@ No metadata is changed.`)) return;
                         
                         if (this.currentLibrary === oldName) {
                             this.currentLibrary = newName;
+                        }
+                        if (this.libraryDefaults[oldName]) {                   // its default sort / view / tab go with it
+                            const all = { ...this.libraryDefaults, [newName]: this.libraryDefaults[oldName] };
+                            delete all[oldName];
+                            this.libraryDefaults = all;
+                            this.saveConfig();
                         }
                         
                         if (this.manageLibTarget === oldName) {
@@ -10383,12 +10459,22 @@ No metadata is changed.`)) return;
                     await this.smartLoad(true);
                 },
 
-                openLibraryModal() {
+                // Manage Libraries & Groups: a page in Settings (Libraries & Scans), sub-page libraries | groups | settings | scans
+                openLibraryModal(sub = 'libraries') {
+                    this.activeMenu = null;
+                    if (this.settingsLayout === 'page') { this.openSettings('libraries'); this.settingsGo('libraries', sub); return; }
+                    this.libraryManagementTab = sub;
+                    if (!this.modals.library && !this.libEditStart()) return;
+                    this.openSettings();
+                    this.settingsTab = 'libraries';
+                },
+                // start editing: a working copy of the library order (saved by closeLibraryModal) -> false if the data isn't ready
+                libEditStart() {
                     this.folderFind = '';
                     // CRITICAL PROTECTION: Don't open if data isn't loaded yet
                     if (!this.isDataFullyLoaded) {
                         alert('⏳ Please wait for library data to finish loading before managing libraries.');
-                        return;
+                        return false;
                     }
                     
                     // Extra check: Don't open if we had groups but they're now empty
@@ -10406,11 +10492,10 @@ No metadata is changed.`)) return;
                         if (shouldRefresh) {
                             location.reload();
                         }
-                        return;
+                        return false;
                     }
                     
                     this.activeMenu = null; // Fix: Close context menu
-                    this.libraryManagementTab = 'libraries'; // Reset to libraries tab
                     this.modals.library = true;
                     this.tempLibraryOrder = [...this.libraryOrder];
                     
@@ -10427,8 +10512,16 @@ No metadata is changed.`)) return;
                     }
                     
                     this.hideAllVideos = this.hiddenLibraries.includes('All Videos');
+                    return true;
+                },
+                // Save button: save, then keep editing
+                async libEditSave() {
+                    await this.closeLibraryModal();
+                    if (this.modals.settings) this.libEditStart();
                 },
                 async closeLibraryModal() {
+                    if (!this.modals.library) return;                              // already saved (Settings closed + page change)
+                    this.modals.library = false;
                     const hidden = [...this.hiddenLibraries];
                     if (this.hideAllVideos && !hidden.includes('All Videos')) hidden.push('All Videos');
                     if (!this.hideAllVideos && hidden.includes('All Videos')) {
@@ -10445,8 +10538,6 @@ No metadata is changed.`)) return;
                     
                     // Save library groups
                     await this.saveLibraryGroups();
-                    
-                    this.modals.library = false;
                     
                     // Refresh to update sidebar
                     await this.refreshAll();
@@ -10483,6 +10574,7 @@ No metadata is changed.`)) return;
                     if(!window.confirm("Remove library '" + name + "'?")) return; 
                     await fetch(`/api/library/${name}`, { method: 'DELETE' }); 
                     this.tempLibraryOrder = this.tempLibraryOrder.filter(l => l !== name);
+                    if (this.libraryDefaults[name]) { const all = { ...this.libraryDefaults }; delete all[name]; this.libraryDefaults = all; this.saveConfig(); }
                     const res = await fetch('/api/init');
                     const d = await res.json();
                     this.allLibraries = d.libraries;
@@ -13540,10 +13632,12 @@ No metadata is changed.`)) return;
                     Logout in <span x-text="inactivityCountdown"></span>
                 </div>
                 <div class="flex items-center gap-1 bg-gray-900 rounded border border-gray-700 px-2 py-1 ml-auto md:ml-0">
-                    <select x-model="sortField" @change="sortBy(sortField)" class="bg-gray-800 text-sm text-white outline-none w-20 md:w-24">
-                        <template x-for="col in specialSorts" :key="'ss-' + col"><option :value="col" x-text="col" :selected="sortField === col"></option></template>
-                        <option disabled>──────</option>
-                        <template x-for="col in availableColumns.filter(c => !specialSorts.includes(c))" :key="col"><option :value="col" x-text="col" :selected="sortField === col"></option></template>
+                    <select :value="sortField" @change="sortBy($event.target.value)" class="bg-gray-800 text-sm text-white outline-none w-20 md:w-24">
+                        <template x-for="[g, cols] in sortGroups()" :key="'sg-' + g">
+                            <optgroup :label="g">
+                                <template x-for="col in cols" :key="'so-' + col"><option :value="col" x-text="col" :selected="sortField === col"></option></template>
+                            </optgroup>
+                        </template>
                     </select>
                     <button @click="toggleSortDir" class="text-gray-400 hover:text-white px-1"><span x-text="sortDesc ? '&#9660;' : '&#9650;'"></span></button>
                 </div>
@@ -13659,7 +13753,7 @@ No metadata is changed.`)) return;
                     <!-- tabs for a library / group (roadmap #9) -->
                     <div x-show="currentLibrary !== 'Home' && !castBioMode" class="sticky top-0 z-20 bg-gray-900 flex flex-wrap items-center gap-1 px-4 pt-3 border-b border-gray-800 text-sm"
                          x-init="new ResizeObserver(() => { tabsH = $el.offsetHeight; jumpMeasure(); }).observe($el)">
-                        <template x-for="tb in [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections'], ['movies', 'Movies']]" :key="tb[0]">
+                        <template x-for="tb in libTabNames" :key="tb[0]">
                             <button @click="setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
                                     :class="libraryTab === tb[0] ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'" x-text="tb[1]"></button>
                         </template>
@@ -15160,221 +15254,6 @@ No metadata is changed.`)) return;
             </template>
         </div>
 
-        <div x-show="modals.library" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4">
-            <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-3xl p-6 shadow-2xl max-h-[90vh] flex flex-col" @click.outside="closeLibraryModal">
-                <div class="flex justify-between items-center mb-4" data-drag-handle style="cursor: move">
-                    <h2 class="text-2xl font-bold">Manage Libraries & Groups</h2>
-                    <button @click="closeLibraryModal" class="text-gray-400 text-2xl">&times;</button>
-                </div>
-                
-                <!-- Tabs -->
-                <div class="flex border-b border-gray-700 mb-4">
-                    <button @click="libraryManagementTab = 'libraries'" 
-                            class="px-6 py-3 text-sm font-medium border-b-2 transition-colors"
-                            :class="libraryManagementTab === 'libraries' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
-                        Libraries
-                    </button>
-                    <button @click="libraryManagementTab = 'groups'" 
-                            class="px-6 py-3 text-sm font-medium border-b-2 transition-colors"
-                            :class="libraryManagementTab === 'groups' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
-                        Groups
-                    </button>
-                    <button @click="libraryManagementTab = 'settings'" 
-                            class="px-6 py-3 text-sm font-medium border-b-2 transition-colors"
-                            :class="libraryManagementTab === 'settings' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
-                        Settings
-                    </button>
-                </div>
-                
-                <!-- Libraries Tab -->
-                <div x-show="libraryManagementTab === 'libraries'" class="flex-1 overflow-hidden flex flex-col">
-                    <div class="mb-4 flex gap-2">
-                        <input type="text" x-model="newLibName" placeholder="New Library Name..." class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2">
-                        <button @click="createLibrary" class="bg-blue-600 px-4 py-2 rounded">Create Library</button>
-                        <select :value="appSettings.folderSort" @change="setFolderSort($event.target.value)" title="Folder order" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
-                            <option value="added">Folders: date added</option>
-                            <option value="name">Folders: A&ndash;Z</option>
-                        </select>
-                    </div>
-                    
-                    <div class="mb-3 flex items-center gap-2">
-                        <input type="text" x-model="folderFind" placeholder="Find a folder in your libraries..." class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm">
-                        <button x-show="folderFind" @click="folderFind = ''" class="text-gray-400 hover:text-white text-xl font-bold px-1" title="Clear">&times;</button>
-                    </div>
-                    <div x-show="folderFind.trim()" class="mb-3 text-xs"
-                         :class="tempLibraryOrder.some(n => sortedFolders(n, folderFind).length) ? 'text-green-400' : 'text-yellow-400'"
-                         x-text="(() => { const hits = tempLibraryOrder.filter(n => !libraryGroups[n] && sortedFolders(n, folderFind).length); return hits.length ? 'Found in: ' + hits.join(', ') : 'Not in any library'; })()"></div>
-
-                    <div class="space-y-4 overflow-y-auto pr-2 scroller flex-1">
-                        <template x-for="(name, index) in tempLibraryOrder" :key="name">
-                            <div x-show="!folderFind.trim() || (!libraryGroups[name] && sortedFolders(name, folderFind).length)"
-                                 class="bg-gray-900 p-2 rounded border border-gray-700 relative group flex flex-col gap-2"
-                                 draggable="true" 
-                                 @dragstart="startDrag(index)" 
-                                 @dragover.prevent 
-                                 @drop="drop(index)"
-                                 :class="{'draggable-source': dragSourceIndex === index}">
-                                
-                                <div class="flex justify-between items-center">
-                                    <div class="flex items-center gap-2">
-                                        <span x-show="libraryGroups[name]" class="text-purple-400 text-xs">&#128193; GROUP</span>
-                                        <h3 class="font-bold text-blue-400 cursor-move" title="Drag to reorder" x-text="name"></h3>
-                                    </div>
-                                    <div class="flex gap-2">
-                                        <button x-show="!libraryGroups[name]" @click="openBrowser(name)" class="text-xs bg-gray-700 px-2 py-1 rounded">+ Folder</button>
-                                        <button @click="closeLibraryModal(); extSceneBulkFromLibrary(name)" class="text-xs bg-emerald-800 text-emerald-100 px-2 py-1 rounded"
-                                                title="Save and close, then match this library's videos to scenes">🌐 Match scenes</button>
-                                        <button @click="renameLibrary(name)" class="text-xs bg-blue-700 text-blue-200 px-2 py-1 rounded">Rename</button>
-                                        <button @click="deleteLibraryOrGroup(name)" class="text-xs bg-red-900 text-red-200 px-2 py-1 rounded">Delete</button>
-                                    </div>
-                                </div>
-                                <ul x-show="allLibraries[name]" class="text-sm text-gray-400 space-y-1">
-                                    <template x-for="folder in sortedFolders(name, folderFind)" :key="folder">
-                                        <li class="flex items-center gap-2 justify-between bg-gray-800 p-1 rounded">
-                                            <span x-text="folder" class="truncate"></span>
-                                            <button @click="removeFolder(name, folder)" class="text-red-500 hover:text-red-300 text-xl font-bold">&times;</button>
-                                        </li>
-                                    </template>
-                                </ul>
-                                <div x-show="libraryGroups[name]" class="text-sm text-gray-400">
-                                    <span class="text-gray-500">Contains:</span>
-                                    <span x-text="(libraryGroups[name]?.libraries || []).join(', ')"></span>
-                                </div>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-                
-                <!-- Groups Tab -->
-                <div x-show="libraryManagementTab === 'groups'" class="flex-1 overflow-hidden flex flex-col">
-                    <div class="mb-4 space-y-2">
-                        <div class="flex gap-2">
-                            <input type="text" x-model="newGroupName" placeholder="New Group Name..." class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2">
-                            <button @click="createGroup" class="bg-purple-600 px-4 py-2 rounded whitespace-nowrap">Create Group</button>
-                            <button @click="restoreGroupsFromBackup" class="bg-orange-600 px-4 py-2 rounded whitespace-nowrap" title="Restore from automatic backup">🔄 Restore</button>
-                        </div>
-                        <p class="text-xs text-gray-500">Groups organize your libraries into collapsible categories in the sidebar. Backups are created automatically.</p>
-                    </div>
-                    
-                    <div class="space-y-4 overflow-y-auto pr-2 scroller flex-1">
-                        <template x-for="groupName in Object.keys(libraryGroups)" :key="groupName">
-                            <div class="bg-gray-900 p-4 rounded border border-purple-700/50">
-                                <div class="flex justify-between items-center mb-3">
-                                    <div>
-                                        <h3 class="font-bold text-purple-400 flex items-center gap-2">
-                                            &#128193; <span x-text="groupName"></span>
-                                            <span x-show="libraryGroups[groupName]?.parent" class="text-xs text-gray-500">
-                                                (sub-group of <span x-text="libraryGroups[groupName]?.parent"></span>)
-                                            </span>
-                                        </h3>
-                                    </div>
-                                    <div class="flex gap-2">
-                                        <button @click="editGroup(groupName)" class="text-xs bg-purple-700 px-2 py-1 rounded">Edit</button>
-                                        <button @click="deleteGroup(groupName)" class="text-xs bg-red-900 text-red-200 px-2 py-1 rounded">Delete</button>
-                                    </div>
-                                </div>
-                                
-                                <div class="space-y-2">
-                                    <div class="text-sm">
-                                        <span class="text-gray-500">Contains:</span>
-                                        <div class="flex flex-wrap gap-2 mt-1">
-                                            <template x-for="item in (libraryGroups[groupName]?.libraries || [])" :key="item">
-                                                <span class="bg-gray-800 px-2 py-1 rounded text-xs" 
-                                                      :class="libraryGroups[item] ? 'text-purple-300' : 'text-blue-300'">
-                                                    <span x-show="libraryGroups[item]">&#128193;</span>
-                                                    <span x-text="item"></span>
-                                                </span>
-                                            </template>
-                                            <span x-show="(libraryGroups[groupName]?.libraries || []).length === 0" class="text-gray-600 text-xs">Empty group</span>
-                                        </div>
-                                    </div>
-                                    
-                                    <div class="text-xs text-gray-500">
-                                        <label class="inline-flex items-center gap-2 cursor-pointer">
-                                            <input type="checkbox" 
-                                                   :checked="!!libraryGroups[groupName]?.collapsed"
-                                                   @change="libraryGroups[groupName].collapsed = $event.target.checked">
-                                            <span>Start collapsed</span>
-                                        </label>
-                                    </div>
-                                </div>
-                            </div>
-                        </template>
-                        
-                        <div x-show="Object.keys(libraryGroups).length === 0" class="text-center py-12 text-gray-500">
-                            <p class="text-lg">No groups created yet</p>
-                            <p class="text-sm mt-2">Create a group to organize your libraries</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Settings Tab -->
-                <div x-show="libraryManagementTab === 'settings'" class="flex-1 overflow-auto">
-                    <div class="space-y-4">
-                        <div class="bg-gray-900 p-4 rounded">
-                            <label class="flex items-center gap-2 cursor-pointer select-none">
-                                <input type="checkbox" x-model="hideAllVideos"> 
-                                <span class="text-sm text-gray-300">Hide 'All Videos' from Sidebar</span>
-                            </label>
-                        </div>
-                        
-                        <div class="bg-gray-900 p-4 rounded space-y-3">
-                            <div>
-                                <h4 class="font-bold">Orientation types</h4>
-                                <p class="text-xs text-gray-500">Used by "Show libraries and videos" (Settings, or 👁 in the header). Group &lt; library &lt; video tag: a library's own type beats its group's, and a video's orientation tag beats both. A library follows the group it is directly in; a subgroup without a type follows its parent. Nothing set = Mixed (always shown).</p>
-                            </div>
-                            <div x-show="Object.keys(libraryGroups).length">
-                                <h5 class="text-xs font-bold text-gray-400 uppercase mb-1">Groups</h5>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                                    <template x-for="g in Object.keys(libraryGroups).sort((a, b) => a.localeCompare(b))" :key="'gt-' + g">
-                                        <div class="flex items-center justify-between gap-2">
-                                            <span class="truncate text-purple-300" x-text="'📁 ' + g"></span>
-                                            <select class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" @change="setGroupType(g, $event.target.value)">
-                                                <option value="" :selected="!groupTypes[g]" x-text="inheritedTypeLabel(g, true)"></option>
-                                                <template x-for="t in [...displayTypes, 'mixed']" :key="t">
-                                                    <option :value="t" x-text="typeLabel(t)" :selected="groupTypes[g] === t"></option>
-                                                </template>
-                                            </select>
-                                        </div>
-                                    </template>
-                                </div>
-                            </div>
-                            <div>
-                                <h5 class="text-xs font-bold text-gray-400 uppercase mb-1">Libraries</h5>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                                    <template x-for="lib in Object.keys(allLibraries).sort((a, b) => a.localeCompare(b))" :key="'lt-' + lib">
-                                        <div class="flex items-center justify-between gap-2">
-                                            <span class="truncate text-blue-300" x-text="lib"></span>
-                                            <select class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" @change="setLibraryType(lib, $event.target.value)">
-                                            <option value="" :selected="!libraryOwnTypes[lib]" x-text="inheritedTypeLabel(lib)"></option>
-                                            <template x-for="t in [...displayTypes, 'mixed']" :key="t">
-                                                <option :value="t" x-text="typeLabel(t)" :selected="libraryOwnTypes[lib] === t"></option>
-                                            </template>
-                                        </select>
-                                        </div>
-                                    </template>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="bg-gray-900 p-4 rounded">
-                            <h4 class="font-bold mb-2">About Library Groups</h4>
-                            <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
-                                <li>Groups organize libraries into collapsible categories</li>
-                                <li>Groups can contain libraries or other groups (nesting)</li>
-                                <li>Click group name to view all videos from all libraries in that group</li>
-                                <li>Search within groups using <code class="bg-gray-800 px-1">library:GroupName</code></li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="mt-4 flex justify-end">
-                    <button @click="closeLibraryModal" class="bg-blue-600 px-4 py-2 rounded font-bold">Save & Close</button>
-                </div>
-            </div>
-        </div>
-
         <!-- Group Editor Modal -->
         <div x-show="modals.groupEditor" x-cloak class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4">
             <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-xl p-6 shadow-2xl" @click.stop @click.outside="modals.groupEditor = false; editingGroupName = null">
@@ -16298,6 +16177,11 @@ No metadata is changed.`)) return;
                             :class="settingsTab === 'general' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
                         General
                     </button>
+                    <button @click="openLibraryModal(libraryManagementTab === 'scans' ? 'libraries' : libraryManagementTab)"
+                            class="px-4 py-3 text-sm font-medium border-b-2 transition-colors"
+                            :class="settingsTab === 'libraries' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
+                        📚 Libraries
+                    </button>
                     <button @click="settingsTab = 'thumbnails'" 
                             class="px-4 py-3 text-sm font-medium border-b-2 transition-colors"
                             :class="settingsTab === 'thumbnails' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
@@ -16340,11 +16224,276 @@ No metadata is changed.`)) return;
                   <div :class="settingsLayout === 'page' ? 'mx-auto w-full px-4 sm:px-8 py-6 space-y-4 ' + (settingsInfo().wide ? 'max-w-7xl' : 'max-w-3xl') : 'space-y-4'">
                     <h2 x-show="settingsLayout === 'page'" class="text-2xl font-bold flex items-center gap-2 pb-2">
                         <span x-text="settingsInfo().icon"></span><span x-text="settingsInfo().label"></span></h2>
+                    <!-- Libraries & Groups (was the Manage Libraries popup): page Libraries & Scans › Libraries / Groups / Library settings.
+                         Edits a working copy of the order and groups; saved by Save, by leaving the page or by closing Settings. -->
+                    <div x-show="sShow('libraries', 'libraries') && modals.library && (settingsLayout !== 'page' || libraryManagementTab !== 'scans')" class="space-y-4">
+                <!-- Tabs -->
+                <div x-show="settingsLayout !== 'page'" class="flex border-b border-gray-700 mb-4">
+                    <button @click="libraryManagementTab = 'libraries'" 
+                            class="px-6 py-3 text-sm font-medium border-b-2 transition-colors"
+                            :class="libraryManagementTab === 'libraries' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
+                        Libraries
+                    </button>
+                    <button @click="libraryManagementTab = 'groups'" 
+                            class="px-6 py-3 text-sm font-medium border-b-2 transition-colors"
+                            :class="libraryManagementTab === 'groups' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
+                        Groups
+                    </button>
+                    <button @click="libraryManagementTab = 'settings'" 
+                            class="px-6 py-3 text-sm font-medium border-b-2 transition-colors"
+                            :class="libraryManagementTab === 'settings' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'">
+                        Settings
+                    </button>
+                </div>
+                
+                <!-- Libraries Tab -->
+                <div x-show="libraryManagementTab === 'libraries'" class="flex flex-col">
+                    <div class="mb-4 flex gap-2">
+                        <input type="text" x-model="newLibName" placeholder="New Library Name..." class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2">
+                        <button @click="createLibrary" class="bg-blue-600 px-4 py-2 rounded">Create Library</button>
+                        <select :value="appSettings.folderSort" @change="setFolderSort($event.target.value)" title="Folder order" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+                            <option value="added">Folders: date added</option>
+                            <option value="name">Folders: A&ndash;Z</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3 flex items-center gap-2">
+                        <input type="text" x-model="folderFind" placeholder="Find a folder in your libraries..." class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                        <button x-show="folderFind" @click="folderFind = ''" class="text-gray-400 hover:text-white text-xl font-bold px-1" title="Clear">&times;</button>
+                    </div>
+                    <div x-show="folderFind.trim()" class="mb-3 text-xs"
+                         :class="tempLibraryOrder.some(n => sortedFolders(n, folderFind).length) ? 'text-green-400' : 'text-yellow-400'"
+                         x-text="(() => { const hits = tempLibraryOrder.filter(n => !libraryGroups[n] && sortedFolders(n, folderFind).length); return hits.length ? 'Found in: ' + hits.join(', ') : 'Not in any library'; })()"></div>
+
+                    <div class="space-y-4">
+                        <template x-for="(name, index) in tempLibraryOrder" :key="name">
+                            <div x-show="!folderFind.trim() || (!libraryGroups[name] && sortedFolders(name, folderFind).length)"
+                                 class="bg-gray-900 p-2 rounded border border-gray-700 relative group flex flex-col gap-2"
+                                 draggable="true" 
+                                 @dragstart="startDrag(index)" 
+                                 @dragover.prevent 
+                                 @drop="drop(index)"
+                                 :class="{'draggable-source': dragSourceIndex === index}">
+                                
+                                <div class="flex justify-between items-center">
+                                    <div class="flex items-center gap-2">
+                                        <span x-show="libraryGroups[name]" class="text-purple-400 text-xs">&#128193; GROUP</span>
+                                        <h3 class="font-bold text-blue-400 cursor-move" title="Drag to reorder" x-text="name"></h3>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button x-show="!libraryGroups[name]" @click="openBrowser(name)" class="text-xs bg-gray-700 px-2 py-1 rounded">+ Folder</button>
+                                        <button @click="closeSettings(); extSceneBulkFromLibrary(name)" class="text-xs bg-emerald-800 text-emerald-100 px-2 py-1 rounded"
+                                                title="Save, close Settings, then match this library's videos to scenes">🌐 Match scenes</button>
+                                        <button @click="renameLibrary(name)" class="text-xs bg-blue-700 text-blue-200 px-2 py-1 rounded">Rename</button>
+                                        <button @click="deleteLibraryOrGroup(name)" class="text-xs bg-red-900 text-red-200 px-2 py-1 rounded">Delete</button>
+                                    </div>
+                                </div>
+                                <div x-data="{ open: false }" class="text-xs">
+                                    <button @click="open = !open" class="text-gray-400 hover:text-white"
+                                            x-text="'Opens with: ' + (() => { const o = libraryDefaults[name] || {}, p = libOpenPrefs(name);
+                                                return [(o.sort ? '' : 'default ') + 'sort ' + p.sort + (p.desc ? ' ▼' : ' ▲'),
+                                                        (p.view ? (p.view === 'grid' ? 'thumbnails' : 'list') : 'last view') + (o.view ? '' : ' (default)'),
+                                                        (libTabNames.find(t => t[0] === p.tab) || ['', p.tab])[1] + ' tab' + (o.tab ? '' : ' (default)')].join(' · '); })() + (open ? ' ▾' : ' ▸')"></button>
+                                    <div x-show="open" class="mt-1 flex flex-wrap items-center gap-2">
+                                        <select @change="setLibDefault(name, 'sort', $event.target.value)" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" title="Sort">
+                                            <option value="" :selected="!libraryDefaults[name]?.sort" x-text="'Sort: default (' + libDefaults.sort + ')'"></option>
+                                            <template x-for="[g, cols] in sortGroups()" :key="name + '-g-' + g">
+                                                <optgroup :label="g"><template x-for="col in cols" :key="name + '-s-' + col"><option :value="col" x-text="col" :selected="libraryDefaults[name]?.sort === col"></option></template></optgroup>
+                                            </template>
+                                        </select>
+                                        <button x-show="libraryDefaults[name]?.sort" @click="setLibDefault(name, 'desc', !libraryDefaults[name].desc)"
+                                                class="px-1.5 py-0.5 rounded bg-gray-800 border border-gray-600" x-text="libraryDefaults[name]?.desc ? '&#9660;' : '&#9650;'"
+                                                :title="libraryDefaults[name]?.desc ? 'Descending' : 'Ascending'"></button>
+                                        <select @change="setLibDefault(name, 'view', $event.target.value)" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" title="View">
+                                            <option value="" :selected="!libraryDefaults[name]?.view">View: default</option>
+                                            <option value="grid" :selected="libraryDefaults[name]?.view === 'grid'">Thumbnails</option>
+                                            <option value="list" :selected="libraryDefaults[name]?.view === 'list'">List</option>
+                                        </select>
+                                        <select @change="setLibDefault(name, 'tab', $event.target.value)" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" title="Tab">
+                                            <option value="" :selected="!libraryDefaults[name]?.tab">Tab: default</option>
+                                            <template x-for="tb in libTabNames" :key="name + '-t-' + tb[0]"><option :value="tb[0]" x-text="tb[1]" :selected="libraryDefaults[name]?.tab === tb[0]"></option></template>
+                                        </select>
+                                    </div>
+                                </div>
+                                <ul x-show="allLibraries[name]" class="text-sm text-gray-400 space-y-1">
+                                    <template x-for="folder in sortedFolders(name, folderFind)" :key="folder">
+                                        <li class="flex items-center gap-2 justify-between bg-gray-800 p-1 rounded">
+                                            <span x-text="folder" class="truncate"></span>
+                                            <button @click="removeFolder(name, folder)" class="text-red-500 hover:text-red-300 text-xl font-bold">&times;</button>
+                                        </li>
+                                    </template>
+                                </ul>
+                                <div x-show="libraryGroups[name]" class="text-sm text-gray-400">
+                                    <span class="text-gray-500">Contains:</span>
+                                    <span x-text="(libraryGroups[name]?.libraries || []).join(', ')"></span>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                
+                <!-- Groups Tab -->
+                <div x-show="libraryManagementTab === 'groups'" class="flex flex-col">
+                    <div class="mb-4 space-y-2">
+                        <div class="flex gap-2">
+                            <input type="text" x-model="newGroupName" placeholder="New Group Name..." class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2">
+                            <button @click="createGroup" class="bg-purple-600 px-4 py-2 rounded whitespace-nowrap">Create Group</button>
+                            <button @click="restoreGroupsFromBackup" class="bg-orange-600 px-4 py-2 rounded whitespace-nowrap" title="Restore from automatic backup">🔄 Restore</button>
+                        </div>
+                        <p class="text-xs text-gray-500">Groups organize your libraries into collapsible categories in the sidebar. Backups are created automatically.</p>
+                    </div>
+                    
+                    <div class="space-y-4">
+                        <template x-for="groupName in Object.keys(libraryGroups)" :key="groupName">
+                            <div class="bg-gray-900 p-4 rounded border border-purple-700/50">
+                                <div class="flex justify-between items-center mb-3">
+                                    <div>
+                                        <h3 class="font-bold text-purple-400 flex items-center gap-2">
+                                            &#128193; <span x-text="groupName"></span>
+                                            <span x-show="libraryGroups[groupName]?.parent" class="text-xs text-gray-500">
+                                                (sub-group of <span x-text="libraryGroups[groupName]?.parent"></span>)
+                                            </span>
+                                        </h3>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button @click="editGroup(groupName)" class="text-xs bg-purple-700 px-2 py-1 rounded">Edit</button>
+                                        <button @click="deleteGroup(groupName)" class="text-xs bg-red-900 text-red-200 px-2 py-1 rounded">Delete</button>
+                                    </div>
+                                </div>
+                                
+                                <div class="space-y-2">
+                                    <div class="text-sm">
+                                        <span class="text-gray-500">Contains:</span>
+                                        <div class="flex flex-wrap gap-2 mt-1">
+                                            <template x-for="item in (libraryGroups[groupName]?.libraries || [])" :key="item">
+                                                <span class="bg-gray-800 px-2 py-1 rounded text-xs" 
+                                                      :class="libraryGroups[item] ? 'text-purple-300' : 'text-blue-300'">
+                                                    <span x-show="libraryGroups[item]">&#128193;</span>
+                                                    <span x-text="item"></span>
+                                                </span>
+                                            </template>
+                                            <span x-show="(libraryGroups[groupName]?.libraries || []).length === 0" class="text-gray-600 text-xs">Empty group</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="text-xs text-gray-500">
+                                        <label class="inline-flex items-center gap-2 cursor-pointer">
+                                            <input type="checkbox" 
+                                                   :checked="!!libraryGroups[groupName]?.collapsed"
+                                                   @change="libraryGroups[groupName].collapsed = $event.target.checked">
+                                            <span>Start collapsed</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                        
+                        <div x-show="Object.keys(libraryGroups).length === 0" class="text-center py-12 text-gray-500">
+                            <p class="text-lg">No groups created yet</p>
+                            <p class="text-sm mt-2">Create a group to organize your libraries</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Settings Tab -->
+                <div x-show="libraryManagementTab === 'settings'">
+                    <div class="space-y-4">
+                        <div class="bg-gray-900 p-4 rounded">
+                            <label class="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" x-model="hideAllVideos"> 
+                                <span class="text-sm text-gray-300">Hide 'All Videos' from Sidebar</span>
+                            </label>
+                        </div>
+                        
+                        <div class="bg-gray-900 p-4 rounded space-y-3">
+                            <div>
+                                <h4 class="font-bold">Orientation types</h4>
+                                <p class="text-xs text-gray-500">Used by "Show libraries and videos" (Settings, or 👁 in the header). Group &lt; library &lt; video tag: a library's own type beats its group's, and a video's orientation tag beats both. A library follows the group it is directly in; a subgroup without a type follows its parent. Nothing set = Mixed (always shown).</p>
+                            </div>
+                            <div x-show="Object.keys(libraryGroups).length">
+                                <h5 class="text-xs font-bold text-gray-400 uppercase mb-1">Groups</h5>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                                    <template x-for="g in Object.keys(libraryGroups).sort((a, b) => a.localeCompare(b))" :key="'gt-' + g">
+                                        <div class="flex items-center justify-between gap-2">
+                                            <span class="truncate text-purple-300" x-text="'📁 ' + g"></span>
+                                            <select class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" @change="setGroupType(g, $event.target.value)">
+                                                <option value="" :selected="!groupTypes[g]" x-text="inheritedTypeLabel(g, true)"></option>
+                                                <template x-for="t in [...displayTypes, 'mixed']" :key="t">
+                                                    <option :value="t" x-text="typeLabel(t)" :selected="groupTypes[g] === t"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                            <div>
+                                <h5 class="text-xs font-bold text-gray-400 uppercase mb-1">Libraries</h5>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                                    <template x-for="lib in Object.keys(allLibraries).sort((a, b) => a.localeCompare(b))" :key="'lt-' + lib">
+                                        <div class="flex items-center justify-between gap-2">
+                                            <span class="truncate text-blue-300" x-text="lib"></span>
+                                            <select class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" @change="setLibraryType(lib, $event.target.value)">
+                                            <option value="" :selected="!libraryOwnTypes[lib]" x-text="inheritedTypeLabel(lib)"></option>
+                                            <template x-for="t in [...displayTypes, 'mixed']" :key="t">
+                                                <option :value="t" x-text="typeLabel(t)" :selected="libraryOwnTypes[lib] === t"></option>
+                                            </template>
+                                        </select>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-gray-900 p-4 rounded">
+                            <h4 class="font-bold mb-2">About Library Groups</h4>
+                            <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
+                                <li>Groups organize libraries into collapsible categories</li>
+                                <li>Groups can contain libraries or other groups (nesting)</li>
+                                <li>Click group name to view all videos from all libraries in that group</li>
+                                <li>Search within groups using <code class="bg-gray-800 px-1">library:GroupName</code></li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                
+                        <div class="flex items-center justify-end gap-3">
+                            <span class="text-xs text-gray-500">Also saved when you leave this page or close Settings.</span>
+                            <button @click="libEditSave()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold">Save</button>
+                        </div>
+                    </div>
+
                     <!-- General Tab (page: Account & Security, Browsing, Libraries & Scans, Metadata, Play History) -->
                     <div x-show="sShow('general', ['account', 'browsing', 'libraries', 'metadata', 'playhistory'])" class="space-y-4">
                         <button x-show="sPage('browsing')" @click="modals.columns = true; if (settingsLayout !== 'page') modals.settings = false" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
                             <span>Configure Columns</span><span>&#9881;</span>
                         </button>
+
+                        <div x-show="sPage('browsing')" class="bg-gray-900 p-3 rounded space-y-2">
+                            <div><span class="block text-sm font-bold">When a library opens</span>
+                                <span class="block text-xs text-gray-500">A library can override these (Libraries &amp; Scans &rsaquo; Libraries). What you pick while browsing a library is kept until you reload.</span></div>
+                            <div class="grid grid-cols-[5rem_1fr] items-center gap-2 text-sm">
+                                <span class="text-gray-400">Sort</span>
+                                <div class="flex items-center gap-1">
+                                    <select :value="libDefaults.sort" @change="libDefaults.sort = $event.target.value; saveConfig()" class="flex-1 min-w-0 bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                                        <template x-for="[g, cols] in sortGroups()" :key="'dsg-' + g">
+                                            <optgroup :label="g"><template x-for="col in cols" :key="'dso-' + col"><option :value="col" x-text="col" :selected="libDefaults.sort === col"></option></template></optgroup>
+                                        </template>
+                                    </select>
+                                    <button @click="libDefaults.desc = !libDefaults.desc; saveConfig()" class="px-2 py-1 rounded bg-gray-800 border border-gray-600 text-gray-300"
+                                            :title="libDefaults.desc ? 'Descending' : 'Ascending'" x-text="libDefaults.desc ? '&#9660;' : '&#9650;'"></button>
+                                </div>
+                                <span class="text-gray-400">View</span>
+                                <select :value="libDefaults.view" @change="libDefaults.view = $event.target.value; saveConfig()" class="bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                                    <option value="" :selected="!libDefaults.view">The one you used last</option>
+                                    <option value="grid" :selected="libDefaults.view === 'grid'">Thumbnails</option>
+                                    <option value="list" :selected="libDefaults.view === 'list'">List</option>
+                                </select>
+                                <span class="text-gray-400">Tab</span>
+                                <select :value="libDefaults.tab" @change="libDefaults.tab = $event.target.value; saveConfig()" class="bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                                    <template x-for="tb in libTabNames" :key="'dt-' + tb[0]"><option :value="tb[0]" x-text="tb[1]" :selected="libDefaults.tab === tb[0]"></option></template>
+                                </select>
+                            </div>
+                        </div>
 
                         <button x-show="sPage('metadata')" @click="qtOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
                             <span>Edit Quick Tags <span class="text-xs text-gray-500">- the quick-pick buttons in Edit Metadata</span></span><span>🏷️</span>
