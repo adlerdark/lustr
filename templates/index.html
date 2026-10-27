@@ -267,7 +267,7 @@
             border-color: var(--color-page-error) !important;
         }
         
-        /* Apply sticky directly to the TH elements */
+        /* Apply sticky directly to the TH elements (top: under the library tab bar, set inline) */
         .list-view-container table thead th {
             position: sticky;
             top: 0;
@@ -572,6 +572,7 @@
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
+                mainScrollX: 0,           // the main scroll area's sideways scroll (list view): the tab bar moves with it
                 jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1, tabsH: 0,   // tabsH: the sticky library tab bar's height   // # A-Z jump bar (Title / Cast / Filename sorts)
                 castPeek: { name: '', primary: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
                 thumbPick: { open: false, path: '', title: '', frames: [], cover: 0, busy: false, error: '' },   // choose the main thumbnail
@@ -635,7 +636,7 @@
                 extBulkTimer: null,
                 extDbDragging: false,   // true while the Find match / Linked data modal is being dragged
                 // Sites -> StashDB studios, and library default sites (ext_db.py)
-                extSites: { open: false, tab: 'sites', loading: false, sites: [], stats: null, filter: 'unlinked', q: '', error: '', message: '',
+                extSites: { tab: 'sites', loading: false, sites: [], stats: null, filter: 'unlinked', q: '', error: '', message: '',
                             view: 'list', fromMeta: false, limit: '150', recheck: false, job: null,
                             find: { site: null, loading: false, outcome: '', pick: null, cands: [], query: '', cached: false, busy: false },
                             libs: [], libsLoading: false, libEdit: {} },
@@ -668,6 +669,14 @@
                           checked: {}, include: {}, applyVideos: true, busy: false, stop: false, progress: { done: 0, total: 0 },
                           results: {}, error: '', message: '',
                           hover: { row: null, x: 0, y: 0 } },
+                quickFilters: { captions: '', chapters: '', markers: '' },   // header ⏷ Filters: '' | yes | no (sent as captions: / chapters: / markers:)
+                quickFilterNames: [['captions', 'Captions'], ['chapters', 'Chapters in the file'], ['markers', 'Markers']],
+                showFilterMenu: false,
+                // header buttons you can hide (Settings -> Appearance); search, ⚙, Edit Search and Log Out always show
+                headerItems: [['sort', 'Sort'], ['favorites', '★ Favorites only'], ['select', 'Select All'], ['view', 'View (thumbnails / list / folders)'],
+                              ['notes', '📝 Notes'], ['playlists', '📋 Playlists'], ['cast', '👥 Cast'], ['metadata', '🔍 Metadata'],
+                              ['filters', '⏷ Filters (captions / chapters / markers)'], ['scene', '🌐 Scene link filter'], ['match', '🌐 Match scenes'],
+                              ['display', '👁 Libraries and videos shown'], ['tv', '📺 Link a TV'], ['thumbs', '📷 Generate all thumbnails'], ['rescan', 'Rescan']],
                 sceneFilter: '',           // library filter: '' | linked | unlinked | review (sent as a hidden scene: keyword)
                 // Male Cast: men in straight scenes (they stay in the cast; shown after the women, ignored when sorting)
                 maleCast: { map: {}, counts: {}, loaded: false },
@@ -795,6 +804,8 @@
                 
                 folderMode: false,
                 currentFolder: null,
+                // Back button: places to go back to (navPush), and the one history entry that catches Back (navSync)
+                navStack: [], _navSkip: false, _navHold: 0, _navQuery: '',
                 
                 sortField: 'Filename',
                 sortSeed: Math.floor(Math.random() * 1e9),          // Random sort: same order while paging
@@ -947,7 +958,7 @@
                     { id: 'captions', label: 'Captions', group: 'Playback', icon: '💬' },
                     { id: 'vlc', label: 'VLC', group: 'Playback', icon: '🔶' },
                     { id: 'extdb', label: 'External DB', group: 'Data', icon: '🌐', wide: true,
-                      subs: [['overview', 'Overview'], ['tagmap', 'Tag mappings'], ['links', 'Linked videos']] },
+                      subs: [['overview', 'Overview'], ['tagmap', 'Tag mappings'], ['sites', 'Site Linking'], ['links', 'Linked videos']] },
                     { id: 'maintenance', label: 'Maintenance', group: 'Data', icon: '🧹', wide: true,
                       subs: [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'],
                              ['spell', 'Same performer, different spelling'], ['tags', 'Tag cleanup'], ['backups', 'Backups']] },
@@ -1027,7 +1038,12 @@
                 editPaths: [],                 // the files an edit / parse window works on
                 parser: { tab: 'smart', scope: 'selected', library: '', items: [], next: null, scanned: 0, total: 0,
                           loading: false, applying: false, msg: '', learned: null, showLearned: false },
-                parserOptions: { clean_underscores: false, clean_dashes: false, clean_dots: true, title_case: false },
+                parserOptions: { clean_underscores: false, clean_dashes: false, clean_dots: true, title_case: false, dir_in_title: false },
+                // Parse Filenames -> Pattern: what the chips under the box add (token, label, tooltip)
+                parserTokens: [['%S', 'Site'], ['%C', 'Cast', 'One or more performers'], ['%F', 'First name'], ['%M', 'Middle name'], ['%L', 'Last name'],
+                               ['%T', 'Title', 'Everything up to the next part of the pattern'], ['%Y', 'Year', '4 digits'], ['%YY', 'Year (yy)'], ['%MM', 'Month'],
+                               ['%DD', 'Day'], ['%R', 'Resolution', 'e.g. 1080p'], ['*', 'Skip', 'Anything here is ignored']],
+                parserSeparators: [['.', '.', 'A dot'], ['_', '_', 'An underscore'], ['-', '-', 'A dash'], [' - ', '␣-␣', 'A dash with spaces'], [' ', '␣', 'A space']],
                 
                 // Duplicates scanner
                 duplicateConflicts: [],
@@ -1850,7 +1866,13 @@
                     console.log('App init starting');
                     this.$nextTick(() => this.autoDraggables());
                     // Libraries (Settings): your edits to the order / groups are saved however Settings is closed
-                    this.$watch('modals.settings', open => { if (!open && this.modals.library) this.closeLibraryModal(); });
+                    this.$watch('modals.settings', open => {
+                        if (!open && this.modals.library) this.closeLibraryModal();
+                        if (!open && this.extSites.fromMeta) { this.extSites.fromMeta = false; this.modals.metadataBrowser = true; }   // Link sites came from there
+                    });
+                    // a chapter check still running (started earlier / elsewhere): show its header chip
+                    fetch('/api/player/chapters/status').then(r => r.ok ? r.json() : null)
+                        .then(d => { if (d && d.status && d.status.running) this.chaptersBulk('status'); }).catch(() => {});
                     
                     // Call onAlpineInit immediately since Alpine is already initialized when init() runs
                     this.onAlpineInit();
@@ -1944,34 +1966,8 @@
                     });
                     
                     
-                    // Handle browser back button
-                    window.addEventListener('popstate', (event) => {
-                        if (this._settingsPop) { this._settingsPop = false; return; }   // closeSettings() taking its entry back
-                        if (this.modals.settings && this.settingsLayout === 'page') { this.modals.settings = false; return; }   // back closes Settings
-                        if (this.np.open) { this.npTeardown(); return; }      // back button closes the new player
-                        if (this.activeVideo) {
-                            // Clear video player without using history.back()
-                            if (this.hls) {
-                                this.hls.destroy();
-                                this.hls = null;
-                            }
-                            if (this.hlsSessionId) {
-                                fetch('/api/stream/stop', {
-                                    method: 'POST',
-                                    headers: {'Content-Type': 'application/json'},
-                                    body: JSON.stringify({session_id: this.hlsSessionId})
-                                });
-                                this.hlsSessionId = null;
-                            }
-                            if (this.progressInterval) {
-                                clearInterval(this.progressInterval);
-                                this.progressInterval = null;
-                            }
-                            this.classicSaveProgress(true);
-                            this.activeVideo = null;
-                            TimerManager.videoPlaying(false);
-                        }
-                    });
+                    // Browser / phone Back: close the player, Settings or a cast bio, else go back to the last place (navSync)
+                    window.addEventListener('popstate', () => this.navOnBack());
 
                     // Global Cleanup on unload
                     window.addEventListener('beforeunload', () => {
@@ -2553,9 +2549,9 @@
                         });
                         
                         if (initData.config) {
-                            if (initData.config.sort_field) this.sortField = initData.config.sort_field;
+                            if (initData.config.sort_field) this.sortField = initData.config.sort_field === 'Chapter Markers' ? 'Markers' : initData.config.sort_field;
                             if (initData.config.sort_desc !== undefined) this.sortDesc = initData.config.sort_desc;
-                            if (initData.config.visible_columns) this.visibleColumns = initData.config.visible_columns;
+                            if (initData.config.visible_columns) this.visibleColumns = initData.config.visible_columns.map(c => c === 'Chapter Markers' ? 'Markers' : c);   // 0.16.0 name
                             if (initData.config.column_widths) this.columnWidths = initData.config.column_widths;
                             if (initData.config.view_mode) this.viewMode = initData.config.view_mode;
                             if (initData.config.quick_tag_order) this.quickTagOrder = initData.config.quick_tag_order;
@@ -2588,7 +2584,7 @@
                             .catch(e => console.error('Failed to load favorite cast:', e));
 
                         const dynamicCols = this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1)); 
-                        const baseCols = ["Fav", "CC", "Chapters", "Chapter Markers", "Versions", "Filename", "Title", "Movie", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
+                        const baseCols = ["Fav", "CC", "Chapters", "Markers", "Versions", "Filename", "Title", "Movie", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
                         this.availableColumns = [...new Set([...baseCols, ...dynamicCols])];
 
                         // --- STARTUP FIX: Check for hidden 'All Videos' ---
@@ -2660,6 +2656,7 @@
                     console.log('=== fetchVideos START ===');
                     
                     if (window.location.protocol === 'blob:' || !this.isLoggedIn) { this.isSearching = false; return; }
+                    this._navQuery = this.searchQuery;                     // what Back comes back to (the box changes as you type)
                     
                     // Special handling for Home library
                     if (this.currentLibrary === 'Home') {
@@ -2809,9 +2806,10 @@
                     }
                 },
 
-                enterFolder(path) { this.currentFolder = path; this.page = 1; this.fetchVideos('reset'); },
+                enterFolder(path) { this.navPush(); this.currentFolder = path; this.page = 1; this.fetchVideos('reset'); },
                 goUpFolder() {
                     if (!this.currentFolder) return;
+                    this.navPush();
                     let isRoot = false;
                     if (this.currentLibrary !== 'All Videos') {
                         const roots = this.allLibraries[this.currentLibrary] || [];
@@ -2825,7 +2823,7 @@
                     this.page = 1; this.fetchVideos('reset');
                 },
 
-                toggleFolderMode() { this.folderMode = !this.folderMode; this.page = 1; this.fetchVideos('reset'); },
+                toggleFolderMode() { this.navPush(); this.folderMode = !this.folderMode; this.page = 1; this.fetchVideos('reset'); },
                 
                 // Library Group Methods
                 toggleGroup(groupName) {
@@ -2834,6 +2832,7 @@
                 },
                 
                 selectLibraryOrGroup(item) {
+                    this.navPush();
                     if (item.isGroup) {
                         // Clicking a group selects it (shows all videos in that group)
                         this.currentLibrary = item.name;
@@ -3162,6 +3161,12 @@
                         let x = Math.min(r.left, window.innerWidth - W - 8), y = r.bottom + 6;
                         if (y + H > window.innerHeight - 8) y = Math.max(8, r.top - H - 6);
                         Object.assign(this.castPeek, { src, primary, x: Math.max(8, x), y, show: true });
+                        // mouseleave never comes if the name is re-rendered or covered while you rest on it
+                        // (a list refresh, the player opening, a touch tap), so the card checks for itself
+                        clearInterval(this._castPeekWatch);
+                        this._castPeekWatch = setInterval(() => {
+                            if (this.castPeek.name !== name || !el.isConnected || !el.matches(':hover') || document.hidden) this.castPeekEnd();
+                        }, 250);
                     };
                     this.castPrimary(name).then(p => {
                         if (this.castPeek.name !== name) return;
@@ -3186,6 +3191,7 @@
                 },
                 castPeekEnd() {
                     clearTimeout(this.castPeek.timer);
+                    clearInterval(this._castPeekWatch);
                     Object.assign(this.castPeek, { name: '', primary: '', show: false, timer: null });
                 },
 
@@ -4443,8 +4449,29 @@
 
                 // ===== Bulk scene matching =====
                 apiQuery() {
-                    const q = (this.searchQuery || '').trim();
-                    return this.sceneFilter ? (q ? q + ' ' : '') + 'scene:' + this.sceneFilter : q;
+                    const parts = [(this.searchQuery || '').trim()];
+                    if (this.sceneFilter) parts.push('scene:' + this.sceneFilter);
+                    for (const [k, v] of Object.entries(this.quickFilters)) if (v) parts.push(k + ':' + v);
+                    return parts.filter(Boolean).join(' ');
+                },
+                quickFilterCount() { return Object.values(this.quickFilters).filter(Boolean).length; },
+                setQuickFilter(k, v) {
+                    this.quickFilters = { ...this.quickFilters, [k]: v };
+                    this.page = 1;
+                    this.fetchVideos('reset');
+                },
+
+                hdr(k) { return !(this.appSettings.headerHidden || []).includes(k); },
+                toggleHeaderItem(k) {
+                    const hidden = new Set(this.appSettings.headerHidden || []);
+                    if (hidden.has(k)) hidden.delete(k); else hidden.add(k);
+                    this.appSettings.headerHidden = [...hidden];
+                    try { localStorage.setItem('appSettings', JSON.stringify(this.appSettings)); } catch (e) { /* ignore */ }
+                    // a hidden filter stops filtering, so nothing is filtered by a control you can't see
+                    if (hidden.has(k) && k === 'filters' && this.quickFilterCount()) {
+                        this.quickFilters = { captions: '', chapters: '', markers: '' }; this.page = 1; this.fetchVideos('reset');
+                    }
+                    if (hidden.has(k) && k === 'scene' && this.sceneFilter) this.setSceneFilter('');
                 },
 
                 setSceneFilter(v) {
@@ -4707,10 +4734,18 @@ No metadata is changed.`)) return;
                 },
 
                 // ===== Sites -> StashDB studios (ext_db.py) =====
-                async extSitesOpen() {
+                // Settings -> External DB -> Site Linking; from the Metadata Browser, closing Settings goes back to it
+                extSitesOpen() {
                     this.extSites.fromMeta = !!this.modals.metadataBrowser;
                     this.modals.metadataBrowser = false;
-                    Object.assign(this.extSites, { open: true, view: 'list', error: '', message: '' });
+                    this.extCfg.tab = 'sites';
+                    this.openSettings('extdb');                                  // the page loads it (settingsGo)
+                    if (this.settingsLayout !== 'page') this.extSitesLoadAll();
+                },
+
+                async extSitesLoadAll(tab) {
+                    if (tab) this.extSites.tab = tab;
+                    Object.assign(this.extSites, { view: 'list', error: '', message: '' });
                     if (!this.extDb.status) {
                         try {
                             const st = await (await fetch('/api/extdb/status')).json();
@@ -4722,11 +4757,6 @@ No metadata is changed.`)) return;
                     await this.extSitesJobRefresh();
                     if (this.extSites.job?.running) this.extSitesStartPolling();
                     if (this.extSites.tab === 'libraries') this.extSitesLibsLoad();
-                },
-
-                extSitesClose() {
-                    this.extSites.open = false;
-                    if (this.extSites.fromMeta) this.modals.metadataBrowser = true;
                 },
 
                 async extSitesLoad() {
@@ -6380,6 +6410,11 @@ No metadata is changed.`)) return;
                 },
 
                 async openCollection(id) {
+                    this.navPush();
+                    this._navHold++;                                               // one step back, not one per library / tab change below
+                    try { await this.openCollectionIn(id); } finally { this._navHold--; }
+                },
+                async openCollectionIn(id) {
                     if (this.currentLibrary === 'Home') this.selectLibraryOrGroup({ type: 'library', name: 'All Videos' });
                     this.libraryTab = 'collections';
                     if (this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = 'collections';
@@ -6388,6 +6423,7 @@ No metadata is changed.`)) return;
 
                 async collLoadItems(id, page = 1) {
                     const C = this.coll;
+                    if (page === 1 && String(C.view?.id) !== String(id)) this.navPush();   // opening one (not paging / reloading it)
                     C.loading = true;
                     try {
                         const d = await (await fetch(`/api/collections/${id}/items?page=${page}&limit=100&seed=${this.sortSeed}`)).json();
@@ -6400,7 +6436,7 @@ No metadata is changed.`)) return;
                     C.loading = false;
                 },
 
-                collBack() { this.coll.view = null; this.collSel = {}; this.selectedPaths = new Set(); this.selAllOffer = null; this.loadCollections(); },
+                collBack() { this.navPush(); this.coll.view = null; this.collSel = {}; this.selectedPaths = new Set(); this.selAllOffer = null; this.loadCollections(); },
 
                 // ----- selecting collection cards (circle / Ctrl / Shift) and their right-click menu -----
                 get collSelIds() { return Object.keys(this.collSel).filter(k => this.collSel[k]).map(Number); },
@@ -6523,6 +6559,7 @@ No metadata is changed.`)) return;
                 },
 
                 async mvOpen(id) {
+                    if (!this.mv.view || String(this.mv.view.id) !== String(id)) this.navPush();
                     const scroller = document.querySelector('.scroller-main');
                     // from the movies list: ‹ Movies comes back to this spot
                     this.mv.backScroll = (this.mvTabActive() && !this.mv.view && scroller) ? scroller.scrollTop : null;
@@ -6555,6 +6592,7 @@ No metadata is changed.`)) return;
                 },
 
                 mvBack() {
+                    this.navPush();
                     const M = this.mv, y = M.backScroll;
                     M.view = null; M.items = []; M.backScroll = null; this.mvClearSel();
                     if (y == null || !M.list.length) { this.loadMovies(1); return; }
@@ -7586,6 +7624,11 @@ No metadata is changed.`)) return;
                 homeSeeAll(row, library = 'All Videos') {
                     const s = row.see_all || {};
                     if (s.collection) { this.openCollection && this.openCollection(s.collection); return; }
+                    this.navPush();                                              // Back: Home as it was (before the sort / favorites below)
+                    this._navHold++;
+                    try { this.homeSeeAllIn(s, library); } finally { this._navHold--; }
+                },
+                homeSeeAllIn(s, library) {
                     if (s.sort) this.librarySortSettings[library] = { field: s.sort, desc: s.sort !== 'Random' };
                     if (s.sort === 'Random') this.sortSeed = Math.floor(Math.random() * 1e9);
                     this.favoritesOnly = !!s.favorites;
@@ -7702,7 +7745,7 @@ No metadata is changed.`)) return;
                     
                     if (col === 'CC') return this.hasCC(video) ? 'CC' : '';
                     if (col === 'Chapters') return video.chapters || '';               // chapters.py: in the file
-                    if (col === 'Chapter Markers') return video.chapter_markers || ''; // ...markers made from them
+                    if (col === 'Markers') return video.markers || '';                 // markers (yours + from chapters)
                     // Favorite column
                     if (col === 'Fav') {
                         return video.favorite ? '★' : '';
@@ -7853,6 +7896,7 @@ No metadata is changed.`)) return;
                 },
                 
                 async runAdvancedSearch() {
+                    this.navPush();
                     // Build search query with proper logic:
                     // Search terms are REQUIRED (joined with space = AND)
                     // Metadata selections use AND/OR toggle
@@ -8245,7 +8289,6 @@ No metadata is changed.`)) return;
                 openSettings(page) {
                     if (page) this.settingsPage = page;
                     if (!this.settingsPages.some(p => p.id === this.settingsPage)) this.settingsPage = 'browsing';
-                    const wasOpen = this.modals.settings;
                     this.modals.settings = true;
                     this.loadAutomation();
                     this.tvLoadSessions();
@@ -8254,7 +8297,6 @@ No metadata is changed.`)) return;
                                                        maintenance: 'tools', importexport: 'tools', appearance: 'appearance' }[page] || 'general';
                         return;
                     }
-                    if (!wasOpen) { try { history.pushState({ lustrSettings: true }, '', window.location.pathname); } catch (e) { /* ignore */ } }
                     this.settingsGo(this.settingsPage);
                 },
 
@@ -8303,7 +8345,6 @@ No metadata is changed.`)) return;
 
                 closeSettings() {
                     this.modals.settings = false;
-                    if (history.state && history.state.lustrSettings) { this._settingsPop = true; history.back(); }   // the page's Back entry
                 },
 
                 // open a sidebar page (and sub-page) and load what it shows
@@ -8324,10 +8365,12 @@ No metadata is changed.`)) return;
                         if (sub) this.maintShow(sub);
                     } else if (id === 'extdb') {
                         this.extCfgOpen().then(() => {
-                            if (!sub || sub === this.extCfg.tab) return;
-                            this.extCfg.tab = sub;
-                            if (sub === 'links') this.extCfgLoadLinks(1);
-                            if (sub === 'overview') this.extCfgLoadOverview();
+                            if (sub && sub !== this.extCfg.tab) {
+                                this.extCfg.tab = sub;
+                                if (sub === 'links') this.extCfgLoadLinks(1);
+                                if (sub === 'overview') this.extCfgLoadOverview();
+                            }
+                            if (this.extCfg.tab === 'sites') this.extSitesLoadAll();
                         });
                     }
                     if (this.$refs.settingsBody) this.$refs.settingsBody.scrollTop = 0;
@@ -8539,9 +8582,9 @@ No metadata is changed.`)) return;
                 },
 
                 extCfgGo(which) {
+                    if (which === 'sites') return this.extSitesOpen();
                     this.modals.settings = false;          // Settings sits above these windows
-                    if (which === 'sites') this.extSitesOpen();
-                    else if (which === 'sugbulk') this.extSugOpen();
+                    if (which === 'sugbulk') this.extSugOpen();
                     else this.extBulkOpen();
                 },
 
@@ -8815,7 +8858,7 @@ No metadata is changed.`)) return;
                 setLibDefault(lib, key, value) {
                     const o = { ...(this.libraryDefaults[lib] || {}) };
                     if (key === 'sort') {
-                        if (value) { o.sort = value; o.desc = this.specialSorts.includes(value) || ['Plays', 'Chapters', 'Chapter Markers'].includes(value); }
+                        if (value) { o.sort = value; o.desc = this.specialSorts.includes(value) || ['Plays', 'Chapters', 'Markers'].includes(value); }
                         else { delete o.sort; delete o.desc; }
                     } else if (value === '' || value === null) delete o[key];
                     else o[key] = value;
@@ -8835,7 +8878,7 @@ No metadata is changed.`)) return;
                         ['Details', ['Rating', 'Orientation', 'Site', 'Tags', 'Fav']],
                         ['Properties', null],
                         ['File', ['Resolution', 'Length', 'File Size', 'Codec', 'Total Bitrate', 'Extension', 'Versions', 'CC',
-                                  'Chapters', 'Chapter Markers', 'Path']],
+                                  'Chapters', 'Markers', 'Path']],
                     ];
                     const placed = new Set(['Plays', ...fixed.flatMap(([, c]) => c || [])]);   // Plays = Most Played
                     const fields = new Set(this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1)));
@@ -8848,7 +8891,7 @@ No metadata is changed.`)) return;
                 sortBy(field) {
                     if (field === 'Random') { this.sortField = field; this.sortSeed = Math.floor(Math.random() * 1e9); }   // pick again = reshuffle
                     else if (this.sortField === field) this.sortDesc = !this.sortDesc;
-                    else { this.sortField = field; this.sortDesc = this.specialSorts.includes(field) || ['Plays', 'Chapters', 'Chapter Markers'].includes(field); }   // newest / most first
+                    else { this.sortField = field; this.sortDesc = this.specialSorts.includes(field) || ['Plays', 'Chapters', 'Markers'].includes(field); }   // newest / most first
                     
                     // Save sort settings for current library (session-based)
                     if (this.currentLibrary && this.currentLibrary !== 'Home') {
@@ -9771,6 +9814,7 @@ No metadata is changed.`)) return;
                 },
                 
                 async searchToolsValue(field, value) {
+                    this.navPush();
                     // Close the metadata browser modal
                     this.modals.metadataBrowser = false;
                     this.modals.settings = false;
@@ -10451,6 +10495,16 @@ No metadata is changed.`)) return;
                     const res = await fetch('/api/parse_filename', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ filename: filename, path: path, pattern: this.parserPattern, options: this.parserOptions }) });
                     const data = await res.json();
                     this.parserPreview = data.match ? JSON.stringify(data.data, null, 2) : "No Match";
+                },
+
+                // a chip under the Pattern box: put it at the cursor (or the end)
+                parserInsert(s) {
+                    const el = this.$refs.parserPatternInput, v = this.parserPattern || '';
+                    const a = Math.min(el?._caret ?? v.length, v.length), b = Math.min(Math.max(el?._caretEnd ?? a, a), v.length);   // where it was before the click
+                    this.parserPattern = v.slice(0, a) + s + v.slice(b);
+                    const at = a + s.length;
+                    if (el) { el._caret = el._caretEnd = at; this.$nextTick(() => { el.focus(); el.setSelectionRange(at, at); }); }
+                    this.previewParse();
                 },
 
                 // Pattern tab: the %-pattern parser over the selected files or a library, same add-only review list
@@ -11229,14 +11283,15 @@ No metadata is changed.`)) return;
                 async npOpen(video, startAt = null, ctx = {}) {
                     const np = this.np;
                     this.stopHover();
+                    const seq = this.npOpenSeq = (this.npOpenSeq || 0) + 1;      // opened again meanwhile (double-click, Next): only the last one plays
                     let d;
                     try {
                         d = await (await fetch('/api/player/streams?path=' + encodeURIComponent(video.path))).json();
                     } catch (e) { d = { success: false, error: e.message }; }
+                    if (seq !== this.npOpenSeq) return;
                     if (!d.success) { alert('Could not open the video: ' + (d.error || 'unknown error')); return; }
                     const wasOpen = np.open;
                     if (wasOpen) this.npTeardown();
-                    else window.history.pushState({ npVideo: video.path }, '', window.location.pathname);
                     let idx = d.start_source;
                     const pref = localStorage.getItem('npSourcePref');             // your last manual choice
                     const pi = d.sources.findIndex(s => s.res === pref);
@@ -11249,6 +11304,7 @@ No metadata is changed.`)) return;
                     np.mk.open = false;
                     PlayTracks.np.start();                                          // a new entry in Play History
                     await this.$nextTick();
+                    if (seq !== this.npOpenSeq) return;
                     this.npBuild();
                     const dur = d.duration || 0;
                     const sane = s => s >= 5 && (!dur || s < dur - 5);
@@ -11351,6 +11407,9 @@ No metadata is changed.`)) return;
                 npBuild() {
                     window.lustrNP.app = this;
                     this.npRegister();
+                    const old = this.npPlayer();                 // never leave a player playing on its own, off the page
+                    if (old) { try { old.dispose(); } catch (e) { /* already gone */ } }
+                    window.lustrNP.player = null;
                     const stage = document.getElementById('npStage');
                     stage.innerHTML = '';
                     const el = document.createElement('video-js');
@@ -11433,8 +11492,19 @@ No metadata is changed.`)) return;
                             np.markers = d.markers;
                             np.tags = d.tags || [];
                             this.npRenderMarkers();
+                            this.npSyncCounts(vid, d.chapters);
                         }
                     } catch (e) { /* no markers shown */ }
+                },
+
+                // the list's Markers / Chapters columns follow what the player shows (chapters are read when a file is opened)
+                npSyncCounts(vid, chapters) {
+                    if (!vid) return;
+                    for (const v of this.videos) {
+                        if (v.video_id !== vid) continue;
+                        v.markers = this.np.markers.length;
+                        if (chapters !== undefined) v.chapters = chapters;
+                    }
                 },
 
                 npMarkerColor(key) {
@@ -11507,6 +11577,7 @@ No metadata is changed.`)) return;
                         if (mk.tag && !np.tags.includes(mk.tag)) np.tags.push(mk.tag);
                         mk.open = false;
                         this.npRenderMarkers();
+                        this.npSyncCounts(np.data.video_id);
                     } catch (e) { mk.error = e.message; }
                 },
 
@@ -11517,6 +11588,7 @@ No metadata is changed.`)) return;
                         this.np.markers = d.markers;
                         if (this.np.mk.id === m.id) this.np.mk.open = false;
                         this.npRenderMarkers();
+                        this.npSyncCounts(this.np.data && this.np.data.video_id);
                     } catch (e) { alert('Could not delete: ' + e.message); }
                 },
 
@@ -12006,9 +12078,9 @@ No metadata is changed.`)) return;
                 },
 
                 npClose() {
+                    this.npOpenSeq = (this.npOpenSeq || 0) + 1;                   // a video still opening doesn't come back
                     if (!this.np.open) return;
                     this.npTeardown();
-                    window.history.back();
                 },
 
                 npToClassic() {                    // this video in the classic player, from the same spot
@@ -12019,14 +12091,40 @@ No metadata is changed.`)) return;
 
                 // Settings -> Player
                 // ----- chapters in video files -> markers (chapters.py) -----
-                async chaptersBulk(action) {
+                // action: scan | stop | status; scan with { libraries } / { paths } checks just those (else every file not checked yet)
+                async chaptersBulk(action, body = {}) {
                     try {
+                        const was = this.chapterJob && this.chapterJob.running;
                         const d = action === 'status' ? await (await fetch('/api/player/chapters/status')).json()
-                                                      : await this.extDbPostAny('/api/player/chapters/' + action, {});
+                                                      : await this.extDbPostAny('/api/player/chapters/' + action, body);
+                        if (action === 'scan' && d.started === false) alert('A chapter check is already running - wait for it, or stop it first.');
                         this.chapterJob = d.status;
                         clearTimeout(this.chapterJobTimer);
-                        if (d.status && d.status.running && this.modals.settings) this.chapterJobTimer = setTimeout(() => this.chaptersBulk('status'), 2000);
+                        if (d.status && d.status.running) this.chapterJobTimer = setTimeout(() => this.chaptersBulk('status'), 2000);
+                        else if (was) this.chaptersRefreshCounts();               // just finished: the list's Chapters / Markers
                     } catch (e) { alert(e.message); }
+                },
+                // check some libraries (a group: its libraries) or some files for chapters
+                chaptersCheck(what) {
+                    this.activeMenu = null;
+                    if (what.library) {
+                        const libs = this.libraryMembers(what.library);
+                        this.chaptersBulk('scan', { libraries: libs, label: what.library });
+                    } else if (what.paths && what.paths.length) {
+                        this.chaptersBulk('scan', { paths: what.paths, label: what.paths.length + (what.paths.length === 1 ? ' video' : ' videos') });
+                    }
+                },
+                async chaptersRefreshCounts() {
+                    const ids = [...new Set(this.videos.map(v => v.video_id).filter(Boolean))];
+                    if (!ids.length) return;
+                    try {
+                        const d = await this.extDbPostAny('/api/player/chapters/counts', { video_ids: ids });
+                        for (const v of this.videos) {
+                            if (!v.video_id) continue;
+                            if (v.video_id in d.chapters) v.chapters = d.chapters[v.video_id];
+                            v.markers = d.markers[v.video_id] || 0;
+                        }
+                    } catch (e) { /* the next reload shows them */ }
                 },
 
                 // ----- clips: GIFs and short videos (clips.py) -----
@@ -12335,9 +12433,6 @@ No metadata is changed.`)) return;
                     
                     // Stop thumbnail animations
                     this.stopHover();
-                    
-                    // Add to browser history so back button works
-                    window.history.pushState({video: video.path}, '', window.location.pathname);
                     
                     if (this.activeVideo) this.classicSaveProgress(true);   // the video playing before this one
                     
@@ -12838,11 +12933,6 @@ No metadata is changed.`)) return;
                     
                     // When the video panel is closed, restart inactivity window
                     TimerManager.videoPlaying(false);
-                    
-                    // Use browser back button behavior
-                    if (window.history.length > 1) {
-                        window.history.back();
-                    }
                 },
                 
                 toggleVideoFit() {
@@ -13008,6 +13098,7 @@ No metadata is changed.`)) return;
                 },
                 
                 async viewPlaylist(playlist) {
+                    this.navPush();
                     this.currentView = 'playlists';
                     this.currentPlaylist = playlist;
                     // Clear active tag/site filters so library filters don't bleed into playlist
@@ -13245,8 +13336,101 @@ No metadata is changed.`)) return;
                 },
                 
                 switchToLibraryView() {
+                    this.navPush();
                     this.currentView = 'library';
                     this.currentPlaylist = null;
+                },
+
+                // ===== Back button =====
+                // One history entry (same URL) is kept while there is something to go back to; Back pops it,
+                // navOnBack undoes one step and navSync puts the entry back. Closing things on screen never touches history.
+                navSnap() {
+                    const el = document.querySelector('.scroller-main');
+                    return { view: this.currentView, playlistId: this.currentPlaylist?.id ?? null,
+                             library: this.currentLibrary, previousLibrary: this.previousLibrary, folder: this.currentFolder, folderMode: this.folderMode,
+                             tab: this.libraryTab, collId: this.coll.view?.id ?? null, movieId: this.mv.view?.id ?? null,
+                             search: this._navQuery, tags: { ...this.activeTags }, excludeTags: { ...(this.excludeTags || {}) },
+                             sites: { ...this.activeSites }, excludeSites: { ...(this.excludeSites || {}) }, fav: this.favoritesOnly,
+                             lengths: [...this.activeLengthFilters], sortField: this.sortField, sortDesc: this.sortDesc, viewMode: this.viewMode,
+                             scroll: el ? el.scrollTop : 0 };
+                },
+                navKey(s) { const { scroll, ...k } = s; return JSON.stringify(k); },
+
+                // call before a navigation changes anything
+                navPush() {
+                    if (this._navHold) return;
+                    const s = this.navSnap(), top = this.navStack[this.navStack.length - 1];
+                    if (top && this.navKey(top) === this.navKey(s)) return;
+                    this.navStack.push(s);
+                    if (this.navStack.length > 50) this.navStack.shift();
+                },
+
+                // what Back closes first (topmost first), or null
+                navTopLayer() {
+                    if (this.modals.settings && this.settingsLayout === 'page') return () => this.closeSettings();
+                    if (this.np.open) return () => this.npClose();
+                    if (this.activeVideo) return () => this.closeVideo();
+                    if (this.castBioMode) return () => this.closeCastBio();
+                    return null;
+                },
+                // a popup is open: Back leaves it (and the page behind it) alone
+                navPopupOpen() {
+                    const page = this.modals.settings && this.settingsLayout === 'page';
+                    return this.showCastBrowserModal || Object.entries(this.modals).some(([k, v]) => v && !(page && (k === 'settings' || k === 'library')));
+                },
+
+                // keep the history entry while there is something to go back to (x-effect on <body>)
+                navSync() {
+                    const want = this.navStack.length > 0 || !!this.navTopLayer();
+                    if (this._navSkip) return;
+                    const armed = !!(history.state && history.state.lustrTrap);
+                    try {
+                        if (want && !armed) history.pushState({ lustrTrap: 1 }, '', window.location.pathname);
+                        else if (!want && armed) { this._navSkip = true; history.back(); }   // nothing left: the next Back leaves lustr
+                    } catch (e) { /* ignore */ }
+                },
+
+                navOnBack() {
+                    if (this._navSkip) { this._navSkip = false; this.navSync(); return; }   // navSync taking its entry back
+                    if (!this.navPopupOpen()) {
+                        const close = this.navTopLayer();
+                        if (close) close();
+                        else {
+                            const cur = this.navKey(this.navSnap());
+                            while (this.navStack.length && this.navKey(this.navStack[this.navStack.length - 1]) === cur) this.navStack.pop();
+                            if (this.navStack.length) this.navRestore(this.navStack.pop());
+                        }
+                    }
+                    this.navSync();
+                },
+
+                async navRestore(s) {
+                    this._navHold++;
+                    try {
+                        this.clearAllSelections();
+                        const scroller = document.querySelector('.scroller-main');
+                        if (s.view === 'playlists') {
+                            const pl = this.playlists.find(p => p.id === s.playlistId);
+                            if (pl) await this.viewPlaylist(pl);
+                            else Object.assign(this, { currentView: 'playlists', currentPlaylist: null });
+                        } else {
+                            Object.assign(this, { currentView: 'library', currentPlaylist: null, currentLibrary: s.library, previousLibrary: s.previousLibrary,
+                                                  currentFolder: s.folder, folderMode: s.folderMode, searchQuery: s.search, _navQuery: s.search,
+                                                  activeTags: { ...s.tags }, excludeTags: { ...s.excludeTags }, activeSites: { ...s.sites }, excludeSites: { ...s.excludeSites },
+                                                  favoritesOnly: s.fav, activeLengthFilters: [...s.lengths], sortField: s.sortField, sortDesc: s.sortDesc,
+                                                  viewMode: s.viewMode, libraryTab: s.tab, page: 1 });
+                            if (s.library !== 'Home') this.libraryTabs[s.library] = s.tab;
+                            if (s.tab !== 'collections' || !s.collId) this.coll.view = null;
+                            if (s.tab !== 'movies' || !s.movieId) { this.mv.view = null; this.mv.items = []; }
+                            await this.fetchVideos('reset');
+                            if (s.library !== 'Home' && !s.search) {
+                                if (s.tab === 'collections') await (s.collId ? this.collLoadItems(s.collId, 1) : this.loadCollections());
+                                else if (s.tab === 'movies') await (s.movieId ? this.mvLoad(s.movieId) : this.loadMovies(1));
+                                else if (s.tab === 'recommended') { this.homeRows = []; await this.loadHomeData(s.library); }
+                            }
+                        }
+                        this.$nextTick(() => requestAnimationFrame(() => { if (scroller) scroller.scrollTop = s.scroll; }));
+                    } finally { this._navHold--; }
                 }
             }
             window.app = app; 
@@ -13255,7 +13439,7 @@ No metadata is changed.`)) return;
     </script>
     <script src="/static/vendor/alpinejs-3.13.3.min.js" defer></script>
 </head>
-<body class="bg-gray-900 text-gray-200 h-screen flex overflow-hidden relative" x-data="libraryApp()" x-init="init()">
+<body class="bg-gray-900 text-gray-200 h-screen flex overflow-hidden relative" x-data="libraryApp()" x-init="init()" x-effect="navSync()">
     <div id="messageBox" class="fixed top-5 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-xl z-[999] hidden transition-opacity duration-300"></div>
 
     <div x-show="showLogin" x-cloak class="login-modal-overlay fixed inset-0 z-[2147483647] bg-black flex items-center justify-center p-4 transition-opacity duration-500" style="isolation: isolate;">
@@ -13618,7 +13802,7 @@ No metadata is changed.`)) return;
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
                 </button>
                 <div class="relative flex-1 w-full md:w-auto min-w-[200px] order-last md:order-none mt-2 md:mt-0">
-                    <input type="text" x-model="searchQuery" @keydown.enter="page=1; fetchVideos()" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:border-blue-500 outline-none pr-8" placeholder='Search (path:2023, cast:Jane*, site:*tube)...'>
+                    <input type="text" x-model="searchQuery" @keydown.enter="navPush(); page=1; fetchVideos()" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:border-blue-500 outline-none pr-8" placeholder='Search (path:2023, cast:Jane*, site:*tube)...'>
                     <!-- Loading Spinner -->
                     <div x-show="isSearching" class="absolute right-10 top-1/2 -translate-y-1/2">
                         <svg class="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -13626,12 +13810,12 @@ No metadata is changed.`)) return;
                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                         </svg>
                     </div>
-                    <button x-show="searchQuery" @click="searchQuery = ''; if (previousLibrary && currentLibrary === 'All Videos') { currentLibrary = previousLibrary; previousLibrary = null; } page = 1; fetchVideos();" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-red-500 text-xl font-bold leading-none">&times;</button>
+                    <button x-show="searchQuery" @click="navPush(); searchQuery = ''; if (previousLibrary && currentLibrary === 'All Videos') { currentLibrary = previousLibrary; previousLibrary = null; } page = 1; fetchVideos();" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-red-500 text-xl font-bold leading-none">&times;</button>
                 </div>
                 <div x-show="showInactivityTimer && sessionTimeoutMinutes > 0" class="text-xs text-gray-400 ml-4 whitespace-nowrap">
                     Logout in <span x-text="inactivityCountdown"></span>
                 </div>
-                <div class="flex items-center gap-1 bg-gray-900 rounded border border-gray-700 px-2 py-1 ml-auto md:ml-0">
+                <div x-show="hdr('sort')" class="flex items-center gap-1 bg-gray-900 rounded border border-gray-700 px-2 py-1 ml-auto md:ml-0">
                     <select :value="sortField" @change="sortBy($event.target.value)" class="bg-gray-800 text-sm text-white outline-none w-20 md:w-24">
                         <template x-for="[g, cols] in sortGroups()" :key="'sg-' + g">
                             <optgroup :label="g">
@@ -13641,8 +13825,8 @@ No metadata is changed.`)) return;
                     </select>
                     <button @click="toggleSortDir" class="text-gray-400 hover:text-white px-1"><span x-text="sortDesc ? '&#9660;' : '&#9650;'"></span></button>
                 </div>
-                <button @click="toggleFavoritesOnly" class="p-1.5 rounded" :class="favoritesOnly ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'text-gray-400 hover:text-white'">&#9733;</button>
-                <div class="relative hidden sm:block">
+                <button x-show="hdr('favorites')" @click="toggleFavoritesOnly" class="p-1.5 rounded" :class="favoritesOnly ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'text-gray-400 hover:text-white'">&#9733;</button>
+                <div x-show="hdr('select')" class="relative hidden sm:block">
                     <button @click="selectAll" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm whitespace-nowrap" x-text="selectionCount > 0 ? 'Deselect (' + selectionCount.toLocaleString() + ')' : 'Select All'"></button>
                     <div x-show="selAllOffer" x-cloak @click.outside="selAllOffer = null" class="absolute right-0 top-full mt-2 z-[60] w-72 bg-gray-800 border border-gray-600 rounded shadow-2xl p-3 text-sm">
                         <p class="text-gray-200" x-text="'Selected the ' + (selAllOffer?.shown || 0).toLocaleString() + ' on this page.'"></p>
@@ -13653,28 +13837,28 @@ No metadata is changed.`)) return;
                         </div>
                     </div>
                 </div>
-                <div class="flex bg-gray-700 rounded p-1 gap-1">
+                <div x-show="hdr('view')" class="flex bg-gray-700 rounded p-1 gap-1">
                     <button @click="switchView('grid')" class="p-1.5 rounded" :class="viewMode==='grid' ? 'bg-gray-500' : 'hover:bg-gray-600'"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg></button>
                     <button @click="switchView('list')" class="p-1.5 rounded" :class="viewMode==='list' ? 'bg-gray-500' : 'hover:bg-gray-600'"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd"></path></svg></button>
                     <button @click="toggleFolderMode()" class="p-1.5 rounded" :class="folderMode ? 'bg-blue-600 text-white' : 'hover:bg-gray-600 text-gray-300'"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"></path></svg></button>
                 </div>
-                <button @click="modals.notepad = true" 
+                <button x-show="hdr('notes')" @click="modals.notepad = true" 
                         class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
                         title="Dev Notes">
                     📝 Notes
                 </button>
-                <button @click="currentView = currentView === 'playlists' ? 'library' : 'playlists'" 
+                <button x-show="hdr('playlists')" @click="navPush(); currentView = currentView === 'playlists' ? 'library' : 'playlists'" 
                         class="px-3 py-1.5 rounded text-sm transition-colors"
                         :class="currentView === 'playlists' ? 'bg-blue-600 hover:bg-blue-500 text-white' : 'bg-gray-700 hover:bg-gray-600'"
                         title="Playlists">
                     📋 Playlists
                 </button>
-                <button @click="openCastBrowser()" 
+                <button x-show="hdr('cast')" @click="openCastBrowser()" 
                         class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
                         title="Browse Cast Members">
                     👥 Cast
                 </button>
-                <button @click="modals.metadataBrowser = true" 
+                <button x-show="hdr('metadata')" @click="modals.metadataBrowser = true" 
                         class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
                         title="Metadata Browser">
                     🔍 Metadata
@@ -13685,7 +13869,28 @@ No metadata is changed.`)) return;
                         title="Edit Advanced Search">
                     🔍✏️ Edit Search
                 </button>
-                <select x-show="currentLibrary !== 'Home' && currentView !== 'playlists'" :value="sceneFilter" @change="setSceneFilter($event.target.value)"
+                <div x-show="hdr('filters') && currentLibrary !== 'Home' && currentView !== 'playlists'" class="relative" @click.outside="showFilterMenu = false">
+                    <button @click="showFilterMenu = !showFilterMenu" class="px-2 py-1 rounded text-xs"
+                            :class="quickFilterCount() ? 'bg-emerald-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'"
+                            title="Show only videos with or without captions, chapters, markers"
+                            x-text="'⏷ Filters' + (quickFilterCount() ? ' (' + quickFilterCount() + ')' : '')"></button>
+                    <div x-show="showFilterMenu" x-cloak class="absolute right-0 mt-1 w-60 bg-gray-800 border border-gray-600 rounded shadow-lg z-50 p-2 text-xs space-y-2">
+                        <template x-for="[k, label] in quickFilterNames" :key="'qf-' + k">
+                            <div class="flex items-center justify-between gap-2">
+                                <span class="text-gray-300" x-text="label"></span>
+                                <div class="flex rounded overflow-hidden border border-gray-600">
+                                    <template x-for="[v, vl] in [['', 'Any'], ['yes', 'Yes'], ['no', 'No']]" :key="'qf-' + k + v">
+                                        <button @click="setQuickFilter(k, v)" class="px-2 py-0.5"
+                                                :class="quickFilters[k] === v ? 'bg-blue-600 text-white' : 'bg-gray-900 text-gray-400 hover:text-white'" x-text="vl"></button>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                        <button x-show="quickFilterCount()" @click="quickFilters = { captions: '', chapters: '', markers: '' }; page = 1; fetchVideos('reset')"
+                                class="w-full text-left text-gray-400 hover:text-white">Clear</button>
+                    </div>
+                </div>
+                <select x-show="hdr('scene') && currentLibrary !== 'Home' && currentView !== 'playlists'" :value="sceneFilter" @change="setSceneFilter($event.target.value)"
                         class="bg-gray-700 border border-gray-600 rounded px-1.5 py-1 text-xs" :class="sceneFilter ? 'text-emerald-300 border-emerald-600' : 'text-gray-300'"
                         title="Show videos by their scene link (StashDB / ThePornDB)">
                     <option value="">🌐 All videos</option>
@@ -13693,12 +13898,17 @@ No metadata is changed.`)) return;
                     <option value="unlinked">🌐 Not linked</option>
                     <option value="review">🌐 Needs review</option>
                 </select>
-                <button x-show="(currentLibrary !== 'Home' && currentView !== 'playlists') || extSceneBulk.status?.running"
+                <button x-show="(hdr('match') && currentLibrary !== 'Home' && currentView !== 'playlists') || extSceneBulk.status?.running"
                         @click="extSceneBulk.status?.running ? extSceneBulkOpen(null) : extSceneBulkFromLibrary(currentLibrary)"
                         class="px-2 py-1 rounded text-xs" :class="extSceneBulk.status?.running ? 'bg-green-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'"
                         :title="extSceneBulk.status?.running ? 'Scene matching in progress - click for details' : 'Match the videos in ' + currentLibrary + ' to scenes'"
                         x-text="extSceneBulk.status?.running ? `🌐 Matching ${extSceneBulkPercent()}%` : '🌐 Match scenes'"></button>
-                <div class="relative" @click.outside="showDisplayMenu = false">
+                <button x-show="chapterJob && chapterJob.running" x-cloak
+                        @click="if (confirm('Stop checking ' + (chapterJob.label || 'videos') + ' for chapters?')) chaptersBulk('stop')"
+                        class="px-2 py-1 rounded text-xs bg-green-700 text-white"
+                        :title="'Checking ' + (chapterJob?.label || 'videos') + ' for chapters - click to stop'"
+                        x-text="chapterJob ? `📑 Chapters ${chapterJob.done}/${chapterJob.total}` : ''"></button>
+                <div x-show="hdr('display')" class="relative" @click.outside="showDisplayMenu = false">
                     <button @click="showDisplayMenu = !showDisplayMenu" class="px-2 py-1 rounded text-xs"
                             :class="displayFilter.length < displayTypes.length ? 'bg-purple-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'"
                             title="Which library types and orientations are shown (just for you)" x-text="'👁 ' + displayFilterLabel()"></button>
@@ -13709,11 +13919,11 @@ No metadata is changed.`)) return;
                         <button @click="setDisplayFilter(displayTypes)" class="w-full mt-1 text-xs text-gray-400 hover:text-white text-left">Show all</button>
                     </div>
                 </div>
-                <button @click="openSettings()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
-                <button @click="openSettings('account'); $nextTick(() => document.getElementById('settings-link-tv')?.scrollIntoView({ block: 'center' }))"
+                <button x-show="hdr('tv')" @click="openSettings('account'); $nextTick(() => document.getElementById('settings-link-tv')?.scrollIntoView({ block: 'center' }))"
                         class="text-gray-400 hover:text-white p-1" title="Link a TV…">📺</button>
-                <button @click="generateAllThumbs(currentLibrary)" class="text-gray-400 hover:text-white p-1" title="Gen All Thumbs">&#128247;</button>
-                <button @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning || folderAdding"
+                <button x-show="hdr('thumbs')" @click="generateAllThumbs(currentLibrary)" class="text-gray-400 hover:text-white p-1" title="Gen All Thumbs">&#128247;</button>
+                <button @click="openSettings()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
+                <button x-show="hdr('rescan') || scanning || folderAdding" @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning || folderAdding"
                         :title="folderAdding ? 'Adding a folder to ' + folderAddingLib + ' and looking for videos' : ''">
                     <svg x-show="scanning || folderAdding" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                     <span x-text="scanning ? 'Scanning...' : folderAdding ? 'Adding folder...' : 'Rescan'" class="hidden sm:inline"></span>
@@ -13730,7 +13940,7 @@ No metadata is changed.`)) return;
             </div>
 
             <!-- List View -->
-            <div class="flex-1 overflow-y-auto bg-gray-900 scroller-main pb-16" @contextmenu.prevent @scroll="handleScroll($event); jumpTrack()"
+            <div class="flex-1 overflow-y-auto bg-gray-900 scroller-main pb-16" @contextmenu.prevent @scroll="handleScroll($event); jumpTrack(); mainScrollX = $event.target.scrollLeft"
                  @resize.window.debounce.150ms="jumpMeasure()">
 
                 <!-- # A-Z jump bar (grid sorted by Title / Cast / Filename) -->
@@ -13750,11 +13960,12 @@ No metadata is changed.`)) return;
 
                 <!-- LIBRARY VIEW -->
                 <div x-show="currentView === 'library'">
-                    <!-- tabs for a library / group (roadmap #9) -->
+                    <!-- tabs for a library / group (roadmap #9); list view: moved along with a sideways scroll, so they stay put -->
                     <div x-show="currentLibrary !== 'Home' && !castBioMode" class="sticky top-0 z-20 bg-gray-900 flex flex-wrap items-center gap-1 px-4 pt-3 border-b border-gray-800 text-sm"
+                         :style="mainScrollX ? `transform:translateX(${mainScrollX}px)` : ''"
                          x-init="new ResizeObserver(() => { tabsH = $el.offsetHeight; jumpMeasure(); }).observe($el)">
                         <template x-for="tb in libTabNames" :key="tb[0]">
-                            <button @click="setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
+                            <button @click="if (libraryTab !== tb[0]) navPush(); setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
                                     :class="libraryTab === tb[0] ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'" x-text="tb[1]"></button>
                         </template>
                         <button x-show="libraryTab === 'library'" @click="collSaveSmart()" class="ml-auto mb-1 px-3 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-300"
@@ -14463,10 +14674,10 @@ No metadata is changed.`)) return;
                         <table class="w-full text-left border-collapse table-fixed min-w-[800px]">
                             <thead class="bg-gray-800 text-gray-400">
                                 <tr>
-                                    <th class="p-2 w-14 border-b border-gray-700"><input type="checkbox" @click="selectAll" :checked="selectionCount > 0 && selectionCount === videos.length"></th>
+                                    <th class="p-2 w-14 border-b border-gray-700" :style="{ top: jumpTabsOffset() + 'px' }"><input type="checkbox" @click="selectAll" :checked="selectionCount > 0 && selectionCount === videos.length"></th>
                                     <template x-for="col in visibleColumns" :key="col">
                                         <th class="p-2 cursor-pointer hover:text-white border-b border-gray-700 relative group th-hover" 
-                                            @click="sortBy(col)" :style="{ width: getColWidth(col) }">
+                                            @click="sortBy(col)" :style="{ width: getColWidth(col), top: jumpTabsOffset() + 'px' }">
                                             <div class="flex items-center overflow-hidden">
                                                 <span x-text="col" class="truncate"></span>
                                                 <span x-show="sortField === col" x-text="sortDesc ? '&#9660;' : '&#9650;'" class="text-xs ml-1 text-blue-400 flex-shrink-0"></span>
@@ -15074,7 +15285,7 @@ No metadata is changed.`)) return;
         </div>
 
         <!-- Added guard: selectedPaths.size > 0 to prevent ghost menu -->
-        <div x-show="activeMenu === 'file' && selectedPaths.size > 0" x-cloak class="context-menu bg-gray-800 border border-gray-600 rounded shadow-xl py-1 text-sm" :style="`top: ${contextMenuY}px; left: ${contextMenuX}px`" @click.outside="activeMenu = null">
+        <div x-show="activeMenu === 'file' && selectedPaths.size > 0" x-cloak class="context-menu w-64 bg-gray-800 border border-gray-600 rounded shadow-xl py-1 text-sm" :style="`top: ${contextMenuY}px; left: ${contextMenuX}px`" @click.outside="activeMenu = null">
             <div class="px-3 py-1 text-gray-500 text-xs border-b border-gray-700 mb-1" x-text="selectedPaths.size + ' selected'"></div>
             <button x-show="isVlcConfigured" 
                     @click="openSelectedInVLC" 
@@ -15084,10 +15295,12 @@ No metadata is changed.`)) return;
                 </svg>
                 <span>Open in VLC</span>
             </button>
+            <div x-show="isVlcConfigured" class="border-t border-gray-700 my-1"></div>
             <button @click="openMetadataEditor" class="w-full text-left px-4 py-2 hover:bg-blue-600">Edit Metadata</button>
             <button @click="mergeMetadata" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-purple-400" x-show="selectedPaths.size >= 2">Merge Metadata</button>
             <button @click="clearMetadata" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400">Clear Metadata</button>
             <button @click="refreshVideoMetadata" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-green-400">Refresh Metadata</button>
+            <div class="border-t border-gray-700 my-1"></div>
             <button @click="openFileInfo" class="w-full text-left px-4 py-2 hover:bg-blue-600" x-show="selectedPaths.size === 1">File Info</button>
             <button @click="extSceneOpen()" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-emerald-400" x-show="selectedPaths.size === 1"
                     title="Find this video's scene on StashDB">🌐 Find scene…</button>
@@ -15095,10 +15308,15 @@ No metadata is changed.`)) return;
                     title="Match all selected videos to scenes; strong matches are linked automatically, the rest go to a review list"
                     x-text="'🌐 Match scenes (' + selectedPaths.size + ')…'"></button>
             <button @click="openParser" class="w-full text-left px-4 py-2 hover:bg-blue-600">Parse Filenames</button>
+            <div class="border-t border-gray-700 my-1"></div>
             <button @click="ccGenerate(Array.from(selectedPaths))" class="w-full text-left px-4 py-2 hover:bg-blue-600"
                     title="Use subtitles that come with the file, or make them on this server with Whisper (in the background)"
                     x-text="selectedPaths.size > 1 ? 'Generate Captions (' + selectedPaths.size + ')' : 'Generate Captions'"></button>
             <button @click="ccRemove(Array.from(selectedPaths))" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400">Remove Captions</button>
+            <button @click="chaptersCheck({ paths: Array.from(selectedPaths) })" class="w-full text-left px-4 py-2 hover:bg-blue-600"
+                    title="Read the chapters in these files and add them as markers (in the background; an unchanged file already checked is skipped)"
+                    x-text="selectedPaths.size > 1 ? 'Check for Chapters (' + selectedPaths.size + ')' : 'Check for Chapters'"></button>
+            <div class="border-t border-gray-700 my-1"></div>
             <!-- Thumbnail generation: three states based on thumbnailStatusCache -->
             <!-- State 1: NONE of the selected have thumbnails -> simple generate -->
             <button @click="generateThumbs"
@@ -15116,7 +15334,7 @@ No metadata is changed.`)) return;
             <template x-if="(() => { const withThumbs = Array.from(selectedPaths).filter(p => thumbnailStatusCache[p]).length; return withThumbs > 0 && withThumbs < selectedPaths.size; })()">
                 <div>
                     <button @click="generateThumbsMissingOnly" class="w-full text-left px-4 py-2 hover:bg-blue-600">
-                        <span x-text="`Generate Thumbnails (Missing Only - ${selectedPaths.size - Array.from(selectedPaths).filter(p => thumbnailStatusCache[p]).length})`"></span>
+                        <span x-text="`Generate Missing Thumbnails (${selectedPaths.size - Array.from(selectedPaths).filter(p => thumbnailStatusCache[p]).length})`"></span>
                     </button>
                     <button @click="generateThumbsForce" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-yellow-400">
                         <span x-text="`Force New Thumbnails (All ${selectedPaths.size})`"></span>
@@ -15126,9 +15344,10 @@ No metadata is changed.`)) return;
 
             <button @click="thumbPickOpen" x-show="selectedPaths.size === 1 && thumbnailStatusCache[Array.from(selectedPaths)[0]]"
                     class="w-full text-left px-4 py-2 hover:bg-blue-600">Choose Main Thumbnail…</button>
+            <div class="border-t border-gray-700 my-1"></div>
             <button @click="toggleFavSelection" class="w-full text-left px-4 py-2 hover:bg-blue-600">Toggle Favorite</button>
             <button @click="applyCastAttrsToSelected" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-cyan-400">
-                <span x-text="selectedPaths.size === 1 ? 'Apply Cast Attributes' : `Apply Cast Attributes (${selectedPaths.size} videos)`"></span>
+                <span x-text="selectedPaths.size === 1 ? 'Apply Cast Attributes' : `Apply Cast Attributes (${selectedPaths.size})`"></span>
             </button>
 
             <div class="border-t border-gray-700 my-1"></div>
@@ -15187,7 +15406,7 @@ No metadata is changed.`)) return;
             <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
                     @click="mvSplitSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2"
                     title="For a different movie that has the same name: these videos go to a second movie told apart by a label">
-                <span>⑂</span><span>Move to a new movie with the same name…</span>
+                <span>⑂</span><span>Split into a new movie…</span>
             </button>
 
             <!-- Remove from Playlist (only show when in playlist view) -->
@@ -15493,6 +15712,10 @@ No metadata is changed.`)) return;
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">
+                    <button @click="chaptersCheck({ library: manageLibTarget })" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm text-left flex flex-col">
+                        <span class="font-bold">Check for Chapters</span>
+                        <span class="text-xs text-gray-400">Chapters in the files become markers (in the background)</span>
+                    </button>
                     <button @click="ccGenerate([], manageLibTarget)" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm text-left flex flex-col">
                         <span class="font-bold">Generate Captions</span>
                         <span class="text-xs text-gray-400">Every video without captions (in the background)</span>
@@ -16798,13 +17021,14 @@ No metadata is changed.`)) return;
                         <div class="bg-gray-900 p-4 rounded border border-gray-700 space-y-2 text-sm">
                             <h3 class="font-semibold">Markers from chapters</h3>
                             <p class="text-xs text-gray-400">Chapters inside video files (MKV, some MP4s) become markers - new files when they're added,
-                                others the first time they're played. Renamed, moved or deleted markers are never changed back or duplicated.</p>
+                                others the first time they're played. Renamed, moved or deleted markers are never changed back or duplicated.
+                                To check just one library: 🔧 on the library › Check for Chapters; just some videos: right-click › Check for Chapters.</p>
                             <div class="flex flex-wrap items-center gap-2">
                                 <button @click="chaptersBulk('scan')" :disabled="chapterJob && chapterJob.running"
                                         class="px-3 py-1.5 rounded text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40">Import chapters from all videos</button>
                                 <button x-show="chapterJob && chapterJob.running" @click="chaptersBulk('stop')" class="px-3 py-1.5 rounded text-xs bg-red-800 hover:bg-red-700">Stop</button>
                                 <span x-show="chapterJob && chapterJob.total" class="text-xs text-gray-400"
-                                      x-text="chapterJob ? `${chapterJob.done} of ${chapterJob.total} files checked · ${chapterJob.markers} markers from ${chapterJob.files_with_chapters} files` + (chapterJob.running ? '' : ' - done') : ''"></span>
+                                      x-text="chapterJob ? (chapterJob.label ? chapterJob.label + ': ' : '') + `${chapterJob.done} of ${chapterJob.total} files checked · ${chapterJob.files_with_chapters} with chapters · ${chapterJob.markers} new markers` + (chapterJob.running ? '' : ' - done') : ''"></span>
                             </div>
                         </div>
                       </div>
@@ -17366,6 +17590,8 @@ No metadata is changed.`)) return;
                         <div x-show="settingsLayout !== 'page'" class="flex gap-2 border-b border-gray-700 pb-2">
                             <button @click="extCfg.tab = 'tagmap'" class="px-3 py-1.5 text-sm rounded transition-colors"
                                     :class="extCfg.tab === 'tagmap' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'">🏷️ Tag mappings</button>
+                            <button @click="extCfg.tab = 'sites'; extSitesLoadAll()" class="px-3 py-1.5 text-sm rounded transition-colors"
+                                    :class="extCfg.tab === 'sites' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'">🏢 Site Linking</button>
                             <button @click="extCfg.tab = 'links'; extCfgLoadLinks(1)" class="px-3 py-1.5 text-sm rounded transition-colors"
                                     :class="extCfg.tab === 'links' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'">🔗 Linked videos</button>
                             <button @click="extCfg.tab = 'overview'; extCfgLoadOverview()" class="px-3 py-1.5 text-sm rounded transition-colors"
@@ -17675,8 +17901,237 @@ No metadata is changed.`)) return;
                         </div>
                     </div>
 
+                    <!-- External DB -> Site Linking: sites -> StashDB studios, and library default sites (ext_db.py) -->
+                    <div x-show="sShow('extdb', 'extdb') && extCfg.tab === 'sites'">
+                        <div class="bg-gray-800 rounded-lg w-full flex flex-col" :style="settingsLayout === 'page' ? 'height: calc(100vh - 6rem)' : 'height: 62vh'">
+                            <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700">
+                                <h2 class="text-lg font-semibold">🏢 Site Linking</h2>
+                                <div class="flex gap-1 text-sm">
+                                    <button @click="extSites.tab = 'sites'; extSites.view = 'list'" class="px-3 py-1 rounded"
+                                            :class="extSites.tab === 'sites' ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'">Sites</button>
+                                    <button @click="extSites.tab = 'libraries'; extSitesLibsLoad()" class="px-3 py-1 rounded"
+                                            :class="extSites.tab === 'libraries' ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'">Library default sites</button>
+                                </div>
+                                </div>
+
+                            <!-- Sites: list -->
+                            <div x-show="extSites.tab === 'sites' && extSites.view === 'list'" class="flex-1 overflow-hidden flex flex-col p-4 gap-3 text-sm">
+                                <p class="text-xs text-gray-400" x-text="extSitesCoverage()"></p>
+                                <div class="bg-gray-900 rounded p-3 flex flex-wrap items-center gap-2">
+                                    <template x-if="!extSites.job?.running">
+                                        <div class="flex flex-wrap items-center gap-2 w-full">
+                                            <span class="text-gray-300 flex-1 min-w-0">Auto-link sites that match a studio exactly (or a network's parent studio). Everything else is kept for review.</span>
+                                            <label class="flex items-center gap-1 text-xs text-gray-300" title="Also check again sites that an earlier run couldn't link">
+                                                <input type="checkbox" class="rounded" x-model="extSites.recheck"> Re-check unlinked
+                                            </label>
+                                            <select x-model="extSites.limit" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs">
+                                                <option value="150" x-text="extSites.recheck ? 'Top 150 unlinked' : 'Top 150 unchecked'"></option>
+                                                <option value="300" x-text="extSites.recheck ? 'Top 300 unlinked' : 'Top 300 unchecked'"></option>
+                                                <option value="0" x-text="extSites.recheck ? 'All unlinked' : 'All unchecked'"></option>
+                                            </select>
+                                            <button @click="extSitesBulkStart()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-xs">Auto-link</button>
+                                        </div>
+                                    </template>
+                                    <template x-if="extSites.job?.running">
+                                        <div class="w-full space-y-1">
+                                            <div class="flex justify-between text-gray-300 text-xs">
+                                                <span x-text="`Checking ${extSites.job.done} of ${extSites.job.total}` + (extSites.job.current ? ` · ${extSites.job.current}` : '')"></span>
+                                                <span x-text="extSites.job.eta_seconds != null ? 'about ' + extBulkDuration(extSites.job.eta_seconds) + ' left' : ''"></span>
+                                            </div>
+                                            <div class="h-2 bg-gray-700 rounded overflow-hidden"><div class="h-full bg-blue-600" :style="'width:' + Math.floor(extSites.job.done / Math.max(1, extSites.job.total) * 100) + '%'"></div></div>
+                                            <div class="flex items-center gap-2 text-xs">
+                                                <span class="text-gray-400 flex-1" x-text="Object.entries(extSites.job.counts || {}).map(([k, v]) => extSitesOutcomeLabel(k) + ': ' + v).join(' · ')"></span>
+                                                <span x-show="extSites.job.note" class="text-yellow-400" x-text="extSites.job.note"></span>
+                                                <button @click="extSitesStop()" class="px-2 py-1 bg-red-700 hover:bg-red-600 rounded">Stop</button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <select x-model="extSites.filter" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
+                                        <option value="unlinked">Unlinked</option>
+                                        <option value="review">Needs a look (checked, not linked)</option>
+                                        <option value="linked">Linked</option>
+                                        <option value="not_on_db">Not on StashDB</option>
+                                        <option value="all">All sites</option>
+                                    </select>
+                                    <input type="text" x-model="extSites.q" placeholder="Filter sites…"
+                                           class="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 placeholder-gray-500">
+                                    <span class="text-xs text-gray-500" x-text="extSitesFiltered().length.toLocaleString() + ' shown'"></span>
+                                </div>
+                                <div class="flex-1 overflow-y-auto bg-gray-900 rounded min-h-[12rem]">
+                                    <div x-show="extSites.loading && !extSites.sites.length" class="text-center text-gray-400 py-8">Loading…</div>
+                                    <template x-for="x in extSitesFiltered()" :key="x.site_key">
+                                        <div class="px-3 py-2 border-b border-gray-800 flex flex-wrap items-center gap-2">
+                                            <div class="w-52 min-w-0 flex-shrink-0">
+                                                <div class="font-medium truncate" :title="x.variants.join(', ')" x-text="x.display"></div>
+                                                <div x-show="x.variants.length > 1" class="text-xs text-gray-500 truncate" x-text="'also: ' + x.variants.filter(v => v !== x.display).join(', ')"></div>
+                                            </div>
+                                            <div class="w-20 text-right text-xs text-gray-400 flex-shrink-0" x-text="x.videos.toLocaleString() + ' videos'"></div>
+                                            <div class="flex-1 min-w-[12rem] text-xs">
+                                                <template x-if="x.status === 'linked'">
+                                                    <span class="inline-flex flex-wrap gap-x-2 gap-y-0.5">
+                                                        <template x-for="st in x.link.studios" :key="st.ext_id">
+                                                            <span>
+                                                                <span class="text-green-400" x-text="'→ ' + st.ext_name"></span>
+                                                                <span x-show="st.ext_parent_name" class="text-gray-500" x-text="' (part of ' + st.ext_parent_name + ')'"></span>
+                                                                <span x-show="st.link_kind === 'network'" class="ml-1 px-1.5 rounded bg-purple-700 text-white">network</span>
+                                                            </span>
+                                                        </template>
+                                                    </span>
+                                                </template>
+                                                <span x-show="x.status === 'not_on_db'" class="px-1.5 rounded bg-gray-700 text-gray-300" x-text="'not on ' + extDbSourceLabel()"></span>
+                                                <span x-show="x.status === 'unlinked' && x.check" class="text-yellow-400"
+                                                      x-text="x.check ? extSitesOutcomeLabel(x.check.outcome) + (x.check.detail ? ': ' + x.check.detail : '') : ''"></span>
+                                                <span x-show="x.status === 'unlinked' && !x.check" class="text-gray-500">not checked yet</span>
+                                                <span x-show="(x.link?.abbreviations || []).length" class="ml-1 text-gray-400"
+                                                      x-text="'· abbrev: ' + (x.link?.abbreviations || []).join(', ')"></span>
+                                            </div>
+                                            <div class="flex gap-1 flex-shrink-0">
+                                                <button @click="extSitesFind(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                                                        x-text="x.status === 'linked' ? 'Studios…' : 'Find'"></button>
+                                                <button x-show="x.status !== 'not_on_db'" @click="extSitesNotOnDb(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                                                        title="Skip this site in searches from now on">Not on DB</button>
+                                                <button x-show="x.status !== 'unlinked'" @click="extSitesClear(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                                                        :title="x.status === 'linked' ? 'Remove all linked studios' : 'Remove the not-on-StashDB mark'">Clear</button>
+                                                <button @click="extSitesAbbrev(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                                                        title="Your filename abbreviations for this site">Abbrev</button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <div x-show="!extSites.loading && !extSitesFiltered().length" class="text-center text-gray-400 py-8">No sites in this view.</div>
+                                </div>
+                            </div>
+
+                            <!-- Sites: find a studio for one site -->
+                            <div x-show="extSites.tab === 'sites' && extSites.view === 'find'" class="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex-1 min-w-0">
+                                        <span class="font-semibold" x-text="extSites.find.site?.display"></span>
+                                        <span class="text-xs text-gray-500" x-text="(extSites.find.site?.videos || 0).toLocaleString() + ' videos'
+                                              + (extSites.find.site?.is_network ? ' · network' : '')
+                                              + (extSites.find.cached ? ' · candidates from the last check (no new request)' : '')"></span>
+                                    </div>
+                                    <span x-show="extSites.find.outcome" class="text-xs text-yellow-400" x-text="extSitesOutcomeLabel(extSites.find.outcome)"></span>
+                                </div>
+                                <div x-show="(extSites.find.site?.link?.studios || []).length" class="bg-gray-900 rounded p-2 flex flex-wrap items-center gap-2 text-xs">
+                                    <span class="text-gray-400">Linked:</span>
+                                    <template x-for="st in (extSites.find.site?.link?.studios || [])" :key="st.ext_id">
+                                        <span class="inline-flex items-center gap-1 bg-gray-700 rounded px-2 py-0.5">
+                                            <span class="text-green-400" x-text="st.ext_name"></span>
+                                            <span x-show="st.link_kind === 'network'" class="text-purple-300">(network)</span>
+                                            <button @click="extSitesUnlinkStudio(extSites.find.site, st.ext_id, st.ext_name)" class="text-gray-400 hover:text-white"
+                                                    :title="'Remove ' + st.ext_name">&times;</button>
+                                        </span>
+                                    </template>
+                                    <span class="text-gray-500">A site can have several studios, e.g. collaborations like "TeamSkeet X …".</span>
+                                </div>
+                                <div class="flex gap-2">
+                                    <input type="text" x-model="extSites.find.query" @keydown.enter="extSitesSearch()"
+                                           placeholder="Search by another name, or paste a StashDB studio link"
+                                           class="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500">
+                                    <button @click="extSitesSearch()" :disabled="extSites.find.loading" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40">Search</button>
+                                </div>
+                                <div x-show="extSites.find.loading" class="text-center text-gray-400 py-6">Searching…</div>
+                                <div x-show="!extSites.find.loading && !extSites.find.cands.length" class="text-center text-gray-400 py-6">
+                                    No studios found. Try another name or a studio link, or mark this site as not on StashDB.
+                                </div>
+                                <div class="bg-gray-900 rounded">
+                                    <template x-for="c in extSites.find.cands" :key="c.ext_id">
+                                        <div class="px-3 py-2 border-b border-gray-800 flex flex-wrap items-center gap-2"
+                                             :class="extSites.find.pick && extSites.find.pick.ext_id === c.ext_id ? 'bg-gray-800' : ''">
+                                            <div class="flex-1 min-w-[14rem]">
+                                                <div>
+                                                    <span class="font-medium" x-text="c.name"></span>
+                                                    <span x-show="c.parent" class="text-gray-500 text-xs" x-text="' part of ' + (c.parent?.name || '')"></span>
+                                                    <span x-show="c.match" class="ml-1 text-xs px-1.5 rounded bg-green-700 text-white" x-text="c.match + ' match'"></span>
+                                                </div>
+                                                <div class="text-xs text-gray-500 truncate" x-text="[(c.aliases.length ? 'aka ' + c.aliases.join(', ') : ''), c.urls.join('  ')].filter(Boolean).join(' · ')"></div>
+                                            </div>
+                                            <span x-show="extSitesIsLinked(c.ext_id)" class="text-xs text-green-400">✓ linked</span>
+                                            <button x-show="!extSitesIsLinked(c.ext_id)" @click="extSitesLink(c.ext_id, false, c.name)" :disabled="extSites.find.busy"
+                                                    class="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs disabled:opacity-40"
+                                                    x-text="(extSites.find.site?.link?.studios || []).length ? 'Add' : 'Link'"></button>
+                                            <button x-show="extSitesIsLinked(c.ext_id)" @click="extSitesUnlinkStudio(extSites.find.site, c.ext_id, c.name)"
+                                                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Remove</button>
+                                            <button x-show="c.parent && !extSitesIsLinked(c.parent?.id)" @click="extSitesLink(c.parent.id, true, c.parent.name)" :disabled="extSites.find.busy"
+                                                    class="px-2 py-1 bg-purple-700 hover:bg-purple-600 rounded text-xs disabled:opacity-40"
+                                                    :title="'Link this site to the parent studio ' + (c.parent?.name || '') + ' (for network sites)'"
+                                                    x-text="'Link parent: ' + (c.parent?.name || '')"></button>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Libraries -->
+                            <div x-show="extSites.tab === 'libraries'" class="flex-1 overflow-hidden flex flex-col p-4 gap-3 text-sm">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <p class="text-xs text-gray-400 flex-1 min-w-0">
+                                        A default site is used as a matching clue for that library's videos that have no site of their own.
+                                        Nothing is written to your videos. Suggestions appear when at least 80% of a library's tagged videos share one site.
+                                    </p>
+                                    <button @click="extSitesLibUseAll()" :disabled="!extSites.libs.some(l => l.suggestion && !l.default_site)"
+                                            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-xs disabled:opacity-40"
+                                            x-text="'Use all suggestions (' + extSites.libs.filter(l => l.suggestion && !l.default_site).length + ')'"></button>
+                                </div>
+                                <datalist id="extSitesNames">
+                                    <template x-for="n in extSitesSiteNames()" :key="n"><option :value="n"></option></template>
+                                </datalist>
+                                <div class="flex-1 overflow-y-auto bg-gray-900 rounded">
+                                    <div x-show="extSites.libsLoading && !extSites.libs.length" class="text-center text-gray-400 py-8">Loading…</div>
+                                    <template x-for="l in extSites.libs" :key="l.library">
+                                        <div class="px-3 py-2 border-b border-gray-800 flex flex-wrap items-center gap-2">
+                                            <div class="w-48 min-w-0 flex-shrink-0">
+                                                <div class="font-medium truncate" x-text="l.library || '(no library)'"></div>
+                                                <div class="text-xs text-gray-500" x-text="l.videos.toLocaleString() + ' videos · ' + l.without_site.toLocaleString() + ' without a site'"></div>
+                                            </div>
+                                            <div class="flex-1 min-w-[10rem] text-xs text-gray-400 truncate"
+                                                 x-text="l.top_sites.length ? l.top_sites.map(t => t.site + ' ' + Math.round(t.share * 100) + '%').join(', ') : 'no sites tagged'"></div>
+                                            <button x-show="l.suggestion && l.default_site !== l.suggestion?.site" @click="extSitesLibSet(l.library, l.suggestion.site)"
+                                                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs flex-shrink-0"
+                                                    x-text="'Use ' + (l.suggestion?.site || '')"></button>
+                                            <input type="text" list="extSitesNames" x-model="extSites.libEdit[l.library]" placeholder="default site"
+                                                   class="w-40 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-500 flex-shrink-0">
+                                            <button @click="extSitesLibSet(l.library, (extSites.libEdit[l.library] || '').trim())"
+                                                    :disabled="(extSites.libEdit[l.library] || '') === (l.default_site || '')"
+                                                    class="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs disabled:opacity-40 flex-shrink-0">Save</button>
+                                            <span x-show="l.default_site" class="text-xs text-green-400 flex-shrink-0" x-text="'✓ ' + l.default_site"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <div class="px-4 py-3 border-t border-gray-700 flex flex-wrap items-center gap-2">
+                                <div class="flex-1 min-w-0 text-sm">
+                                    <span x-show="extSites.error" class="text-red-400" x-text="extSites.error"></span>
+                                    <span x-show="!extSites.error && extSites.message" class="text-green-400" x-text="extSites.message"></span>
+                                </div>
+                                <button x-show="extSites.tab === 'sites' && extSites.view === 'find' && extSites.find.site && extSites.find.site.status !== 'not_on_db'"
+                                        @click="extSitesNotOnDb(extSites.find.site)" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Not on StashDB</button>
+                                <button x-show="extSites.tab === 'sites' && extSites.view === 'find'" @click="extSites.view = 'list'; extSites.error = ''"
+                                        class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                                        x-text="(extSites.find.site?.link?.studios || []).length ? 'Done' : 'Back to sites'"></button>
+                            </div>
+                        </div>
+                    </div>
+
+
                     <!-- Appearance Tab -->
                     <div x-show="sShow('appearance', 'appearance')" class="space-y-5">
+
+                        <!-- Header buttons: hide the ones you don't use (this browser) -->
+                        <div class="bg-gray-900 p-3 rounded space-y-2">
+                            <div><span class="block text-sm font-semibold text-gray-300">Header buttons</span>
+                                <span class="block text-xs text-gray-500">Which buttons show in the bar at the top (this browser). Search, ⚙ Settings, Edit Search and Log Out always show.</span></div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                                <template x-for="[k, label] in headerItems" :key="'hi-' + k">
+                                    <label class="flex items-center gap-2 cursor-pointer select-none">
+                                        <input type="checkbox" class="rounded" :checked="!!hdr(k)" @change="toggleHeaderItem(k)">
+                                        <span x-text="label"></span>
+                                    </label>
+                                </template>
+                            </div>
+                        </div>
 
                         <!-- Theme grid -->
                         <div>
@@ -18044,7 +18499,8 @@ No metadata is changed.`)) return;
 
         <!-- Cast photo shown after resting on a name -->
         <div x-show="castPeek.show" x-cloak class="fixed z-[210] pointer-events-none bg-gray-900 border border-gray-600 rounded-lg shadow-2xl p-1.5"
-             :style="`left:${castPeek.x}px; top:${castPeek.y}px`" @scroll.window.capture.passive="castPeek.name && castPeekEnd()">
+             :style="`left:${castPeek.x}px; top:${castPeek.y}px`" @scroll.window.capture.passive="castPeek.name && castPeekEnd()" @pointerdown.window.capture="castPeek.name && castPeekEnd()"
+                     @keydown.window="castPeek.name && castPeekEnd()" @blur.window="castPeek.name && castPeekEnd()">
             <img x-show="castPeek.src" :src="castPeek.src" class="w-[216px] h-[324px] object-cover rounded bg-gray-800" alt="">
             <div x-show="!castPeek.src" class="w-[216px] h-[324px] rounded bg-gray-700 flex items-center justify-center text-6xl text-gray-500">👤</div>
             <div class="text-sm text-gray-200 text-center truncate w-[216px] mt-1" x-text="castLabel(castPeek.primary || castPeek.name)"></div>
@@ -18373,8 +18829,24 @@ No metadata is changed.`)) return;
                     </div>
                     <!-- Pattern -->
                     <div x-show="parser.tab === 'pattern'" class="space-y-3">
-                        <div><label class="block text-xs text-gray-400 mb-1">Pattern</label><input type="text" x-model="parserPattern" @input.debounce="previewParse" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-2 font-mono"><p class="text-xs text-gray-500 mt-1">%D=ParentFolder(alone or %D/%T to combine) %S=Site %C=Cast %F.%L=First.Last %T=Title %Y=Year %YY.%MM.%DD=Date</p><p class="text-xs text-gray-500 mt-1"><strong>Examples:</strong> %D/%T (folder+filename as title) | %S.%YY.%MM.%DD.%C.%T | %S.%F.%M.%L.%T</p></div>
-                    <div class="flex gap-4 text-sm flex-wrap"><label><input type="checkbox" x-model="parserOptions.clean_underscores"> No Underscores</label><label><input type="checkbox" x-model="parserOptions.clean_dashes"> No Dashes</label><label><input type="checkbox" x-model="parserOptions.clean_dots"> No Dots</label><label><input type="checkbox" x-model="parserOptions.title_case"> Title Case</label></div>
+                        <div><label class="block text-xs text-gray-400 mb-1">Pattern <span class="text-gray-500">- type it, or click below to add at the cursor</span></label>
+                            <div class="flex gap-2">
+                                <input type="text" x-ref="parserPatternInput" x-model="parserPattern" @input.debounce="previewParse" @blur="$el._caret = $el.selectionStart; $el._caretEnd = $el.selectionEnd" class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-2 font-mono">
+                                <button @click="parserPattern = ''; $refs.parserPatternInput._caret = $refs.parserPatternInput._caretEnd = 0; $refs.parserPatternInput.focus(); previewParse()" class="px-2 text-xs text-gray-400 hover:text-white" title="Empty the pattern">Clear</button>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-1 mt-2 text-xs">
+                                <template x-for="tk in parserTokens" :key="tk[0]">
+                                    <button @click="parserInsert(tk[0])" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-blue-600 text-gray-200" :title="tk[2] || tk[0]">
+                                        <span x-text="tk[1]"></span> <span class="font-mono text-gray-400" x-text="tk[0]"></span>
+                                    </button>
+                                </template>
+                                <span class="text-gray-600 mx-1">│</span>
+                                <template x-for="sp in parserSeparators" :key="'sep' + sp[0]">
+                                    <button @click="parserInsert(sp[0])" class="px-2 py-0.5 rounded bg-gray-900 border border-gray-700 hover:border-blue-500 font-mono text-gray-300" :title="sp[2]" x-text="sp[1]"></button>
+                                </template>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Type any fixed text as it appears in the filename (e.g. <span class="font-mono">downthehatch21_</span>). <strong>Examples:</strong> %S.%YY.%MM.%DD.%C.%T | %S.%F.%M.%L.%T | %C - %T</p></div>
+                    <div class="flex gap-4 text-sm flex-wrap"><label><input type="checkbox" x-model="parserOptions.clean_underscores"> No Underscores</label><label><input type="checkbox" x-model="parserOptions.clean_dashes"> No Dashes</label><label><input type="checkbox" x-model="parserOptions.clean_dots"> No Dots</label><label><input type="checkbox" x-model="parserOptions.title_case"> Title Case</label><label title="e.g. a file in “Season 2” with the title “Episode 4” gets “Season 2 Episode 4”"><input type="checkbox" x-model="parserOptions.dir_in_title" @change="previewParse()"> Put the folder name at the start of the title</label></div>
                         <div class="bg-gray-900 p-2 rounded text-xs font-mono h-20 overflow-y-auto whitespace-pre" x-text="parserPreview"></div>
                         <button @click="applyParse" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm" x-text="parser.scope === 'selected' ? 'Parse the selected files' : 'Parse ' + parser.library"></button>
                     </div>
@@ -20602,225 +21074,6 @@ No metadata is changed.`)) return;
                 <button @click="extSugApply()" :disabled="extSug.busy || !extSugPending().length"
                         class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40"
                         x-text="`Apply ticked (${extSugPendingValues()} value${extSugPendingValues() === 1 ? '' : 's'} for ${extSugPending().length} performer${extSugPending().length === 1 ? '' : 's'})`"></button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Sites -> StashDB studios Modal (ext_db.py) -->
-    <div x-show="extSites.open" x-cloak
-         class="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-2 sm:p-4"
-         @keydown.escape.window="if (extSites.open) extSitesClose()">
-        <div class="bg-gray-800 rounded-lg w-full max-w-5xl max-h-[92vh] flex flex-col" @click.outside="extSitesClose()">
-            <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700">
-                <h2 class="text-lg font-semibold">🏢 Sites &amp; studios</h2>
-                <div class="flex gap-1 text-sm">
-                    <button @click="extSites.tab = 'sites'; extSites.view = 'list'" class="px-3 py-1 rounded"
-                            :class="extSites.tab === 'sites' ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'">Sites</button>
-                    <button @click="extSites.tab = 'libraries'; extSitesLibsLoad()" class="px-3 py-1 rounded"
-                            :class="extSites.tab === 'libraries' ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'">Libraries</button>
-                </div>
-                <div class="flex-1"></div>
-                <button @click="extSitesClose()" class="text-gray-400 hover:text-white text-2xl leading-none px-1" title="Close">&times;</button>
-            </div>
-
-            <!-- Sites: list -->
-            <div x-show="extSites.tab === 'sites' && extSites.view === 'list'" class="flex-1 overflow-hidden flex flex-col p-4 gap-3 text-sm">
-                <p class="text-xs text-gray-400" x-text="extSitesCoverage()"></p>
-                <div class="bg-gray-900 rounded p-3 flex flex-wrap items-center gap-2">
-                    <template x-if="!extSites.job?.running">
-                        <div class="flex flex-wrap items-center gap-2 w-full">
-                            <span class="text-gray-300 flex-1 min-w-0">Auto-link sites that match a studio exactly (or a network's parent studio). Everything else is kept for review.</span>
-                            <label class="flex items-center gap-1 text-xs text-gray-300" title="Also check again sites that an earlier run couldn't link">
-                                <input type="checkbox" class="rounded" x-model="extSites.recheck"> Re-check unlinked
-                            </label>
-                            <select x-model="extSites.limit" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs">
-                                <option value="150" x-text="extSites.recheck ? 'Top 150 unlinked' : 'Top 150 unchecked'"></option>
-                                <option value="300" x-text="extSites.recheck ? 'Top 300 unlinked' : 'Top 300 unchecked'"></option>
-                                <option value="0" x-text="extSites.recheck ? 'All unlinked' : 'All unchecked'"></option>
-                            </select>
-                            <button @click="extSitesBulkStart()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-xs">Auto-link</button>
-                        </div>
-                    </template>
-                    <template x-if="extSites.job?.running">
-                        <div class="w-full space-y-1">
-                            <div class="flex justify-between text-gray-300 text-xs">
-                                <span x-text="`Checking ${extSites.job.done} of ${extSites.job.total}` + (extSites.job.current ? ` · ${extSites.job.current}` : '')"></span>
-                                <span x-text="extSites.job.eta_seconds != null ? 'about ' + extBulkDuration(extSites.job.eta_seconds) + ' left' : ''"></span>
-                            </div>
-                            <div class="h-2 bg-gray-700 rounded overflow-hidden"><div class="h-full bg-blue-600" :style="'width:' + Math.floor(extSites.job.done / Math.max(1, extSites.job.total) * 100) + '%'"></div></div>
-                            <div class="flex items-center gap-2 text-xs">
-                                <span class="text-gray-400 flex-1" x-text="Object.entries(extSites.job.counts || {}).map(([k, v]) => extSitesOutcomeLabel(k) + ': ' + v).join(' · ')"></span>
-                                <span x-show="extSites.job.note" class="text-yellow-400" x-text="extSites.job.note"></span>
-                                <button @click="extSitesStop()" class="px-2 py-1 bg-red-700 hover:bg-red-600 rounded">Stop</button>
-                            </div>
-                        </div>
-                    </template>
-                </div>
-                <div class="flex flex-wrap items-center gap-2">
-                    <select x-model="extSites.filter" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
-                        <option value="unlinked">Unlinked</option>
-                        <option value="review">Needs a look (checked, not linked)</option>
-                        <option value="linked">Linked</option>
-                        <option value="not_on_db">Not on StashDB</option>
-                        <option value="all">All sites</option>
-                    </select>
-                    <input type="text" x-model="extSites.q" placeholder="Filter sites…"
-                           class="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 placeholder-gray-500">
-                    <span class="text-xs text-gray-500" x-text="extSitesFiltered().length.toLocaleString() + ' shown'"></span>
-                </div>
-                <div class="flex-1 overflow-y-auto bg-gray-900 rounded min-h-[12rem]">
-                    <div x-show="extSites.loading && !extSites.sites.length" class="text-center text-gray-400 py-8">Loading…</div>
-                    <template x-for="x in extSitesFiltered()" :key="x.site_key">
-                        <div class="px-3 py-2 border-b border-gray-800 flex flex-wrap items-center gap-2">
-                            <div class="w-52 min-w-0 flex-shrink-0">
-                                <div class="font-medium truncate" :title="x.variants.join(', ')" x-text="x.display"></div>
-                                <div x-show="x.variants.length > 1" class="text-xs text-gray-500 truncate" x-text="'also: ' + x.variants.filter(v => v !== x.display).join(', ')"></div>
-                            </div>
-                            <div class="w-20 text-right text-xs text-gray-400 flex-shrink-0" x-text="x.videos.toLocaleString() + ' videos'"></div>
-                            <div class="flex-1 min-w-[12rem] text-xs">
-                                <template x-if="x.status === 'linked'">
-                                    <span class="inline-flex flex-wrap gap-x-2 gap-y-0.5">
-                                        <template x-for="st in x.link.studios" :key="st.ext_id">
-                                            <span>
-                                                <span class="text-green-400" x-text="'→ ' + st.ext_name"></span>
-                                                <span x-show="st.ext_parent_name" class="text-gray-500" x-text="' (part of ' + st.ext_parent_name + ')'"></span>
-                                                <span x-show="st.link_kind === 'network'" class="ml-1 px-1.5 rounded bg-purple-700 text-white">network</span>
-                                            </span>
-                                        </template>
-                                    </span>
-                                </template>
-                                <span x-show="x.status === 'not_on_db'" class="px-1.5 rounded bg-gray-700 text-gray-300" x-text="'not on ' + extDbSourceLabel()"></span>
-                                <span x-show="x.status === 'unlinked' && x.check" class="text-yellow-400"
-                                      x-text="x.check ? extSitesOutcomeLabel(x.check.outcome) + (x.check.detail ? ': ' + x.check.detail : '') : ''"></span>
-                                <span x-show="x.status === 'unlinked' && !x.check" class="text-gray-500">not checked yet</span>
-                                <span x-show="(x.link?.abbreviations || []).length" class="ml-1 text-gray-400"
-                                      x-text="'· abbrev: ' + (x.link?.abbreviations || []).join(', ')"></span>
-                            </div>
-                            <div class="flex gap-1 flex-shrink-0">
-                                <button @click="extSitesFind(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
-                                        x-text="x.status === 'linked' ? 'Studios…' : 'Find'"></button>
-                                <button x-show="x.status !== 'not_on_db'" @click="extSitesNotOnDb(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
-                                        title="Skip this site in searches from now on">Not on DB</button>
-                                <button x-show="x.status !== 'unlinked'" @click="extSitesClear(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
-                                        :title="x.status === 'linked' ? 'Remove all linked studios' : 'Remove the not-on-StashDB mark'">Clear</button>
-                                <button @click="extSitesAbbrev(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
-                                        title="Your filename abbreviations for this site">Abbrev</button>
-                            </div>
-                        </div>
-                    </template>
-                    <div x-show="!extSites.loading && !extSitesFiltered().length" class="text-center text-gray-400 py-8">No sites in this view.</div>
-                </div>
-            </div>
-
-            <!-- Sites: find a studio for one site -->
-            <div x-show="extSites.tab === 'sites' && extSites.view === 'find'" class="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
-                <div class="flex items-center gap-2">
-                    <div class="flex-1 min-w-0">
-                        <span class="font-semibold" x-text="extSites.find.site?.display"></span>
-                        <span class="text-xs text-gray-500" x-text="(extSites.find.site?.videos || 0).toLocaleString() + ' videos'
-                              + (extSites.find.site?.is_network ? ' · network' : '')
-                              + (extSites.find.cached ? ' · candidates from the last check (no new request)' : '')"></span>
-                    </div>
-                    <span x-show="extSites.find.outcome" class="text-xs text-yellow-400" x-text="extSitesOutcomeLabel(extSites.find.outcome)"></span>
-                </div>
-                <div x-show="(extSites.find.site?.link?.studios || []).length" class="bg-gray-900 rounded p-2 flex flex-wrap items-center gap-2 text-xs">
-                    <span class="text-gray-400">Linked:</span>
-                    <template x-for="st in (extSites.find.site?.link?.studios || [])" :key="st.ext_id">
-                        <span class="inline-flex items-center gap-1 bg-gray-700 rounded px-2 py-0.5">
-                            <span class="text-green-400" x-text="st.ext_name"></span>
-                            <span x-show="st.link_kind === 'network'" class="text-purple-300">(network)</span>
-                            <button @click="extSitesUnlinkStudio(extSites.find.site, st.ext_id, st.ext_name)" class="text-gray-400 hover:text-white"
-                                    :title="'Remove ' + st.ext_name">&times;</button>
-                        </span>
-                    </template>
-                    <span class="text-gray-500">A site can have several studios, e.g. collaborations like "TeamSkeet X …".</span>
-                </div>
-                <div class="flex gap-2">
-                    <input type="text" x-model="extSites.find.query" @keydown.enter="extSitesSearch()"
-                           placeholder="Search by another name, or paste a StashDB studio link"
-                           class="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500">
-                    <button @click="extSitesSearch()" :disabled="extSites.find.loading" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40">Search</button>
-                </div>
-                <div x-show="extSites.find.loading" class="text-center text-gray-400 py-6">Searching…</div>
-                <div x-show="!extSites.find.loading && !extSites.find.cands.length" class="text-center text-gray-400 py-6">
-                    No studios found. Try another name or a studio link, or mark this site as not on StashDB.
-                </div>
-                <div class="bg-gray-900 rounded">
-                    <template x-for="c in extSites.find.cands" :key="c.ext_id">
-                        <div class="px-3 py-2 border-b border-gray-800 flex flex-wrap items-center gap-2"
-                             :class="extSites.find.pick && extSites.find.pick.ext_id === c.ext_id ? 'bg-gray-800' : ''">
-                            <div class="flex-1 min-w-[14rem]">
-                                <div>
-                                    <span class="font-medium" x-text="c.name"></span>
-                                    <span x-show="c.parent" class="text-gray-500 text-xs" x-text="' part of ' + (c.parent?.name || '')"></span>
-                                    <span x-show="c.match" class="ml-1 text-xs px-1.5 rounded bg-green-700 text-white" x-text="c.match + ' match'"></span>
-                                </div>
-                                <div class="text-xs text-gray-500 truncate" x-text="[(c.aliases.length ? 'aka ' + c.aliases.join(', ') : ''), c.urls.join('  ')].filter(Boolean).join(' · ')"></div>
-                            </div>
-                            <span x-show="extSitesIsLinked(c.ext_id)" class="text-xs text-green-400">✓ linked</span>
-                            <button x-show="!extSitesIsLinked(c.ext_id)" @click="extSitesLink(c.ext_id, false, c.name)" :disabled="extSites.find.busy"
-                                    class="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs disabled:opacity-40"
-                                    x-text="(extSites.find.site?.link?.studios || []).length ? 'Add' : 'Link'"></button>
-                            <button x-show="extSitesIsLinked(c.ext_id)" @click="extSitesUnlinkStudio(extSites.find.site, c.ext_id, c.name)"
-                                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">Remove</button>
-                            <button x-show="c.parent && !extSitesIsLinked(c.parent?.id)" @click="extSitesLink(c.parent.id, true, c.parent.name)" :disabled="extSites.find.busy"
-                                    class="px-2 py-1 bg-purple-700 hover:bg-purple-600 rounded text-xs disabled:opacity-40"
-                                    :title="'Link this site to the parent studio ' + (c.parent?.name || '') + ' (for network sites)'"
-                                    x-text="'Link parent: ' + (c.parent?.name || '')"></button>
-                        </div>
-                    </template>
-                </div>
-            </div>
-
-            <!-- Libraries -->
-            <div x-show="extSites.tab === 'libraries'" class="flex-1 overflow-hidden flex flex-col p-4 gap-3 text-sm">
-                <div class="flex flex-wrap items-center gap-2">
-                    <p class="text-xs text-gray-400 flex-1 min-w-0">
-                        A default site is used as a matching clue for that library's videos that have no site of their own.
-                        Nothing is written to your videos. Suggestions appear when at least 80% of a library's tagged videos share one site.
-                    </p>
-                    <button @click="extSitesLibUseAll()" :disabled="!extSites.libs.some(l => l.suggestion && !l.default_site)"
-                            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-xs disabled:opacity-40"
-                            x-text="'Use all suggestions (' + extSites.libs.filter(l => l.suggestion && !l.default_site).length + ')'"></button>
-                </div>
-                <datalist id="extSitesNames">
-                    <template x-for="n in extSitesSiteNames()" :key="n"><option :value="n"></option></template>
-                </datalist>
-                <div class="flex-1 overflow-y-auto bg-gray-900 rounded">
-                    <div x-show="extSites.libsLoading && !extSites.libs.length" class="text-center text-gray-400 py-8">Loading…</div>
-                    <template x-for="l in extSites.libs" :key="l.library">
-                        <div class="px-3 py-2 border-b border-gray-800 flex flex-wrap items-center gap-2">
-                            <div class="w-48 min-w-0 flex-shrink-0">
-                                <div class="font-medium truncate" x-text="l.library || '(no library)'"></div>
-                                <div class="text-xs text-gray-500" x-text="l.videos.toLocaleString() + ' videos · ' + l.without_site.toLocaleString() + ' without a site'"></div>
-                            </div>
-                            <div class="flex-1 min-w-[10rem] text-xs text-gray-400 truncate"
-                                 x-text="l.top_sites.length ? l.top_sites.map(t => t.site + ' ' + Math.round(t.share * 100) + '%').join(', ') : 'no sites tagged'"></div>
-                            <button x-show="l.suggestion && l.default_site !== l.suggestion?.site" @click="extSitesLibSet(l.library, l.suggestion.site)"
-                                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs flex-shrink-0"
-                                    x-text="'Use ' + (l.suggestion?.site || '')"></button>
-                            <input type="text" list="extSitesNames" x-model="extSites.libEdit[l.library]" placeholder="default site"
-                                   class="w-40 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-500 flex-shrink-0">
-                            <button @click="extSitesLibSet(l.library, (extSites.libEdit[l.library] || '').trim())"
-                                    :disabled="(extSites.libEdit[l.library] || '') === (l.default_site || '')"
-                                    class="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs disabled:opacity-40 flex-shrink-0">Save</button>
-                            <span x-show="l.default_site" class="text-xs text-green-400 flex-shrink-0" x-text="'✓ ' + l.default_site"></span>
-                        </div>
-                    </template>
-                </div>
-            </div>
-
-            <div class="px-4 py-3 border-t border-gray-700 flex flex-wrap items-center gap-2">
-                <div class="flex-1 min-w-0 text-sm">
-                    <span x-show="extSites.error" class="text-red-400" x-text="extSites.error"></span>
-                    <span x-show="!extSites.error && extSites.message" class="text-green-400" x-text="extSites.message"></span>
-                </div>
-                <button x-show="extSites.tab === 'sites' && extSites.view === 'find' && extSites.find.site && extSites.find.site.status !== 'not_on_db'"
-                        @click="extSitesNotOnDb(extSites.find.site)" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Not on StashDB</button>
-                <button x-show="extSites.tab === 'sites' && extSites.view === 'find'" @click="extSites.view = 'list'; extSites.error = ''"
-                        class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-                        x-text="(extSites.find.site?.link?.studios || []).length ? 'Done' : 'Back to sites'"></button>
-                <button @click="extSitesClose()" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Close</button>
             </div>
         </div>
     </div>

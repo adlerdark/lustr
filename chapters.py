@@ -109,7 +109,7 @@ def _has_table(conn, name):
 
 
 def counts(conn, video_ids=None):
-    """-> ({video_id: chapters in its files}, {video_id: chapter markers}).
+    """-> ({video_id: chapters in its files}, {video_id: markers - yours and those made from chapters}).
     Chapters: the most any live file of the video has; a video none of whose files was checked is left out."""
     ch, mk = {}, {}
     vids = list(video_ids) if video_ids is not None else None
@@ -124,19 +124,18 @@ def counts(conn, video_ids=None):
                 ch[r[0]] = r[1] or 0
         if _markers_ready(conn):
             mwhere = where.replace('fv.video_id', 'video_id')
-            for r in conn.execute(f"SELECT video_id, COUNT(*) FROM video_markers WHERE source = 'chapter'{mwhere} GROUP BY video_id",
-                                  params):
+            for r in conn.execute(f"SELECT video_id, COUNT(*) FROM video_markers WHERE 1{mwhere} GROUP BY video_id", params):
                 mk[r[0]] = r[1]
     return ch, mk
 
 
 def add_info(conn, items):
-    """Put chapters (None = file not checked yet) / chapter_markers on list items (dicts with video_id)."""
+    """Put chapters (None = file not checked yet) / markers on list items (dicts with video_id)."""
     ch, mk = counts(conn, {i.get('video_id') for i in items if i.get('video_id')})
     for i in items:
         vid = i.get('video_id')
         i['chapters'] = ch.get(vid)
-        i['chapter_markers'] = mk.get(vid, 0)
+        i['markers'] = mk.get(vid, 0)
     return items
 
 
@@ -145,10 +144,10 @@ def _markers_ready(conn):
 
 
 def filter_sql(conn, kind, has, col='v.video_id'):
-    """chapters:yes|no (kind 'file') / chaptermarkers:yes|no (kind 'markers') -> SQL condition on col."""
+    """chapters:yes|no (kind 'file') / markers:yes|no (kind 'markers', any marker) -> SQL condition on col."""
     ensure_schema(conn)
     if kind == 'markers':
-        sub = "SELECT video_id FROM video_markers WHERE source = 'chapter'" if _markers_ready(conn) else 'SELECT NULL WHERE 0'
+        sub = 'SELECT video_id FROM video_markers' if _markers_ready(conn) else 'SELECT NULL WHERE 0'
     else:
         sub = ('SELECT fv2.video_id FROM file_versions fv2 JOIN chapter_checks c ON c.path = fv2.path '
                'WHERE fv2.deleted_at IS NULL AND c.chapters > 0')
@@ -177,12 +176,30 @@ def import_paths_background(conn_fn, paths):
     threading.Thread(target=run, name='chapters-new', daemon=True).start()
 
 
+def paths_for(conn, libraries=None, paths=None):
+    """The live files to check: those of some libraries, some chosen files, or (neither) every file not checked yet."""
+    if paths:
+        live = set()
+        for k in range(0, len(paths), 500):
+            chunk = list(paths[k:k + 500])
+            live |= {r[0] for r in conn.execute(f'SELECT path FROM file_versions WHERE deleted_at IS NULL '
+                                                f'AND path IN ({",".join("?" * len(chunk))})', chunk)}
+        return sorted(live)
+    if libraries:
+        return [r[0] for r in conn.execute(
+            'SELECT fv.path FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id WHERE fv.deleted_at IS NULL '
+            f'AND v.library IN ({",".join("?" * len(libraries))}) ORDER BY fv.path', list(libraries))]
+    return [r[0] for r in conn.execute('SELECT fv.path FROM file_versions fv LEFT JOIN chapter_checks c ON c.path = fv.path '
+                                       'WHERE fv.deleted_at IS NULL AND c.path IS NULL ORDER BY fv.path')]
+
+
 class BulkJob:
-    """Settings -> 'Import chapters from all videos': every live file not checked yet, one at a time."""
+    """Import chapters, one file at a time: every live file not checked yet (Settings), a library's files
+    or chosen files (a file already checked and unchanged since is skipped quickly)."""
     def __init__(self):
         self.lock = threading.Lock()
         self.state = {'running': False, 'total': 0, 'done': 0, 'files_with_chapters': 0, 'markers': 0, 'stop': False,
-                      'last_error': ''}
+                      'last_error': '', 'label': ''}
 
     def status(self):
         with self.lock:
@@ -192,15 +209,16 @@ class BulkJob:
         with self.lock:
             self.state['stop'] = True
 
-    def start(self, conn_fn):
+    def start(self, conn_fn, libraries=None, paths=None, label=''):
         with self.lock:
             if self.state['running']:
                 return False
-            self.state.update(running=True, total=0, done=0, files_with_chapters=0, markers=0, stop=False, last_error='')
-        threading.Thread(target=self._run, args=(conn_fn,), name='chapters-bulk', daemon=True).start()
+            self.state.update(running=True, total=0, done=0, files_with_chapters=0, markers=0, stop=False, last_error='',
+                              label=label or ('All videos' if not (libraries or paths) else ''))
+        threading.Thread(target=self._run, args=(conn_fn, libraries, paths), name='chapters-bulk', daemon=True).start()
         return True
 
-    def _run(self, conn_fn):
+    def _run(self, conn_fn, libraries=None, paths=None):
         try:
             os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 15)
         except Exception:
@@ -208,17 +226,16 @@ class BulkJob:
         conn = conn_fn()
         try:
             ensure_schema(conn)
-            paths = [r[0] for r in conn.execute('SELECT fv.path FROM file_versions fv LEFT JOIN chapter_checks c ON c.path = fv.path '
-                                                'WHERE fv.deleted_at IS NULL AND c.path IS NULL ORDER BY fv.path')]
+            paths = paths_for(conn, libraries, paths)
             self.state['total'] = len(paths)
             for p in paths:
                 if self.state['stop']:
                     break
                 try:
-                    n = import_file(conn, p)
-                    if n:
+                    self.state['markers'] += import_file(conn, p)
+                    row = conn.execute('SELECT chapters FROM chapter_checks WHERE path = ?', (p,)).fetchone()
+                    if row and row[0]:
                         self.state['files_with_chapters'] += 1
-                        self.state['markers'] += n
                 except Exception as e:
                     self.state['last_error'] = f'{os.path.basename(p)}: {e}'
                 self.state['done'] += 1

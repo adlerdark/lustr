@@ -376,7 +376,7 @@ def get_playlist_items(
     library_stats.add_play_stats(conn, username, items)   # Plays / Time Watched columns
     try:
         import chapters
-        chapters.add_info(conn, items)                      # Chapters / Chapter Markers columns
+        chapters.add_info(conn, items)                      # Chapters / Markers columns
     except Exception as e:
         print(f"chapter info unavailable: {e}")
     return {

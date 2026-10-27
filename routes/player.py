@@ -7,7 +7,7 @@ Settings live in the metadata table under 'player'.
 """
 import json
 import os
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
@@ -369,7 +369,9 @@ def save_marker(conn, b):
 def markers_get(video_id: str = Query(...), model=Depends(get_model)):
     try:
         conn = _conn()
-        return {'success': True, 'markers': list_markers(conn, video_id), 'tags': tag_vocab(conn)}
+        import chapters
+        ch = chapters.counts(conn, [video_id])[0].get(video_id)        # the list's Chapters column (file checked on open)
+        return {'success': True, 'markers': list_markers(conn, video_id), 'tags': tag_vocab(conn), 'chapters': ch}
     except Exception as e:
         return _err(e)
 
@@ -399,13 +401,32 @@ def markers_delete(body: MarkerDeleteBody, model=Depends(get_model)):
         return _err(e)
 
 
+class ChapterScanBody(BaseModel):
+    libraries: Optional[List[str]] = None     # these libraries' files (a group: its libraries)
+    paths: Optional[List[str]] = None         # ...or these files
+    label: str = ''                           # what the header chip says it's checking
+
+
 @router.post('/chapters/scan')
-def chapters_scan(model=Depends(get_model)):
-    """Import chapters from every file not checked yet (background)."""
+def chapters_scan(body: Optional[ChapterScanBody] = None, model=Depends(get_model)):
+    """Import chapters (background): from every file not checked yet, or from some libraries / files."""
     import chapters
     ensure_markers(_conn())
-    started = chapters.bulk.start(lambda: _model.db.get_connection())
+    b = body or ChapterScanBody()
+    started = chapters.bulk.start(lambda: _model.db.get_connection(), libraries=b.libraries, paths=b.paths, label=b.label)
     return {'success': True, 'started': started, 'status': chapters.bulk.status()}
+
+
+class ChapterCountsBody(BaseModel):
+    video_ids: List[str]
+
+
+@router.post('/chapters/counts')
+def chapters_counts(body: ChapterCountsBody, model=Depends(get_model)):
+    """Chapters / Markers for the videos on screen (refreshed after a chapter check)."""
+    import chapters
+    ch, mk = chapters.counts(_conn(), body.video_ids[:5000])
+    return {'success': True, 'chapters': ch, 'markers': mk}
 
 
 @router.get('/chapters/status')

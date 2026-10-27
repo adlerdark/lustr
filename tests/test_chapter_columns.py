@@ -1,5 +1,5 @@
 """
-Chapters / Chapter Markers: list columns, sorting and the chapters: / chaptermarkers: search keywords.
+Chapters / Markers: list columns, sorting and the chapters: / markers: search keywords.
 
     docker run --rm -v "$PWD":/app -w /app lustr:0.1.0 python -m unittest discover -s tests -v
 """
@@ -28,7 +28,7 @@ class ChapterColumnTests(unittest.TestCase):
         for vid in ('v1', 'v2', 'v3'):
             self.c.execute("INSERT INTO videos (video_id, filename_base, library) VALUES (?, ?, 'Lib')", (vid, vid))
             self.c.execute("INSERT INTO file_versions (path, video_id, filename) VALUES (?, ?, ?)", (f'/m/{vid}.mkv', vid, f'{vid}.mkv'))
-        # v1: 3 chapters, 2 markers made from them; v2: checked, none; v3: never checked
+        # v1: 3 chapters, 2 markers made from them; v2: checked, no chapters, one marker of yours; v3: never checked
         self.c.execute("INSERT INTO chapter_checks (path, size, mtime, chapters) VALUES ('/m/v1.mkv', 1, 1, 3)")
         self.c.execute("INSERT INTO chapter_checks (path, size, mtime, chapters) VALUES ('/m/v2.mkv', 1, 1, 0)")
         for s in (0, 60):
@@ -39,7 +39,7 @@ class ChapterColumnTests(unittest.TestCase):
 
     def test_add_info(self):
         items = chapters.add_info(self.c, [{'video_id': 'v1'}, {'video_id': 'v2'}, {'video_id': 'v3'}])
-        self.assertEqual([(i['chapters'], i['chapter_markers']) for i in items], [(3, 2), (0, 0), (None, 0)])
+        self.assertEqual([(i['chapters'], i['markers']) for i in items], [(3, 2), (0, 1), (None, 0)])
 
     def _ids(self, kind, has):
         cond = chapters.filter_sql(self.c, kind, has)
@@ -48,8 +48,8 @@ class ChapterColumnTests(unittest.TestCase):
     def test_filter_sql(self):
         self.assertEqual(self._ids('file', True), ['v1'])
         self.assertEqual(self._ids('file', False), ['v2', 'v3'])
-        self.assertEqual(self._ids('markers', True), ['v1'])
-        self.assertEqual(self._ids('markers', False), ['v2', 'v3'])
+        self.assertEqual(self._ids('markers', True), ['v1', 'v2'])        # any marker, yours or from chapters
+        self.assertEqual(self._ids('markers', False), ['v3'])
 
     def test_keyword_parsing(self):
         from routes import videos
@@ -60,11 +60,18 @@ class ChapterColumnTests(unittest.TestCase):
     def test_sort(self):
         from routes import videos
         rows = [{'video_id': 'v3'}, {'video_id': 'v1'}, {'video_id': 'v2'}]
-        for field, want in (('chapters', ['v3', 'v2', 'v1']), ('chapter_markers', ['v3', 'v2', 'v1'])):
+        for field, want in (('chapters', ['v3', 'v2', 'v1']), ('markers', ['v3', 'v2', 'v1'])):
             videos._prepare_sort(self.c, rows, field)
-            got = [r['video_id'] for r in sorted(rows, key=videos._sort_key(field))]
-            self.assertEqual(got[-1], 'v1', field)
-            self.assertEqual(videos._sort_field_of('Chapter Markers'), 'chapter_markers')
+            self.assertEqual([r['video_id'] for r in sorted(rows, key=videos._sort_key(field))], want, field)
+        self.assertEqual(videos._sort_field_of('Markers'), 'markers')
+
+    def test_paths_for(self):
+        self.c.execute("INSERT INTO videos (video_id, filename_base, library) VALUES ('v4', 'v4', 'Other')")
+        self.c.execute("INSERT INTO file_versions (path, video_id, filename) VALUES ('/m/v4.mkv', 'v4', 'v4.mkv')")
+        self.c.execute("UPDATE file_versions SET deleted_at = CURRENT_TIMESTAMP WHERE path = '/m/v2.mkv'")
+        self.assertEqual(chapters.paths_for(self.c, libraries=['Lib']), ['/m/v1.mkv', '/m/v3.mkv'])        # live files only
+        self.assertEqual(chapters.paths_for(self.c, paths=['/m/v4.mkv', '/m/v2.mkv', '/nope']), ['/m/v4.mkv'])
+        self.assertEqual(chapters.paths_for(self.c), ['/m/v3.mkv', '/m/v4.mkv'])                          # not checked yet
 
 
 if __name__ == '__main__':

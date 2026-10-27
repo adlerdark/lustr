@@ -164,7 +164,7 @@ def _resolution_num(v):
 
 
 _SORT_NUMBERS = {
-    'cc': _num, 'chapters': _num, 'chapter_markers': _num, 'versions': _num, 'favorite': _num, 'rating': _num, 'year': _num,
+    'cc': _num, 'chapters': _num, 'markers': _num, 'versions': _num, 'favorite': _num, 'rating': _num, 'year': _num,
     'file_size': _size_bytes, 'resolution': _resolution_num,
     'total_bitrate': lambda v: _num(re.sub(r'[^\d.]', '', str(v or '')) or None),
 }
@@ -181,11 +181,11 @@ def _prepare_sort(conn, rows, field):
             have = set()
         for r in rows:
             r['cc'] = 1 if r.get('video_id') in have else 0
-    elif field in ('chapters', 'chapter_markers'):
+    elif field in ('chapters', 'markers'):
         import chapters
         ch, mk = chapters.counts(conn)
         for r in rows:
-            r['chapters'], r['chapter_markers'] = ch.get(r.get('video_id')), mk.get(r.get('video_id'), 0)
+            r['chapters'], r['markers'] = ch.get(r.get('video_id')), mk.get(r.get('video_id'), 0)
     elif field == 'versions':
         counts = {r[0]: r[1] for r in conn.execute('SELECT video_id, COUNT(*) FROM file_versions '
                                                    'WHERE deleted_at IS NULL GROUP BY video_id')}
@@ -314,7 +314,7 @@ def _pop_captions_filter(field_filters):
 
 
 def _add_chapter_info(conn, items):
-    """Chapters / Chapter Markers columns (chapters.py)."""
+    """Chapters / Markers columns (chapters.py)."""
     try:
         import chapters
         chapters.add_info(conn, items)
@@ -323,10 +323,10 @@ def _add_chapter_info(conn, items):
 
 
 def _pop_chapters_filter(field_filters):
-    """chapters:yes|no (chapters in the file) / chaptermarkers:yes|no or markers: (markers made from them)
+    """chapters:yes|no (chapters in the file) / markers:yes|no (any marker, yours or made from chapters)
     -> [(kind, has)], removed from the parsed filters (chapters.py)."""
     out = []
-    for key, kind in (('chapters', 'file'), ('chaptermarkers', 'markers'), ('markers', 'markers')):
+    for key, kind in (('chapters', 'file'), ('markers', 'markers')):
         vals = field_filters.pop(key, None)
         for group in field_filters.get('__or_groups__') or []:
             group.pop(key, None)
