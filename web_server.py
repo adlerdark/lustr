@@ -204,7 +204,18 @@ async def auth_middleware(request: Request, call_next):
         username = check_auth(request, check_inactivity=True)
         if not username:
             return Response(status_code=401, content="Unauthorized")
-        return await call_next(request)
+        response = await call_next(request)
+        # thumbnails carry ?v=<file time>: when that's this file's own time, a new file is a new URL and the
+        # browser may keep this one (hover frames reuse the card's ?v=, so they're only kept when it matches)
+        v = request.query_params.get("v")
+        if path.startswith("/cache/") and v and response.status_code == 200:
+            try:
+                f = os.path.realpath(os.path.join(CACHE_DIR, path[len("/cache/"):]))
+                if f.startswith(os.path.realpath(CACHE_DIR) + os.sep) and str(int(os.path.getmtime(f))) == v:
+                    response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+            except (OSError, ValueError):
+                pass
+        return response
     
     # All other API endpoints require auth
     session = check_session(request, check_inactivity=True)

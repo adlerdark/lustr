@@ -806,6 +806,7 @@
                 currentFolder: null,
                 // Back button: places to go back to (navPush), and the one history entry that catches Back (navSync)
                 navStack: [], _navSkip: false, _navHold: 0, _navQuery: '',
+                gridStale: false, _gridSeq: 0,   // a library opened on another tab: its grid loads after that tab (gridCatchUp)
                 
                 sortField: 'Filename',
                 sortSeed: Math.floor(Math.random() * 1e9),          // Random sort: same order while paging
@@ -817,6 +818,7 @@
                 libDefaults: { sort: 'Filename', desc: false, view: '', tab: 'recommended' },
                 libraryDefaults: {},      // {library: {sort, desc, view, tab}} - only what's overridden
                 configPending: false,     // a saveConfig is waiting (refreshAll mustn't undo it)
+                _cfgPatch: {}, _cfgDefaults: false,   // what saveConfig sends besides sort / columns: the overrides and defaults you changed
                 libTabNames: [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections'], ['movies', 'Movies']],
                 availableColumns: [], 
                 visibleColumns: ["Fav", "Title", "Cast", "Date Created", "File Size"], 
@@ -1861,7 +1863,10 @@
                     }
                 },
                             
+                // Alpine calls this itself (an x-init="init()" as well ran it twice: every listener, /api/init and Home load doubled)
                 async init() {
+                    if (this._initDone) return;
+                    this._initDone = true;
                     console.log('App init starting');
                     this.$nextTick(() => this.autoDraggables());
                     // Libraries (Settings): your edits to the order / groups are saved however Settings is closed
@@ -2448,29 +2453,29 @@
                     }
                 },
 
-                saveConfig() {
+                // defaults: the Settings -> Browsing defaults changed (otherwise they aren't sent, nor are overrides
+                // you didn't touch - the server keeps what it has, so another open page can't undo them)
+                saveConfig(defaults = false) {
                     if (!this.isLoggedIn) return;
+                    if (defaults) this._cfgDefaults = true;
                     clearTimeout(this.saveTimeout);
                     this.configPending = true;                 // refreshAll keeps what's on screen until this is saved
                     this.saveTimeout = setTimeout(() => {
                         this.configPending = false;
-                        fetch('/api/config/save', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({
-                                sort_field: this.sortField,
-                                sort_desc: this.sortDesc,
-                                visible_columns: this.visibleColumns,
-                                column_widths: this.columnWidths,
-                                view_mode: this.viewMode,
-                                quick_tag_order: this.quickTagOrder,
-                                default_sort: this.libDefaults.sort,
-                                default_sort_desc: this.libDefaults.desc,
-                                default_view: this.libDefaults.view,
-                                default_tab: this.libDefaults.tab,
-                                library_defaults: this.libraryDefaults
-                            })
-                        }).catch(e => console.error("Save Config Failed", e));
+                        const patch = this._cfgPatch, withDefaults = this._cfgDefaults;
+                        this._cfgPatch = {}; this._cfgDefaults = false;
+                        const body = { client: 2, sort_field: this.sortField, sort_desc: this.sortDesc, visible_columns: this.visibleColumns,
+                                       column_widths: this.columnWidths, view_mode: this.viewMode, quick_tag_order: this.quickTagOrder };
+                        if (withDefaults) Object.assign(body, { default_sort: this.libDefaults.sort, default_sort_desc: this.libDefaults.desc,
+                                                                default_view: this.libDefaults.view, default_tab: this.libDefaults.tab });
+                        if (Object.keys(patch).length) body.library_defaults_patch = patch;
+                        fetch('/api/config/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
+                            .then(r => { if (!r.ok) throw new Error(r.status); })
+                            .catch(e => {                                // try again with the next save
+                                console.error("Save Config Failed", e);
+                                this._cfgPatch = { ...patch, ...this._cfgPatch };
+                                this._cfgDefaults = this._cfgDefaults || withDefaults;
+                            });
                     }, 1000); 
                 },
 
@@ -2664,11 +2669,13 @@
                             this.page = 1;
                         } else {
                             try { await this.loadHomeData(); } finally { this.isSearching = false; }
+                            if (mode === 'reset') this.gridCatchUp();                // the sidebar's counts, after the rows
                             return;
                         }
                     }
                     
                     if (this.libraryTab !== 'library' && this.searchQuery && this.searchQuery.trim()) this.setLibraryTab('library');   // a search shows the grid
+                    if (mode === 'reset') { this.gridStale = false; this._gridSeq++; }   // loading it now (a pending gridCatchUp needn't)
                     try {
                         const urlStart = performance.now();
                         let url = this.videosUrl();
@@ -2871,21 +2878,34 @@
                     // ...and start from your default length filter (Settings -> General)
                     this.applyDefaultLengthFilter();
 
-                    this.fetchVideos('reset');
                     this.mobileSidebar = false;
                     this.coll.view = null;
-                    this.setLibraryTab(this.libraryTabs[item.name] || prefs.tab, false);   // ...and the same for the tab
-                    
-                    // Update available filters if filters are active
-                    // if (Object.keys(this.activeTags).length > 0 || Object.keys(this.activeSites).length > 0) {
-                    //     this.fetchAvailableFilters();
-                    // }
-                    // DO ABOVE OR BELOW: 
-                    // Always refresh available filters when switching libraries
-                    this.$nextTick(() => {
-                        console.log('About to fetch filters for:', this.currentLibrary);
-                        this.fetchAvailableFilters();
+                    const tab = this.libraryTabs[item.name] || prefs.tab;
+                    // The Library tab (and Home) load now; fetchVideos then gets the sidebar's filter counts.
+                    // Recommended / Collections / Movies show first: the grid loads after (gridCatchUp), not alongside
+                    this._gridSeq++;
+                    if (item.name === 'Home' || tab === 'library') this.fetchVideos('reset');
+                    else this.gridStale = true;
+                    this.setLibraryTab(tab, false);   // ...and the same for the tab
+                },
+
+                // once a tab's own content (and the thumbnails on screen) are in: the library grid, sidebar
+                // and filter counts, which the tab doesn't show but the sidebar does
+                async gridCatchUp() {
+                    const seq = ++this._gridSeq;
+                    await this.$nextTick();
+                    const onScreen = [...document.querySelectorAll('.scroller-main img')].filter(i => {
+                        if (i.complete) return false;
+                        const r = i.getBoundingClientRect();
+                        return r.width && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
                     });
+                    await Promise.race([
+                        Promise.all(onScreen.map(i => new Promise(ok => { i.addEventListener('load', ok, { once: true }); i.addEventListener('error', ok, { once: true }); }))),
+                        new Promise(ok => setTimeout(ok, 2500)),
+                    ]);
+                    if (seq !== this._gridSeq) return;                              // another library / tab meanwhile
+                    if (this.currentLibrary === 'Home') this.fetchAvailableFilters();
+                    else if (this.gridStale) this.fetchVideos('reset');
                 },
                 
                 async saveLibraryGroups() {
@@ -6382,9 +6402,11 @@ No metadata is changed.`)) return;
                     if (wasMovies && tab !== 'movies' && this.currentLibrary !== 'Home') this.fetchAvailableFilters();   // video counts again
                     if (remember && this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = tab;
                     if (this.currentLibrary === 'Home') return;
-                    if (tab === 'recommended') { this.homeRows = []; this.loadHomeData(this.currentLibrary); }
-                    if (tab === 'collections') { this.coll.view = null; this.loadCollections(); }
-                    if (tab === 'movies') { this.mv.view = null; this.mv.items = []; this.mvSel = {}; this.loadMovies(1); }
+                    const later = () => { if (this.gridStale) this.gridCatchUp(); };   // a library just opened on this tab
+                    if (tab === 'library' && this.gridStale) { this.page = 1; this.fetchVideos('reset'); }
+                    if (tab === 'recommended') { this.homeRows = []; this.loadHomeData(this.currentLibrary).then(later); }
+                    if (tab === 'collections') { this.coll.view = null; this.loadCollections().then(later); }
+                    if (tab === 'movies') { this.mv.view = null; this.mv.items = []; this.mvSel = {}; this.loadMovies(1).then(later); }
                 },
 
                 // the current Library view as /api/videos parameters (smart collections save these)
@@ -7810,7 +7832,10 @@ No metadata is changed.`)) return;
                         // Add length filter
                         if (this.activeLengthFilters.length > 0) url += `&length_filter=${encodeURIComponent(this.activeLengthFilters.join(','))}`;
                         
-                        const res = await fetch(url);
+                        if (url === this._filtersInFlight) return;                 // the same counts are already on the way
+                        this._filtersInFlight = url;
+                        let res;
+                        try { res = await fetch(url); } finally { if (this._filtersInFlight === url) this._filtersInFlight = null; }
                         if (res.ok) {
                             const data = await res.json();
                             // FIX: Set BOTH availableTags AND availableSites
@@ -8864,6 +8889,7 @@ No metadata is changed.`)) return;
                     const all = { ...this.libraryDefaults };
                     if (Object.keys(o).length) all[lib] = o; else delete all[lib];
                     this.libraryDefaults = all;
+                    this._cfgPatch[lib] = Object.keys(o).length ? o : null;
                     this.saveConfig();
                 },
 
@@ -9159,40 +9185,23 @@ No metadata is changed.`)) return;
                     
                     // Critical Fix: prevent ghost menu
                     if (this.selectedPaths.size > 0) {
-                        // Initial positioning at cursor
+                        // at the cursor; placeContextMenu keeps it on screen (again whenever its size changes)
+                        this._menuAt = { x: event.clientX, y: event.clientY };
                         this.contextMenuX = event.clientX;
                         this.contextMenuY = event.clientY;
                         this.activeMenu = 'file';
-                        
-                        // Wait for menu to render, then adjust if needed
-                        this.$nextTick(() => {
-                            const menu = document.querySelector('.context-menu');
-                            if (menu) {
-                                const rect = menu.getBoundingClientRect();
-                                const viewportWidth = window.innerWidth;
-                                const viewportHeight = window.innerHeight;
-                                
-                                let x = this.contextMenuX;
-                                let y = this.contextMenuY;
-                                
-                                // Adjust if menu overflows right edge
-                                if (rect.right > viewportWidth) {
-                                    x = viewportWidth - rect.width - 10;
-                                }
-                                
-                                // Adjust if menu overflows bottom edge
-                                if (rect.bottom > viewportHeight) {
-                                    y = viewportHeight - rect.height - 10;
-                                }
-                                
-                                // Update position if adjusted
-                                if (x !== this.contextMenuX || y !== this.contextMenuY) {
-                                    this.contextMenuX = x;
-                                    this.contextMenuY = y;
-                                }
-                            }
-                        });
+                        this.$nextTick(() => this.placeContextMenu());
                     }
+                },
+
+                // the right-click menu, moved up / left as far as it needs to fit (it scrolls if taller than the window)
+                placeContextMenu() {
+                    const menu = document.querySelector('.context-menu');
+                    if (!menu || this.activeMenu !== 'file' || !this._menuAt) return;
+                    const { width, height } = menu.getBoundingClientRect();
+                    const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight, m = 8;
+                    this.contextMenuX = Math.max(m, Math.min(this._menuAt.x, vw - width - m));
+                    this.contextMenuY = Math.max(m, Math.min(this._menuAt.y, vh - height - m));
                 },
                 
                 openManageLib(libName) {
@@ -9231,6 +9240,7 @@ No metadata is changed.`)) return;
                             const all = { ...this.libraryDefaults, [newName]: this.libraryDefaults[oldName] };
                             delete all[oldName];
                             this.libraryDefaults = all;
+                            Object.assign(this._cfgPatch, { [oldName]: null, [newName]: all[newName] });
                             this.saveConfig();
                         }
                         
@@ -10627,7 +10637,7 @@ No metadata is changed.`)) return;
                     if(!window.confirm("Remove library '" + name + "'?")) return; 
                     await fetch(`/api/library/${name}`, { method: 'DELETE' }); 
                     this.tempLibraryOrder = this.tempLibraryOrder.filter(l => l !== name);
-                    if (this.libraryDefaults[name]) { const all = { ...this.libraryDefaults }; delete all[name]; this.libraryDefaults = all; this.saveConfig(); }
+                    if (this.libraryDefaults[name]) { const all = { ...this.libraryDefaults }; delete all[name]; this.libraryDefaults = all; this._cfgPatch[name] = null; this.saveConfig(); }
                     const res = await fetch('/api/init');
                     const d = await res.json();
                     this.allLibraries = d.libraries;
@@ -13438,7 +13448,7 @@ No metadata is changed.`)) return;
     </script>
     <script src="/static/vendor/alpinejs-3.13.3.min.js" defer></script>
 </head>
-<body class="bg-gray-900 text-gray-200 h-screen flex overflow-hidden relative" x-data="libraryApp()" x-init="init()" x-effect="navSync()">
+<body class="bg-gray-900 text-gray-200 h-screen flex overflow-hidden relative" x-data="libraryApp()" x-effect="navSync()">
     <div id="messageBox" class="fixed top-5 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-xl z-[999] hidden transition-opacity duration-300"></div>
 
     <div x-show="showLogin" x-cloak class="login-modal-overlay fixed inset-0 z-[2147483647] bg-black flex items-center justify-center p-4 transition-opacity duration-500" style="isolation: isolate;">
@@ -15284,7 +15294,7 @@ No metadata is changed.`)) return;
         </div>
 
         <!-- Added guard: selectedPaths.size > 0 to prevent ghost menu -->
-        <div x-show="activeMenu === 'file' && selectedPaths.size > 0" x-cloak class="context-menu w-64 bg-gray-800 border border-gray-600 rounded shadow-xl py-1 text-sm" :style="`top: ${contextMenuY}px; left: ${contextMenuX}px`" @click.outside="activeMenu = null">
+        <div x-show="activeMenu === 'file' && selectedPaths.size > 0" x-cloak class="context-menu w-64 bg-gray-800 border border-gray-600 rounded shadow-xl py-1 text-sm overflow-y-auto" :style="`top: ${contextMenuY}px; left: ${contextMenuX}px; max-height: calc(100vh - 16px)`" x-init="new ResizeObserver(() => placeContextMenu()).observe($el)" @click.outside="activeMenu = null">
             <div class="px-3 py-1 text-gray-500 text-xs border-b border-gray-700 mb-1" x-text="selectedPaths.size + ' selected'"></div>
             <button x-show="isVlcConfigured" 
                     @click="openSelectedInVLC" 
@@ -16696,22 +16706,22 @@ No metadata is changed.`)) return;
                             <div class="grid grid-cols-[5rem_1fr] items-center gap-2 text-sm">
                                 <span class="text-gray-400">Sort</span>
                                 <div class="flex items-center gap-1">
-                                    <select :value="libDefaults.sort" @change="libDefaults.sort = $event.target.value; saveConfig()" class="flex-1 min-w-0 bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                                    <select :value="libDefaults.sort" @change="libDefaults.sort = $event.target.value; saveConfig(true)" class="flex-1 min-w-0 bg-gray-800 border border-gray-600 rounded px-2 py-1">
                                         <template x-for="[g, cols] in sortGroups()" :key="'dsg-' + g">
                                             <optgroup :label="g"><template x-for="col in cols" :key="'dso-' + col"><option :value="col" x-text="col" :selected="libDefaults.sort === col"></option></template></optgroup>
                                         </template>
                                     </select>
-                                    <button @click="libDefaults.desc = !libDefaults.desc; saveConfig()" class="px-2 py-1 rounded bg-gray-800 border border-gray-600 text-gray-300"
+                                    <button @click="libDefaults.desc = !libDefaults.desc; saveConfig(true)" class="px-2 py-1 rounded bg-gray-800 border border-gray-600 text-gray-300"
                                             :title="libDefaults.desc ? 'Descending' : 'Ascending'" x-text="libDefaults.desc ? '&#9660;' : '&#9650;'"></button>
                                 </div>
                                 <span class="text-gray-400">View</span>
-                                <select :value="libDefaults.view" @change="libDefaults.view = $event.target.value; saveConfig()" class="bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                                <select :value="libDefaults.view" @change="libDefaults.view = $event.target.value; saveConfig(true)" class="bg-gray-800 border border-gray-600 rounded px-2 py-1">
                                     <option value="" :selected="!libDefaults.view">The one you used last</option>
                                     <option value="grid" :selected="libDefaults.view === 'grid'">Thumbnails</option>
                                     <option value="list" :selected="libDefaults.view === 'list'">List</option>
                                 </select>
                                 <span class="text-gray-400">Tab</span>
-                                <select :value="libDefaults.tab" @change="libDefaults.tab = $event.target.value; saveConfig()" class="bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                                <select :value="libDefaults.tab" @change="libDefaults.tab = $event.target.value; saveConfig(true)" class="bg-gray-800 border border-gray-600 rounded px-2 py-1">
                                     <template x-for="tb in libTabNames" :key="'dt-' + tb[0]"><option :value="tb[0]" x-text="tb[1]" :selected="libDefaults.tab === tb[0]"></option></template>
                                 </select>
                             </div>

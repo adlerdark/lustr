@@ -170,7 +170,10 @@ class UIConfigRequest(BaseModel):
     default_sort_desc: Optional[bool] = None
     default_view: Optional[str] = None
     default_tab: Optional[str] = None
-    library_defaults: Optional[Dict[str, Dict[str, Any]]] = None
+    library_defaults: Optional[Dict[str, Dict[str, Any]]] = None   # the whole set: sent by pages before 0.17.2, ignored
+    # 0.17.2+ (client=2): only what changed - {library: override, or null to remove it}; default_* only when changed
+    library_defaults_patch: Optional[Dict[str, Optional[Dict[str, Any]]]] = None
+    client: Optional[int] = None
 
 
 class LibrarySetting(BaseModel):
@@ -245,9 +248,21 @@ def _clean_library_defaults(d):
 
 @api_router.post("/config/save")
 def save_ui_config(req: UIConfigRequest, model = Depends(get_model)):
-    """Save UI configuration preferences."""
+    """Save UI configuration preferences. Sort / columns / view are what you used last; the opening defaults
+    are merged in (only what this page changed), so a page left open elsewhere can't undo your changes."""
     from config import USE_SQLITE
-    
+
+    old = (model.db.load_ui_config() if USE_SQLITE else model.files.get("_ui_config", {})) or {}
+    new_client = req.client == 2
+    pick = lambda value, key, fallback: value if new_client and value is not None else old.get(key, fallback)
+    lib_defaults = dict(old.get("library_defaults") or {})
+    for lib, o in ((req.library_defaults_patch or {}) if new_client else {}).items():
+        c = _clean_library_defaults({lib: o or {}}).get(str(lib))
+        if c:
+            lib_defaults[str(lib)] = c
+        else:
+            lib_defaults.pop(str(lib), None)
+
     config_data = {
         "sort_field": req.sort_field,
         "sort_desc": req.sort_desc,
@@ -255,11 +270,11 @@ def save_ui_config(req: UIConfigRequest, model = Depends(get_model)):
         "column_widths": req.column_widths,
         "view_mode": req.view_mode,
         "quick_tag_order": req.quick_tag_order if req.quick_tag_order in ('custom', 'alpha') else 'custom',
-        "default_sort": req.default_sort or 'Filename',
-        "default_sort_desc": bool(req.default_sort_desc),
-        "default_view": req.default_view if req.default_view in ('grid', 'list') else '',
-        "default_tab": req.default_tab if req.default_tab in _TABS else 'recommended',
-        "library_defaults": _clean_library_defaults(req.library_defaults),
+        "default_sort": pick(req.default_sort, "default_sort", 'Filename') or 'Filename',
+        "default_sort_desc": bool(pick(req.default_sort_desc, "default_sort_desc", False)),
+        "default_view": v if (v := pick(req.default_view, "default_view", '')) in ('grid', 'list') else '',
+        "default_tab": v if (v := pick(req.default_tab, "default_tab", 'recommended')) in _TABS else 'recommended',
+        "library_defaults": lib_defaults,
     }
     
     if USE_SQLITE:
