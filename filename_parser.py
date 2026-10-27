@@ -611,6 +611,21 @@ def _stems(conn, video_id):
     return {stem_of(r[0]) for r in conn.execute('SELECT filename FROM file_versions WHERE video_id = ?', (video_id,))}
 
 
+def _alnum(s):
+    return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+
+def title_is_filename(cur, stems):
+    """Is this title still (a tidied run of) the filename, so a parsed one may replace it?
+    'Downthehatch 21 Scene 02 1 1' from 'Jane Doe - downthehatch21_scene02_1_1' is; a title you
+    typed ('Scene 2') isn't, nor is one much shorter than the filename."""
+    cur = (cur or '').strip()
+    if not cur or cur in stems:
+        return True
+    c = _alnum(cur)
+    return bool(c) and any(c in _alnum(s) and len(c) * 2 >= len(_alnum(s)) for s in stems)
+
+
 def _straightish(conn, model, vid, library):
     """Could this video have Male Cast? Not when it's tagged gay / bisexual / lesbian / trans, or sits in
     a library of one of those types."""
@@ -667,7 +682,7 @@ def proposals_for(conn, ctx, row, parsed=None, model=None):
     if p.get('year') and not str(year or '').strip():
         out.append({'field': 'year', 'value': str(p['year']), 'known': True, 'ticked': True, 'source': 'filename'})
     cur = (title or '').strip()
-    if p.get('title') and (not cur or cur in _stems(conn, vid)) and p['title'] != cur:
+    if p.get('title') and title_is_filename(cur, _stems(conn, vid)) and p['title'] != cur:
         out.append({'field': 'title', 'value': p['title'], 'known': True, 'ticked': True, 'source': 'filename'})
     return out
 
@@ -805,7 +820,7 @@ def forget(conn, kind, key):
 
 def apply(conn, items):
     """Add-only: lists get the value if missing; year only when empty; title only while it is
-    still the filename. An entry may carry orig_field / orig_value: what the parser proposed before
+    still the filename (title_is_filename). An entry may carry orig_field / orig_value: what the parser proposed before
     you changed it (remembered by learn()). -> {videos, added, learned}"""
     import automation
     changed, added_total = 0, 0
@@ -839,7 +854,7 @@ def apply(conn, items):
                 added += n
             elif field == 'title':
                 cur = (conn.execute('SELECT title FROM videos WHERE video_id = ?', (vid,)).fetchone()[0] or '').strip()
-                if not cur or cur in _stems(conn, vid):
+                if title_is_filename(cur, _stems(conn, vid)):
                     added += conn.execute('UPDATE videos SET title = ? WHERE video_id = ?', (value, vid)).rowcount
         if added:
             conn.execute('UPDATE videos SET date_last_edited = ?, updated_at = ? WHERE video_id = ?', (now, now, vid))

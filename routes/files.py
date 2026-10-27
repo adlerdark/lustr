@@ -389,7 +389,12 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
                 else:
                     clean[key] = clean_text(value, req.options)
 
-            # Combine %D (directory) with %T (title) if both were captured.
+            # 'Put the folder name at the start of the title' (options.dir_in_title)
+            if req.options.get('dir_in_title') and '_directory' not in clean:
+                folder = os.path.basename(os.path.dirname(req.path)) if req.path else '<folder>'
+                clean['_directory'] = clean_text(folder, req.options)
+
+            # Combine %D (directory) with %T (title) if both were captured (older patterns; now the option above).
             # %D/%T pattern: title = "FolderName Scene 1"
             # %D alone:      title = "FolderName"
             if '_directory' in clean:
