@@ -52,6 +52,9 @@ NAME_OK = {'black', 'white', 'love', 'little'}         # ordinary words that are
 # a part ending in one of these is a studio, not a person ('Example Studios', 'Example Media')
 SITE_SUFFIXES = {'studios', 'studio', 'media', 'productions', 'production', 'pictures', 'films', 'network',
                  'entertainment', 'xxx', 'tv'}
+# places: a studio named only with these and ordinary words ('The Gym', 'The Office') reads as a title
+PLACE_WORDS = set('''gym office pool kitchen beach car bathroom garage school college house home club bar
+locker lockerroom bedroom couch sauna park street woods farm camp dorm studio'''.split())
 CAMEL_SITE_RE = re.compile(r'[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+')         # 'ExampleSite', 'OnlyFans' (one token)
 LEARNED_KEY = 'parse_learned'          # metadata: what you corrected in Parse Filenames
 
@@ -71,6 +74,7 @@ class ParseContext:
         self.site_display = dict(site_display or {})   # site key -> the spelling you use most
         self.lib_default = lib_default or {}       # library -> default site value
         self.genders = genders or {}               # performer -> gender (cast_gender)
+        self.studios = {}                          # norm -> studio name, from cached StashDB scenes (not your sites yet)
         # your corrections (see learn()): text -> site / performer, and texts that are not names / sites
         learned = learned or {}
         self.not_names = set(learned.get('not_names') or [])
@@ -103,6 +107,8 @@ class ParseContext:
         ctx = cls(ext_db._cast_index(conn), keys, {k: g['display'] for k, g in groups.items()}, lib_default, genders,
                   get_learned(conn))
         ctx.same_names = cast_names.numbered(conn)          # 'janedoe' -> ['Jane Doe (1)', 'Jane Doe (2)']
+        ctx.studios = {k: v for k, v in _catalog_studios(conn).items()
+                       if k not in ctx.site_keys and k not in ctx.cast_idx and k not in ctx.not_sites}
         return ctx
 
     def site_of(self, text):
@@ -120,8 +126,40 @@ class ParseContext:
                 return self.site_keys.get(k)
         return None
 
+    def new_studio(self, text):
+        """A studio you don't have as a site yet ('The Country Hotwife', 'ColbyKnox', 'clips4sale.com'), else None."""
+        k = norm_name(SITE_TLD_RE.sub('', (text or '').strip()))
+        return self.studios.get(k) if len(k) >= 5 else None
+
     def known_name(self, text):
         return self.cast_idx.get(norm_name(text)) if text and len(norm_name(text)) >= 3 else None
+
+
+_studio_cache = {'key': None, 'studios': {}}
+
+
+def _catalog_studios(conn):
+    """{norm: name} of the studios (and their networks) in the cached StashDB scene lists (ext_db). Names
+    of only ordinary words ('The Gym', 'The Office') are left out: in a filename they're a title.
+    Cached until the scene lists change."""
+    try:
+        key = conn.execute('SELECT COUNT(*), MAX(fetched_at) FROM ext_scene_catalog').fetchone()
+        if key == _studio_cache['key']:
+            return _studio_cache['studios']
+        out = {}
+        for (name,) in conn.execute("SELECT DISTINCT json_extract(j.value, '$.studio_name') FROM ext_scene_catalog c, json_each(c.scenes_json) j "
+                                    "UNION SELECT DISTINCT json_extract(j.value, '$.parent_name') FROM ext_scene_catalog c, json_each(c.scenes_json) j"):
+            k = norm_name(name)
+            if not name or len(k) < 5 or k in out:
+                continue
+            words = re.findall(r'[a-z0-9]+', name.lower())
+            if all(w in COMMON_WORDS or w in TITLE_ONLY or w in PLACE_WORDS for w in words):
+                continue
+            out[k] = name
+        _studio_cache.update(key=key, studios=out)
+        return out
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -424,11 +462,39 @@ def _set_site(out, key, ctx):
         out['site'] = ctx.site_display.get(key, key)
 
 
+def _studio_at_ends(out, s, ctx, lead_only=False):
+    """A studio you don't have yet as the first (or last) 1-4 words: 'BelAmi Star ...', 'lusthd_ariana3_...',
+    '... NakedSword'. Several words must be capitalised like a name ('... at the Gym' isn't 'The Gym').
+    -> s without it."""
+    if out['site_key'] or out['site_new']:
+        return s
+    wt = re.split(r'[\s._-]+', s.strip(' ._-'))
+    named = lambda ws: len(ws) == 1 or all(w[:1].isupper() or w[:1].isdigit() for w in ws)
+    for n in (4, 3, 2, 1):
+        if len(wt) <= n:
+            continue
+        if named(wt[:n]) and _new_studio(out, ''.join(wt[:n]), ctx):
+            return re.sub(r'^\W*' + r'[\s._-]+'.join(map(re.escape, wt[:n])) + r'[\s._-]*', '', s.strip())
+        if not lead_only and named(wt[-n:]) and _new_studio(out, ''.join(wt[-n:]), ctx):
+            return re.sub(r'[\s._-]*' + r'[\s._-]+'.join(map(re.escape, wt[-n:])) + r'\W*$', '', s.strip())
+    return s
+
+
+def _new_studio(out, text, ctx):
+    """A studio from the StashDB scene lists that isn't one of your sites yet -> proposed (ticked). True if so."""
+    if out['site_key'] or out['site_new']:
+        return False
+    st = ctx.new_studio(text)
+    if st:
+        out['site_new'], out['site_new_src'] = ext_db.user_tag_format(st), 'stashdb'
+    return bool(st)
+
+
 def smart_parse(filename, ctx, library=None):
     """-> {style, site, site_key, site_hint, names: [{name, known}], date, year, title}"""
     stem = stem_of(filename)
-    out = {'style': 'other', 'site': None, 'site_key': None, 'site_hint': None, 'site_new': None, 'names': [],
-           'date': None, 'year': None, 'title': '', 'title_raw': ''}
+    out = {'style': 'other', 'site': None, 'site_key': None, 'site_hint': None, 'site_new': None, 'site_new_src': None,
+           'hint_raw': None, 'names': [], 'date': None, 'year': None, 'title': '', 'title_raw': ''}
     s = _ascii_quotes(stem).strip()
     s = re.sub(r'([._ -](?:\d{3,4}p?|[248]k))[._ -]' + ext_db._SIZE_TAGS + r'$', r'\1', s, flags=re.I)
 
@@ -436,11 +502,15 @@ def smart_parse(filename, ctx, library=None):
     m = re.search(r'(?:^|[\s_-])-?\s*([A-Za-z][A-Za-z0-9]+)(?:\.| )(com|net|xxx)\s*-?\s*$', s)
     if m:
         _set_site(out, ctx.site_of(m.group(1)), ctx)
+        _new_studio(out, m.group(1), ctx)
+        out['hint_raw'] = m.group(1) if len(m.group(1)) >= 5 else f'{m.group(1)}.{m.group(2)}'    # 'Men.com', not 'men'
         s = s[:m.start()].strip(' -_')
     m = re.match(r'^([A-Za-z][A-Za-z0-9-]+)\.(com|net|org|xxx)[_ .-]+(?:\d{4,}[_ .-]+)?(.*)$', s, re.I)
     if m:
         _set_site(out, ctx.site_of(m.group(1)), ctx)
+        _new_studio(out, m.group(1), ctx)
         out['site_hint'] = out['site_hint'] or norm_name(m.group(1))
+        out['hint_raw'] = out['hint_raw'] or (m.group(1) if len(m.group(1)) >= 5 else f'{m.group(1)}.{m.group(2)}')
         s = m.group(3)
 
     # release / episode style: reuse ext_db's parser, then add names it can't know yet
@@ -449,6 +519,10 @@ def smart_parse(filename, ctx, library=None):
         out['style'] = base['style']
         out['site_hint'] = base['site_hint']
         _set_site(out, ctx.site_keys.get(base['site_hint']), ctx)
+        lead = re.match(r'[A-Za-z][A-Za-z0-9]*', s)                          # the hint as it's spelt in the filename
+        if lead and norm_name(lead.group(0)) == base['site_hint']:
+            out['hint_raw'] = lead.group(0)
+            _new_studio(out, lead.group(0), ctx)
         out['date'] = base['date']
         names, rest = _token_names(base.get('tokens') or base['title'].split(), ctx)
         for n, k in names:
@@ -479,6 +553,9 @@ def smart_parse(filename, ctx, library=None):
             _set_site(out, key, ctx)
         elif ctx.known_name(inner):
             _add_name(out, ctx.known_name(inner), True)
+        elif not _new_studio(out, inner, ctx):
+            first = re.split(r'\s+[-–—]\s+|\s*[,&+]\s*', inner)[0]             # '[A.com - B.com]': the first
+            out['hint_raw'] = out['hint_raw'] or (SITE_TLD_RE.sub('', first) if len(norm_name(SITE_TLD_RE.sub('', first))) >= 5 else first)
         out['site_hint'] = out['site_hint'] or norm_name(SITE_TLD_RE.sub('', inner))
         s = m.group(2)
     d, y, s = _find_date(s)
@@ -500,6 +577,10 @@ def smart_parse(filename, ctx, library=None):
             if key and not ctx.known_name(p):
                 _set_site(out, key, ctx)
                 continue
+            if not ctx.known_name(p) and _new_studio(out, p, ctx):              # 'The Country Hotwife - ...'
+                continue
+            if i == 0 and not ctx.known_name(p):
+                p = _studio_at_ends(out, p, ctx, lead_only=True) or p              # 'Cocksure Men Pool Party - ...'
             if not out['site_key'] and not out['site_new'] and not ctx.known_name(p) and (
                     (i == 0 and CAMEL_SITE_RE.fullmatch(p))
                     or (i in (0, len(parts) - 1) and 1 < len(p.split()) <= 3 and p.split()[-1].lower() in SITE_SUFFIXES)):
@@ -548,6 +629,7 @@ def smart_parse(filename, ctx, library=None):
             _set_site(out, ctx.site_of(''.join(toks[:n])), ctx)
             s = ' '.join(toks[n:])
             break
+    s = _studio_at_ends(out, s, ctx)
     snake = ' ' not in s and bool(re.search(r'[_.]', s))
     words = [w.lower() for w in ext_db._clean_words(s)]
     pairs, rest = _token_names(words, ctx, lead_new=out['style'] == 'bracket')
@@ -567,7 +649,22 @@ def smart_parse(filename, ctx, library=None):
     return _finish(out, ctx)
 
 
+def _site_guess(out, ctx):
+    """No site found: the site-like text the parser saw ('[Site] ...', 'name.com_...', 'name-2021-07-13-...')
+    as a new site, not ticked."""
+    h = (out.get('hint_raw') or '').strip(' ._-')
+    k = norm_name(h)
+    if out['site_key'] or out['site_new'] or len(k) < 3 or k in ctx.not_sites or ctx.known_name(h):
+        return
+    if re.fullmatch(r'[0-9a-f-]{8,}', h, re.I) and re.search(r'\d', h):        # an id, not a name
+        return
+    out['site_new'], out['site_new_src'] = ext_db.user_tag_format(h), 'guess'
+
+
 def _finish(out, ctx=None):
+    if ctx is not None:
+        _site_guess(out, ctx)
+    out.pop('hint_raw', None)
     raw = out.pop('title_raw', '') or ''
     if ctx is not None and not out['names']:
         for n in _known_inside(raw, ctx):                                        # "Jane Doe Does..." (only when no
@@ -658,7 +755,9 @@ def proposals_for(conn, ctx, row, parsed=None, model=None):
             out.append({'field': 'site', 'value': ctx.lib_default[library], 'known': True, 'ticked': True,
                         'source': 'library default'})
         if not p.get('site') and p.get('site_new'):
-            out.append({'field': 'site', 'value': p['site_new'], 'known': False, 'ticked': False, 'source': 'new site'})
+            sd = p.get('site_new_src') == 'stashdb'                       # a real studio (StashDB scene lists): ticked
+            out.append({'field': 'site', 'value': p['site_new'], 'known': False, 'ticked': sd and not ctx.lib_default.get(library),
+                        'source': 'StashDB studio' if sd else 'new site'})
     for n in p.get('names') or []:
         primary = ctx.cast_idx.get(norm_name(n['name']), n['name'])
         if norm_name(primary) in have:

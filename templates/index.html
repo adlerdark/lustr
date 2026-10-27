@@ -1043,7 +1043,6 @@
                 parserTokens: [['%S', 'Site'], ['%C', 'Cast', 'One or more performers'], ['%F', 'First name'], ['%M', 'Middle name'], ['%L', 'Last name'],
                                ['%T', 'Title', 'Everything up to the next part of the pattern'], ['%Y', 'Year', '4 digits'], ['%YY', 'Year (yy)'], ['%MM', 'Month'],
                                ['%DD', 'Day'], ['%R', 'Resolution', 'e.g. 1080p'], ['*', 'Skip', 'Anything here is ignored']],
-                parserSeparators: [['.', '.', 'A dot'], ['_', '_', 'An underscore'], ['-', '-', 'A dash'], [' - ', '␣-␣', 'A dash with spaces'], [' ', '␣', 'A space']],
                 
                 // Duplicates scanner
                 duplicateConflicts: [],
@@ -18840,12 +18839,8 @@ No metadata is changed.`)) return;
                                         <span x-text="tk[1]"></span> <span class="font-mono text-gray-400" x-text="tk[0]"></span>
                                     </button>
                                 </template>
-                                <span class="text-gray-600 mx-1">│</span>
-                                <template x-for="sp in parserSeparators" :key="'sep' + sp[0]">
-                                    <button @click="parserInsert(sp[0])" class="px-2 py-0.5 rounded bg-gray-900 border border-gray-700 hover:border-blue-500 font-mono text-gray-300" :title="sp[2]" x-text="sp[1]"></button>
-                                </template>
                             </div>
-                            <p class="text-xs text-gray-500 mt-1">Type any fixed text as it appears in the filename (e.g. <span class="font-mono">downthehatch21_</span>). <strong>Examples:</strong> %S.%YY.%MM.%DD.%C.%T | %S.%F.%M.%L.%T | %C - %T</p></div>
+                            <p class="text-xs text-gray-500 mt-1"><strong>Examples:</strong> %S.%YY.%MM.%DD.%C.%T | %S.%F.%M.%L.%T | %C - %T</p></div>
                     <div class="flex gap-4 text-sm flex-wrap"><label><input type="checkbox" x-model="parserOptions.clean_underscores"> No Underscores</label><label><input type="checkbox" x-model="parserOptions.clean_dashes"> No Dashes</label><label><input type="checkbox" x-model="parserOptions.clean_dots"> No Dots</label><label><input type="checkbox" x-model="parserOptions.title_case"> Title Case</label><label title="e.g. a file in “Season 2” with the title “Episode 4” gets “Season 2 Episode 4”"><input type="checkbox" x-model="parserOptions.dir_in_title" @change="previewParse()"> Put the folder name at the start of the title</label></div>
                         <div class="bg-gray-900 p-2 rounded text-xs font-mono h-20 overflow-y-auto whitespace-pre" x-text="parserPreview"></div>
                         <button @click="applyParse" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm" x-text="parser.scope === 'selected' ? 'Parse the selected files' : 'Parse ' + parser.library"></button>
@@ -18886,6 +18881,7 @@ No metadata is changed.`)) return;
                                                     title="Several performers have this name - pick which one" x-text="p.picked ? 'change' : 'which one?'"></button>
                                             <span x-show="!p.known" class="text-yellow-400" title="Not in your library yet">new</span>
                                             <span x-show="p.source === 'library default'" class="text-gray-500" title="The library's default site">(library default)</span>
+                                            <span x-show="p.source === 'StashDB studio'" class="text-gray-500" title="A studio named in your cached StashDB scenes">(StashDB)</span>
                                         </label>
                                     </template>
                                     <span x-show="!item.proposals.length" class="text-xs text-gray-600">nothing new</span>
