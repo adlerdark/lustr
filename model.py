@@ -245,12 +245,9 @@ class LibraryModel:
                     self.db.save_hidden_libraries(self.hidden_libraries)
                     self.db.save_library_groups(self.library_groups)
                     self.db.save_library_settings(self.library_settings)
-                    
-                    # Save UI config
-                    ui_config = self.files.get("_ui_config", {})
-                    if ui_config:
-                        self.db.save_ui_config(ui_config)
-                        
+                    # Not the UI config: /api/config/save writes it straight to the database, and the copy
+                    # loaded at start-up would put back what was there then (wiping per-library overrides).
+
                 except Exception as e:
                     print(f"Error saving to SQLite: {e}")
                     import traceback
@@ -523,6 +520,7 @@ class LibraryModel:
         walked = self._walk_roots(all_paths)
         seen = {os.path.normpath(os.path.join(root, f))
                 for tree in walked.values() for root, _dirs, files in tree for f in files}
+        self._sync_images(walked)
 
         # PHASE 1: Mark missing files for deletion (only in libraries being scanned)
         if self.use_sqlite:
@@ -808,6 +806,31 @@ class LibraryModel:
         with ThreadPoolExecutor(max_workers=min(workers, len(roots))) as pool:
             trees = pool.map(lambda r: list(os.walk(r, followlinks=True)), roots)
             return dict(zip(roots, trees))
+
+    def _sync_images(self, walked):
+        """The image files in the folders just walked -> images.py (the Images tab). A folder in
+        several libraries belongs to the first that lists it."""
+        if not self.use_sqlite or not walked:
+            return
+        try:
+            import images
+            owner = {}
+            for lib, roots in self.libraries.items():
+                for r in roots or []:
+                    owner.setdefault(r, lib)
+            per_lib = {}
+            for r, tree in walked.items():
+                if r in owner:
+                    roots, paths = per_lib.setdefault(owner[r], ([], []))
+                    roots.append(r)
+                    paths.extend(os.path.join(d, f) for d, _dirs, files in tree for f in files if images.is_image(f))
+            conn = self.db.get_connection()
+            for lib, (roots, paths) in per_lib.items():
+                n = images.sync(conn, lib, roots, paths)
+                if n['added'] or n['removed'] or n['restored']:
+                    print(f"[images] {lib}: {n['added']} new, {n['removed']} gone, {n['restored']} back")
+        except Exception as e:
+            print(f"[images] scan: {e}")
 
     WRITING_SECONDS = 120          # a new file changed this recently is still being written
     UNREADABLE = object()          # _same_video_in_library: a same-name video exists, this file's length is unknown

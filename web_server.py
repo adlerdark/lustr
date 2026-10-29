@@ -76,6 +76,7 @@ from routes.clips import router as clips_router
 from routes.home import router as home_router
 from routes.collections import router as collections_router
 from routes.movies import router as movies_router
+from routes.images import router as images_router
 from routes.tv import router as tv_router
 
 
@@ -304,6 +305,8 @@ def inject_dependencies():
     routes.collections.set_watch_history(watch_history_instance)
     import routes.movies                    # full movies (movies.py)
     routes.movies.set_model(model)
+    import routes.images                    # the Images tab (images.py)
+    routes.images.set_model(model)
     routes.movies.set_watch_history(watch_history_instance)
     if getattr(model, 'db', None):
         try:
@@ -386,6 +389,7 @@ def register_routes():
     app.include_router(home_router)
     app.include_router(collections_router)
     app.include_router(movies_router)
+    app.include_router(images_router)
     app.include_router(tv_router)
 
 

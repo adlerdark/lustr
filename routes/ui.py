@@ -86,8 +86,7 @@ class GroupTypeRequest(BaseModel):
 def _clear_filter_cache():
     try:
         import routes.videos as rv
-        with rv._cache_lock:
-            rv._filter_cache.clear()
+        rv.clear_filter_caches()
     except Exception:
         pass
 
@@ -226,7 +225,7 @@ def _display_filter_init(model):
         return {}
 
 
-_TABS = ('recommended', 'library', 'collections', 'movies')
+_TABS = ('recommended', 'library', 'collections', 'movies', 'images')
 
 
 def _clean_library_defaults(d):

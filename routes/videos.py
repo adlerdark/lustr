@@ -376,6 +376,7 @@ def _add_display_condition(conditions, params, model, col='v.video_id', lib_col=
 _model = None
 _watch_history = None
 _filter_cache = {}
+_scope_cache = {}   # (library, query, favorites, length, display) -> every tag / site in that scope
 _cache_lock = threading.Lock()
 CACHE_TTL = 30  # seconds - increased from 2 for better performance
 
@@ -383,7 +384,7 @@ CACHE_TTL = 30  # seconds - increased from 2 for better performance
 def get_available_filters_cached(
     library, query, tags, tags_exclude, sites, sites_exclude, favorites_only, length_filter
 ):
-    """Cache wrapper for available_filters with 2-second TTL."""
+    """Cache wrapper for available_filters (CACHE_TTL seconds)."""
     import display_filter
     cache_key = (library, query, tags, tags_exclude, sites, sites_exclude, favorites_only, length_filter,
                  display_filter.cache_key(_model.db.get_connection()) if _model and USE_SQLITE else '')
@@ -393,12 +394,13 @@ def get_available_filters_cached(
             cached_result, timestamp = _filter_cache[cache_key]
             if time.time() - timestamp < CACHE_TTL:
                 return cached_result
-        
-        # Call the actual function
-        result = _get_available_filters_uncached(
-            library, query, tags, tags_exclude, sites, sites_exclude, favorites_only, length_filter
-        )
-        
+    
+    # Computed outside the lock: one slow count doesn't hold up every other request
+    result = _get_available_filters_uncached(
+        library, query, tags, tags_exclude, sites, sites_exclude, favorites_only, length_filter
+    )
+    
+    with _cache_lock:
         _filter_cache[cache_key] = (result, time.time())
         
         # Clean old entries (keep only last 50)
@@ -406,8 +408,15 @@ def get_available_filters_cached(
             sorted_items = sorted(_filter_cache.items(), key=lambda x: x[1][1])
             _filter_cache.clear()
             _filter_cache.update(dict(sorted_items[-25:]))
-        
-        return result
+    
+    return result
+
+
+def clear_filter_caches():
+    """Forget cached sidebar counts and scopes (after tags / sites / files change)."""
+    with _cache_lock:
+        _filter_cache.clear()
+        _scope_cache.clear()
 
 def get_model():
     """Dependency function to get model."""
@@ -1289,6 +1298,44 @@ def _get_library_prefixes(model, library, library_filters):
     return allowed_prefixes
 
 
+def _count_tags_sites(cursor, tag_fields, where, params):
+    """{tag: videos}, {site: videos} over the videos matching `where`.
+
+    The matching ids are worked out once (CTE) and every tag field reads from them;
+    a video with the same value in two fields (Tags and Hair both 'blonde') counts once.
+    """
+    ids_cte = f"""
+        WITH ids AS (
+            SELECT DISTINCT v.video_id
+            FROM videos v
+            JOIN file_versions fv ON v.video_id = fv.video_id
+            WHERE {where}
+        )
+    """
+    union_parts = [f"""
+            SELECT LOWER(vt.value) AS tag, vtj.video_id AS video_id
+            FROM video_{field} vt
+            JOIN video_{field}_junction vtj ON vt.id = vtj.{field}_id
+            WHERE vtj.video_id IN (SELECT video_id FROM ids)
+        """ for field in tag_fields]
+    cursor.execute(f"""{ids_cte}
+        SELECT tag, COUNT(DISTINCT video_id) AS count
+        FROM ({" UNION ALL ".join(union_parts)})
+        GROUP BY tag
+    """, params)
+    tag_counts = {row['tag']: row['count'] for row in cursor.fetchall()}
+    
+    cursor.execute(f"""{ids_cte}
+        SELECT LOWER(vs.value) AS site, COUNT(DISTINCT vsj.video_id) AS count
+        FROM video_site vs
+        JOIN video_site_junction vsj ON vs.id = vsj.site_id
+        WHERE vsj.video_id IN (SELECT video_id FROM ids)
+        GROUP BY LOWER(vs.value)
+    """, params)
+    site_counts = {row['site']: row['count'] for row in cursor.fetchall()}
+    return tag_counts, site_counts
+
+
 def _get_available_filters_uncached(
     library, query, tags, tags_exclude, sites, sites_exclude, favorites_only, length_filter
 ):
@@ -1310,7 +1357,7 @@ def _get_available_filters_uncached(
     required_tags = set(t.strip().lower() for t in tags.split(',') if t.strip()) if tags else set()
     excluded_tags_set = set(t.strip().lower() for t in tags_exclude.split(',') if t.strip()) if tags_exclude else set()
     required_sites = set(s.strip().lower() for s in sites.split(',') if s.strip()) if sites else set()
-    excluded_sites_set = set(s.strip().lower() for s in sites_exclude.split(',') if t.strip()) if sites_exclude else set()
+    excluded_sites_set = set(s.strip().lower() for s in sites_exclude.split(',') if s.strip()) if sites_exclude else set()
     
     conn = model.db.get_connection()
     cursor = conn.cursor()
@@ -1429,38 +1476,23 @@ def _get_available_filters_uncached(
         scope_where = base_where
         scope_params = base_params
     
-    # Get all tags in scope
-    # "tags" includes ALL fields except 'site' and 'cast'
-    
-    # Build UNION query for all tag fields
-    union_parts = []
-    for field in tag_fields:
-        table_name = f'video_{field}'
-        junction_table = f'video_{field}_junction'
-        union_parts.append(f"""
-            SELECT DISTINCT LOWER(vt.value) as tag
-            FROM {table_name} vt
-            JOIN {junction_table} vtj ON vt.id = vtj.{field}_id
-            JOIN videos v ON vtj.video_id = v.video_id
-            JOIN file_versions fv ON v.video_id = fv.video_id
-            WHERE {scope_where}
-        """)
-    
-    tags_scope_query = " UNION ".join(union_parts)
-    cursor.execute(tags_scope_query, scope_params * len(tag_fields))
-    all_tags_in_scope = set(row['tag'] for row in cursor.fetchall())
-    
-    # Get all sites in scope
-    sites_scope_query = f"""
-        SELECT DISTINCT LOWER(vs.value) as site
-        FROM video_site vs
-        JOIN video_site_junction vsj ON vs.id = vsj.site_id
-        JOIN videos v ON vsj.video_id = v.video_id
-        JOIN file_versions fv ON v.video_id = fv.video_id
-        WHERE {scope_where}
-    """
-    cursor.execute(sites_scope_query, scope_params)
-    all_sites_in_scope = set(row['site'] for row in cursor.fetchall())
+    # Every tag / site in scope: doesn't depend on the tag / site selections, so kept
+    # in its own cache and clicking tags in the sidebar never recomputes it
+    import display_filter
+    scope_key = (library, query, favorites_only, length_filter, display_filter.cache_key(conn))
+    with _cache_lock:
+        hit = _scope_cache.get(scope_key)
+    scope_counts = None
+    if hit and time.time() - hit[2] < CACHE_TTL:
+        all_tags_in_scope, all_sites_in_scope = hit[0], hit[1]
+    else:
+        scope_counts = _count_tags_sites(cursor, tag_fields, scope_where, scope_params)
+        all_tags_in_scope, all_sites_in_scope = set(scope_counts[0]), set(scope_counts[1])
+        with _cache_lock:
+            _scope_cache[scope_key] = (all_tags_in_scope, all_sites_in_scope, time.time())
+            if len(_scope_cache) > 20:
+                for k in sorted(_scope_cache, key=lambda k: _scope_cache[k][2])[:10]:
+                    del _scope_cache[k]
     
     # ===== Get counts after all filters =====
     filter_conditions = list(base_conditions)
@@ -1530,53 +1562,10 @@ def _get_available_filters_uncached(
     
     filter_where = " AND ".join(filter_conditions)
     
-    # Count tags after filters
-    # Build UNION query for all tag fields with counts
-    union_count_parts = []
-    for field in tag_fields:
-        table_name = f'video_{field}'
-        junction_table = f'video_{field}_junction'
-        union_count_parts.append(f"""
-            SELECT 
-                LOWER(vt.value) as tag,
-                COUNT(DISTINCT v.video_id) as count
-            FROM {table_name} vt
-            JOIN {junction_table} vtj ON vt.id = vtj.{field}_id
-            JOIN videos v ON vtj.video_id = v.video_id
-            JOIN file_versions fv ON v.video_id = fv.video_id
-            WHERE {filter_where}
-            GROUP BY LOWER(vt.value)
-        """)
-    
-    tags_count_query = " UNION ALL ".join(union_count_parts)
-    
-    # Execute and sum counts for duplicate tags across different fields
-    cursor.execute(tags_count_query, filter_params * len(tag_fields))
-    
-    # Aggregate counts from multiple fields
-    tag_count_aggregator = {}
-    for row in cursor.fetchall():
-        tag = row['tag']
-        count = row['count']
-        tag_count_aggregator[tag] = tag_count_aggregator.get(tag, 0) + count
-    
-    filtered_tag_counts = tag_count_aggregator
-    
-    # Count sites after filters
-    sites_count_query = f"""
-        SELECT 
-            LOWER(vs.value) as site,
-            COUNT(DISTINCT v.video_id) as count
-        FROM video_site vs
-        JOIN video_site_junction vsj ON vs.id = vsj.site_id
-        JOIN videos v ON vsj.video_id = v.video_id
-        JOIN file_versions fv ON v.video_id = fv.video_id
-        WHERE {filter_where}
-        GROUP BY LOWER(vs.value)
-        HAVING count > 0
-    """
-    cursor.execute(sites_count_query, filter_params)
-    filtered_site_counts = {row['site']: row['count'] for row in cursor.fetchall()}
+    if scope_counts and filter_where == scope_where and filter_params == scope_params:
+        filtered_tag_counts, filtered_site_counts = scope_counts      # no tag / site picked: the same counts
+    else:
+        filtered_tag_counts, filtered_site_counts = _count_tags_sites(cursor, tag_fields, filter_where, filter_params)
     
     return {
         "tags": {tag: filtered_tag_counts.get(tag, 0) for tag in all_tags_in_scope},

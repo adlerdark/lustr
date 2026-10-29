@@ -545,6 +545,9 @@
             }
         };
 
+        // Sidebar Tags / Sites lists, kept between renders (outside Alpine: writing reactive state from a getter re-renders forever)
+        const _sbMemo = {};
+
         function libraryApp() {
             const app = {
                 isLoggedIn: false,
@@ -763,6 +766,7 @@
                 availableTags: {},  // NEW: Tags available with current filters
                 availableSites: {},  // NEW: Sites available with current filters
                 activeTagTab: 'tags',
+                sbHold: { tags: false, sites: false },   // sidebar order frozen while you're clicking in it (sbHoldOrder)
                 tagSearchQuery: '',
                 siteSearchQuery: '',  // NEW: 'tags' or 'sites'
                 activeSites: {},  // NEW: Selected sites
@@ -807,6 +811,10 @@
                 // Back button: places to go back to (navPush), and the one history entry that catches Back (navSync)
                 navStack: [], _navSkip: false, _navHold: 0, _navQuery: '',
                 gridStale: false, _gridSeq: 0,   // a library opened on another tab: its grid loads after that tab (gridCatchUp)
+                // Images tab (images.py): albums by folder, an album's images, the viewer (iv)
+                img: { counts: {}, albums: [], sort: 'name', q: '', qTimer: null, loading: false, msg: '',
+                       folder: null, name: '', favorite: false, items: [], shown: 300, backScroll: null, skipText: '' },
+                iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false },
                 
                 sortField: 'Filename',
                 sortSeed: Math.floor(Math.random() * 1e9),          // Random sort: same order while paging
@@ -819,7 +827,7 @@
                 libraryDefaults: {},      // {library: {sort, desc, view, tab}} - only what's overridden
                 configPending: false,     // a saveConfig is waiting (refreshAll mustn't undo it)
                 _cfgPatch: {}, _cfgDefaults: false,   // what saveConfig sends besides sort / columns: the overrides and defaults you changed
-                libTabNames: [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections'], ['movies', 'Movies']],
+                libTabNames: [['recommended', 'Recommended'], ['library', 'Library'], ['collections', 'Collections'], ['movies', 'Movies'], ['images', 'Images']],
                 availableColumns: [], 
                 visibleColumns: ["Fav", "Title", "Cast", "Date Created", "File Size"], 
                 columnWidths: {}, 
@@ -843,7 +851,9 @@
                     sceneTickTitle: false,       // Suggest metadata / bulk matching: tick the scene's title by default
                     sceneTickMaleCast: false,    // ...and every male performer of a straight scene (Male Cast)
                     mvUnlinkConfirm: true,       // movie page: ask before Unlink clears the movie's details
-                    playerMode: 'new'            // 'new' (the video.js player, roadmap #8) | 'classic'
+                    playerMode: 'new',           // 'new' (the video.js player, roadmap #8) | 'classic'
+                    tagSort: 'az',               // sidebar Tags / Sites: 'az' | 'count' (most videos first)
+                    sidebarHideUnavailable: false // sidebar Tags / Sites: leave out the ones with no videos under the current filters
                 },
                 // New player (np*): its own state, nothing shared with the classic player
                 np: { open: false, video: null, data: null, srcIdx: 0, manual: false, failed: [], error: '', msg: '',
@@ -873,6 +883,7 @@
                 activeMenu: null, // 'file' only now
                 contextMenuX: 0,
                 contextMenuY: 0,
+                menuVideo: null,                   // the video right-clicked (Go to Movie)
                 
                 // Hover previews
                 hoverAnimationFrame: null,
@@ -1288,8 +1299,7 @@
                         tagsSource = this.allTags;
                     }
                     
-                    return Object.entries(tagsSource)
-                        .sort((a, b) => a[0].toLowerCase().localeCompare(b[0].toLowerCase()));
+                    return this.sidebarList('tags', tagsSource, this.activeTags);
                 },
                 
                 // get sortedSites() {
@@ -1331,20 +1341,70 @@
                         sitesSource = this.allSites;
                     }
                     
-                    return Object.entries(sitesSource)
-                        .sort((a, b) => a[0].toLowerCase().localeCompare(b[0].toLowerCase()));
+                    return this.sidebarList('sites', sitesSource, this.activeSites);
                 },
                 
-                get filteredTags() {
-                    if (!this.tagSearchQuery.trim()) return this.sortedTags;
-                    const query = this.tagSearchQuery.toLowerCase();
-                    return this.sortedTags.filter(([tag, count]) => tag.toLowerCase().includes(query));
+                // Sidebar order: included, excluded, then the rest (A-Z or most videos), then the greyed-out ones
+                // (or none of those, with "hide unavailable" on). Rebuilt only when what it's made from changes.
+                sidebarList(kind, source, active) {
+                    const mode = this.appSettings.tagSort === 'count' ? 'count' : 'az';
+                    const hide = !!this.appSettings.sidebarHideUnavailable;
+                    const activeKey = JSON.stringify(active);
+                    const hold = !!this.sbHold[kind];
+                    const m = _sbMemo[kind];
+                    if (m && m.source === source && m.activeKey === activeKey && m.mode === mode && m.hide === hide && m.hold === hold) return m.out;
+                    const counts = { ...source };
+                    for (const name of Object.keys(active)) if (!(name in counts)) counts[name] = 0;   // a selected one never drops off
+                    let out;
+                    if (hold && m) {
+                        // mid-click: every row stays where it was (new counts, same order), so a second click lands on the same row
+                        const at = new Map(m.out.map((e, i) => [e[0], i]));
+                        for (const e of m.out) if (!(e[0] in counts)) counts[e[0]] = 0;
+                        out = Object.entries(counts)
+                            .map(e => [e[0], e[1], at.has(e[0]) ? m.out[at.get(e[0])][2] : 3, at.has(e[0]) ? at.get(e[0]) : 1e9, e[0].toLowerCase()])
+                            .sort((a, b) => (a[3] - b[3]) || a[4].localeCompare(b[4]))
+                            .map(e => [e[0], e[1], e[2]]);
+                    } else {
+                        const rank = ([name, count]) => active[name] === 1 ? 0 : active[name] === -1 ? 1 : count > 0 ? 2 : 3;
+                        out = Object.entries(counts)
+                            .filter(e => !hide || rank(e) < 3)
+                            .map(e => [e[0], e[1], e[0].toLowerCase(), rank(e)])
+                            .sort((a, b) => (a[3] - b[3]) || (mode === 'count' ? b[1] - a[1] : 0) || a[2].localeCompare(b[2]))
+                            .map(e => [e[0], e[1], e[3]]);
+                    }
+                    _sbMemo[kind] = { source, activeKey, mode, hide, hold, out };
+                    return out;
+                },
+                // A click in the sidebar list freezes its order until the mouse leaves the list
+                // (or 2 s after the last tap, on a touch screen)
+                sbHoldOrder(kind) {
+                    this.sbHold[kind] = true;
+                    clearTimeout(_sbMemo['timer:' + kind]);
+                    _sbMemo['timer:' + kind] = setTimeout(() => { if (!_sbMemo['over:' + kind]) this.sbHold[kind] = false; }, 2000);
+                },
+                sbHover(kind, over) {
+                    _sbMemo['over:' + kind] = over;
+                    if (!over) this.sbHold[kind] = false;
+                },
+                // ...narrowed by the search box; the third value marks the first row after the selected ones (a divider)
+                sidebarFiltered(kind, list, q) {
+                    q = (q || '').trim().toLowerCase();
+                    const key = kind + ':f';
+                    const m = _sbMemo[key];
+                    if (m && m.list === list && m.q === q) return m.out;
+                    const hits = q ? list.filter(e => e[0].toLowerCase().includes(q)) : list;
+                    const out = hits.map((e, i) => [e[0], e[1], i > 0 && e[2] > 1 && hits[i - 1][2] <= 1]);
+                    _sbMemo[key] = { list, q, out };
+                    return out;
                 },
                 
-                get filteredSites() {
-                    if (!this.siteSearchQuery.trim()) return this.sortedSites;
-                    const query = this.siteSearchQuery.toLowerCase();
-                    return this.sortedSites.filter(([site, count]) => site.toLowerCase().includes(query));
+                get filteredTags() { return this.sidebarFiltered('tags', this.sortedTags, this.tagSearchQuery); },
+                
+                get filteredSites() { return this.sidebarFiltered('sites', this.sortedSites, this.siteSearchQuery); },
+                
+                setTagSort(mode) {
+                    this.appSettings.tagSort = mode;
+                    try { localStorage.setItem('appSettings', JSON.stringify(this.appSettings)); } catch (e) { /* ignore */ }
                 },
                 
                 get sortedAvailableTags() {
@@ -2419,6 +2479,7 @@
                 },
 
                 handleEscape() {
+                    if (this.iv.open) { this.ivClose(); return; }
                     // Always close menus first
                     if (this.activeMenu) {
                         this.activeMenu = null;
@@ -2485,6 +2546,7 @@
                         if (forceMock) throw new Error("Preview Mode");
                         const initRes = await fetch('/api/init');
                         if (!initRes.ok) throw new Error("API Init Failed");
+                        this.imgLoadCounts();                                   // which libraries get an Images tab
                         const initData = await initRes.json();
                         
                         console.log('refreshAll: Received init data', {
@@ -6407,6 +6469,7 @@ No metadata is changed.`)) return;
                     if (tab === 'recommended') { this.homeRows = []; this.loadHomeData(this.currentLibrary).then(later); }
                     if (tab === 'collections') { this.coll.view = null; this.loadCollections().then(later); }
                     if (tab === 'movies') { this.mv.view = null; this.mv.items = []; this.mvSel = {}; this.loadMovies(1).then(later); }
+                    if (tab === 'images') { this.img.folder = null; this.img.items = []; this.imgLoadAlbums().then(later); }
                 },
 
                 // the current Library view as /api/videos parameters (smart collections save these)
@@ -7712,7 +7775,21 @@ No metadata is changed.`)) return;
                     if (current === 0) next = 1;       // Unselected → Include
                     else if (current === 1) next = -1;  // Include → Exclude
                     else next = 0;                      // Exclude → Unselected
-                    
+                    this.setTagState(tag, next);
+                },
+                // right-click: straight to exclude, or back to unselected
+                excludeTag(tag) { this.setTagState(tag, this.activeTags[tag] ? 0 : -1); },
+                excludeSite(site) { this.setSiteState(site, this.activeSites[site] ? 0 : -1); },
+                // Enter in the sidebar's search box: include the first match that isn't selected yet
+                includeFirstMatch(kind) {
+                    const tags = kind === 'tags';
+                    const hit = (tags ? this.filteredTags : this.filteredSites).find(e => !(tags ? this.activeTags : this.activeSites)[e[0]]);
+                    if (!hit) return;
+                    if (tags) { this.setTagState(hit[0], 1); this.tagSearchQuery = ''; }
+                    else { this.setSiteState(hit[0], 1); this.siteSearchQuery = ''; }
+                },
+                
+                setTagState(tag, next) {
                     if (next === 0) delete this.activeTags[tag];
                     else this.activeTags[tag] = next;
                     if (this.mvTabActive()) this.loadMovies(1);
@@ -7735,7 +7812,10 @@ No metadata is changed.`)) return;
                     if (current === 0) next = 1;       // Unselected → Include
                     else if (current === 1) next = -1;  // Include → Exclude
                     else next = 0;                      // Exclude → Unselected
-                    
+                    this.setSiteState(site, next);
+                },
+                
+                setSiteState(site, next) {
                     if (next === 0) delete this.activeSites[site];
                     else this.activeSites[site] = next;
                     if (this.mvTabActive()) this.loadMovies(1);
@@ -7832,10 +7912,13 @@ No metadata is changed.`)) return;
                         // Add length filter
                         if (this.activeLengthFilters.length > 0) url += `&length_filter=${encodeURIComponent(this.activeLengthFilters.join(','))}`;
                         
+                        this._filtersWanted = url;                                  // only the latest ask's counts get shown
                         if (url === this._filtersInFlight) return;                 // the same counts are already on the way
                         this._filtersInFlight = url;
                         let res;
                         try { res = await fetch(url); } finally { if (this._filtersInFlight === url) this._filtersInFlight = null; }
+                        if (url !== this._filtersWanted) return;                   // a newer click's counts are coming
+                        if (!res.ok) console.error('available_filters:', res.status);
                         if (res.ok) {
                             const data = await res.json();
                             // FIX: Set BOTH availableTags AND availableSites
@@ -9171,6 +9254,7 @@ No metadata is changed.`)) return;
                 
                 async handleRightClick(event, video) {
                     this.activeMenu = null; // Reset first
+                    this.menuVideo = video;
 
                     const path = video.path;
                     if (!this.selectedPaths.has(path)) {
@@ -13350,6 +13434,182 @@ No metadata is changed.`)) return;
                     this.currentPlaylist = null;
                 },
 
+                // ===== Images tab (images.py) =====
+                imgTabActive() {
+                    return this.currentView === 'library' && this.currentLibrary !== 'Home' && this.libraryTab === 'images' && !this.castBioMode;
+                },
+                imgCount(lib = this.currentLibrary) { return (this.img.counts || {})[lib] || 0; },
+                imgThumb(id, v) { return `/api/images/${id}/thumb?v=${v || 0}`; },
+                imgFile(it) { return it ? `/api/images/${it.id}/file?v=${it.mtime || 0}` : ''; },
+
+                async imgLoadCounts() {
+                    try {
+                        const d = await (await fetch('/api/images/counts')).json();
+                        if (d.success) this.img.counts = d.counts || {};
+                    } catch (e) { /* no Images tab until it loads */ }
+                },
+
+                async imgLoadAlbums() {
+                    const I = this.img;
+                    I.loading = true;
+                    try {
+                        const q = new URLSearchParams({ library: this.currentLibrary, sort: I.sort, q: I.q || '' });
+                        const d = await (await fetch('/api/images/albums?' + q)).json();
+                        if (!d.success) throw new Error(d.error);
+                        Object.assign(I, { albums: d.albums, msg: '' });
+                    } catch (e) { I.msg = 'Could not load the albums: ' + e.message; }
+                    I.loading = false;
+                },
+                imgSearch() {
+                    clearTimeout(this.img.qTimer);
+                    this.img.qTimer = setTimeout(() => this.imgLoadAlbums(), 300);
+                },
+
+                async imgOpen(folder) {
+                    const I = this.img, scroller = document.querySelector('.scroller-main');
+                    if (I.folder !== folder) this.navPush();
+                    I.backScroll = (!I.folder && scroller) ? scroller.scrollTop : null;   // ‹ Albums comes back to this spot
+                    I.loading = true;
+                    try {
+                        const d = await (await fetch('/api/images/album?folder=' + encodeURIComponent(folder))).json();
+                        if (!d.success) throw new Error(d.error);
+                        const a = I.albums.find(x => x.folder === folder);
+                        Object.assign(I, { folder, name: a ? a.name : d.name, favorite: d.favorite, items: d.images, shown: 300, msg: '' });
+                        if (scroller) scroller.scrollTop = 0;
+                    } catch (e) { I.msg = 'Could not open the album: ' + e.message; }
+                    I.loading = false;
+                },
+                imgBack() {
+                    this.navPush();
+                    const I = this.img, y = I.backScroll;
+                    Object.assign(I, { folder: null, items: [], backScroll: null });
+                    if (!I.albums.length || y == null) { this.imgLoadAlbums(); return; }
+                    this.$nextTick(() => { const el = document.querySelector('.scroller-main'); if (el) el.scrollTop = y; });
+                },
+                imgMore() { if (this.img.shown < this.img.items.length) this.img.shown += 300; },
+
+                async imgPost(url, body) {
+                    const d = await (await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+                    if (!d.success) throw new Error(d.error || 'failed');
+                    return d;
+                },
+                async imgFav(it) {
+                    try { await this.imgPost('/api/images/favorite', { ids: [it.id], on: !it.favorite }); it.favorite = !it.favorite; }
+                    catch (e) { alert('Could not change it: ' + e.message); }
+                },
+                async imgAlbumFav(a) {               // an album card, or the open album (no card given)
+                    const folder = a ? a.folder : this.img.folder, on = !(a ? a.favorite : this.img.favorite);
+                    try {
+                        await this.imgPost('/api/images/favorite', { folder, on });
+                        if (a) a.favorite = on; else this.img.favorite = on;
+                        const card = this.img.albums.find(x => x.folder === folder);
+                        if (card) card.favorite = on;
+                    } catch (e) { alert('Could not change it: ' + e.message); }
+                },
+                async imgSetCover(it) {
+                    try {
+                        await this.imgPost('/api/images/cover', { folder: this.img.folder, id: it.id });
+                        const card = this.img.albums.find(x => x.folder === this.img.folder);
+                        if (card) Object.assign(card, { cover_id: it.id, cover_v: it.mtime });
+                        this.img.msg = 'Album cover set.';
+                    } catch (e) { alert('Could not set the cover: ' + e.message); }
+                },
+                async imgLoadSkip() {
+                    try { const d = await (await fetch('/api/images/settings')).json(); if (d.success) this.img.skipText = d.skip_folders.join(', '); } catch (e) {}
+                },
+                async imgSaveSkip() {
+                    try {
+                        const d = await this.imgPost('/api/images/settings', { skip_folders: this.img.skipText.split(',').map(s => s.trim()).filter(Boolean) });
+                        this.img.skipText = d.skip_folders.join(', ');
+                        this.imgLoadCounts();
+                        if (this.imgTabActive() && !this.img.folder) this.imgLoadAlbums();
+                    } catch (e) { alert('Could not save: ' + e.message); }
+                },
+
+                // ----- the viewer -----
+                ivCur() { return this.img.items[this.iv.idx]; },
+                ivOpen(idx) {
+                    Object.assign(this.iv, { open: true, idx, z: 1, x: 0, y: 0, pts: {}, drag: null, pinch: null });
+                    this.ivPreload();
+                },
+                ivClose() {
+                    clearInterval(this.iv.slide);
+                    Object.assign(this.iv, { open: false, slide: null });
+                    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+                },
+                ivGo(d) {
+                    const n = this.img.items.length;
+                    if (!n) return;
+                    Object.assign(this.iv, { idx: (this.iv.idx + d + n) % n, z: 1, x: 0, y: 0 });
+                    if (this.iv.idx >= this.img.shown) this.img.shown = this.iv.idx + 1;   // the grid keeps up
+                    this.ivPreload();
+                },
+                ivPreload() {
+                    const n = this.img.items.length;
+                    for (const d of [1, -1, 2]) { const it = this.img.items[(this.iv.idx + d + n) % n]; if (it) new Image().src = this.imgFile(it); }
+                },
+                ivSlideshow() {
+                    if (this.iv.slide) { clearInterval(this.iv.slide); this.iv.slide = null; return; }
+                    this.iv.slide = setInterval(() => this.ivGo(1), 5000);
+                },
+                ivFullscreen(el) {
+                    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+                    else el.requestFullscreen().catch(() => {});
+                },
+                ivKey(e) {
+                    if (!this.iv.open || e.target.closest('input, textarea, select')) return;
+                    const k = e.key;
+                    if (k === 'ArrowRight' || k === 'PageDown') { e.preventDefault(); this.ivGo(1); }
+                    else if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); this.ivGo(-1); }
+                    else if (k === ' ') { e.preventDefault(); this.ivSlideshow(); }
+                    else if (k === 'f' || k === 'F') this.ivFullscreen(document.getElementById('imgViewer'));
+                    else if (k === 's' || k === 'S') this.imgFav(this.ivCur());
+                    else if (k === '+' || k === '=') this.ivZoomTo(this.iv.z * 1.5);
+                    else if (k === '-') this.ivZoomTo(this.iv.z / 1.5);
+                    else if (k === '0') this.ivZoomTo(1);
+                },
+                // zoom about a point (client x / y; default the middle), kept between 1x and 8x
+                ivZoomTo(z, cx = window.innerWidth / 2, cy = window.innerHeight / 2) {
+                    const iv = this.iv, nz = Math.min(8, Math.max(1, z));
+                    const ox = cx - window.innerWidth / 2, oy = cy - window.innerHeight / 2;
+                    iv.x = nz === 1 ? 0 : ox - (ox - iv.x) * nz / iv.z;
+                    iv.y = nz === 1 ? 0 : oy - (oy - iv.y) * nz / iv.z;
+                    iv.z = nz;
+                },
+                ivWheel(e) { this.ivZoomTo(this.iv.z * (e.deltaY < 0 ? 1.25 : 0.8), e.clientX, e.clientY); },
+                ivDown(e) {
+                    const iv = this.iv;
+                    iv.pts[e.pointerId] = { x: e.clientX, y: e.clientY };
+                    const p = Object.values(iv.pts);
+                    if (p.length === 2) iv.pinch = { d: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y), z: iv.z };
+                    else iv.drag = { sx: e.clientX, sy: e.clientY, x: iv.x, y: iv.y };
+                    iv.moved = false;
+                },
+                ivMove(e) {
+                    const iv = this.iv;
+                    if (!iv.pts[e.pointerId]) return;
+                    iv.pts[e.pointerId] = { x: e.clientX, y: e.clientY };
+                    const p = Object.values(iv.pts);
+                    if (iv.pinch && p.length === 2) {
+                        this.ivZoomTo(iv.pinch.z * Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) / iv.pinch.d, (p[0].x + p[1].x) / 2, (p[0].y + p[1].y) / 2);
+                        iv.moved = true;
+                    } else if (iv.drag && iv.z > 1) {
+                        iv.x = iv.drag.x + e.clientX - iv.drag.sx;
+                        iv.y = iv.drag.y + e.clientY - iv.drag.sy;
+                        iv.moved = true;
+                    }
+                },
+                ivUp(e) {
+                    const iv = this.iv, d = iv.drag;
+                    delete iv.pts[e.pointerId];
+                    if (Object.keys(iv.pts).length < 2) iv.pinch = null;
+                    if (d && iv.z === 1 && !iv.moved) {                          // a swipe at normal size: next / previous
+                        const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+                        if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) { this.ivGo(dx < 0 ? 1 : -1); iv.moved = true; }
+                    }
+                    if (!Object.keys(iv.pts).length) iv.drag = null;
+                },
+
                 // ===== Back button =====
                 // One history entry (same URL) is kept while there is something to go back to; Back pops it,
                 // navOnBack undoes one step and navSync puts the entry back. Closing things on screen never touches history.
@@ -13357,7 +13617,7 @@ No metadata is changed.`)) return;
                     const el = document.querySelector('.scroller-main');
                     return { view: this.currentView, playlistId: this.currentPlaylist?.id ?? null,
                              library: this.currentLibrary, previousLibrary: this.previousLibrary, folder: this.currentFolder, folderMode: this.folderMode,
-                             tab: this.libraryTab, collId: this.coll.view?.id ?? null, movieId: this.mv.view?.id ?? null,
+                             tab: this.libraryTab, collId: this.coll.view?.id ?? null, movieId: this.mv.view?.id ?? null, imgFolder: this.img.folder,
                              search: this._navQuery, tags: { ...this.activeTags }, excludeTags: { ...(this.excludeTags || {}) },
                              sites: { ...this.activeSites }, excludeSites: { ...(this.excludeSites || {}) }, fav: this.favoritesOnly,
                              lengths: [...this.activeLengthFilters], sortField: this.sortField, sortDesc: this.sortDesc, viewMode: this.viewMode,
@@ -13376,6 +13636,7 @@ No metadata is changed.`)) return;
 
                 // what Back closes first (topmost first), or null
                 navTopLayer() {
+                    if (this.iv.open) return () => this.ivClose();
                     if (this.modals.settings && this.settingsLayout === 'page') return () => this.closeSettings();
                     if (this.np.open) return () => this.npClose();
                     if (this.activeVideo) return () => this.closeVideo();
@@ -13431,11 +13692,13 @@ No metadata is changed.`)) return;
                             if (s.library !== 'Home') this.libraryTabs[s.library] = s.tab;
                             if (s.tab !== 'collections' || !s.collId) this.coll.view = null;
                             if (s.tab !== 'movies' || !s.movieId) { this.mv.view = null; this.mv.items = []; }
+                            if (s.tab !== 'images' || !s.imgFolder) { this.img.folder = null; this.img.items = []; }
                             await this.fetchVideos('reset');
                             if (s.library !== 'Home' && !s.search) {
                                 if (s.tab === 'collections') await (s.collId ? this.collLoadItems(s.collId, 1) : this.loadCollections());
                                 else if (s.tab === 'movies') await (s.movieId ? this.mvLoad(s.movieId) : this.loadMovies(1));
                                 else if (s.tab === 'recommended') { this.homeRows = []; await this.loadHomeData(s.library); }
+                                else if (s.tab === 'images') await (s.imgFolder ? this.imgOpen(s.imgFolder) : this.imgLoadAlbums());
                             }
                         }
                         this.$nextTick(() => requestAnimationFrame(() => { if (scroller) scroller.scrollTop = s.scroll; }));
@@ -13656,12 +13919,12 @@ No metadata is changed.`)) return;
                             <button @click="activeTagTab = 'tags'" 
                                     class="flex-1 text-xs font-bold uppercase px-3 py-2 transition-colors"
                                     :class="activeTagTab === 'tags' ? 'text-green-400 bg-gray-700' : 'text-gray-500 hover:text-gray-300'">
-                                Tags
+                                Tags<span x-show="Object.keys(activeTags).length > 0" class="ml-1 font-normal text-gray-400" x-text="`(${Object.keys(activeTags).length})`"></span>
                             </button>
                             <button @click="activeTagTab = 'sites'" 
                                     class="flex-1 text-xs font-bold uppercase px-3 py-2 transition-colors"
                                     :class="activeTagTab === 'sites' ? 'text-green-400 bg-gray-700' : 'text-gray-500 hover:text-gray-300'">
-                                Sites
+                                Sites<span x-show="Object.keys(activeSites).length > 0" class="ml-1 font-normal text-gray-400" x-text="`(${Object.keys(activeSites).length})`"></span>
                             </button>
                             <!-- Clear button (shows when either has selections) -->
                             <span x-show="Object.keys(activeTags).length > 0 || Object.keys(activeSites).length > 0" 
@@ -13673,22 +13936,29 @@ No metadata is changed.`)) return;
                     <!-- Tags Tab Content -->
                     <div x-show="activeTagTab === 'tags'" class="flex-1 flex flex-col min-h-0">
                         <div class="p-2 pb-1 shrink-0">
-                            <div class="relative">
+                            <div class="flex items-center gap-1">
+                            <div class="relative flex-1 min-w-0">
                                 <input type="text" x-model="tagSearchQuery" placeholder="Filter tags..."
                                        class="w-full bg-gray-800 text-white text-xs px-3 py-1.5 pr-8 rounded border border-gray-600 focus:border-blue-500 outline-none"
-                                       @keydown.escape="tagSearchQuery = ''">
+                                       @keydown.escape="tagSearchQuery = ''" @keydown.enter.prevent="includeFirstMatch('tags')">
                                 <button x-show="tagSearchQuery.length > 0" @click="tagSearchQuery = ''"
                                         class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-lg leading-none">&times;</button>
+                            </div>
+                                <button @click="setTagSort(appSettings.tagSort === 'count' ? 'az' : 'count')"
+                                        class="shrink-0 w-9 py-1.5 rounded border border-gray-600 text-xs text-gray-400 hover:text-white hover:border-gray-400"
+                                        :title="appSettings.tagSort === 'count' ? 'Sorted by most videos (click for A-Z)' : 'Sorted A-Z (click for most videos)'"
+                                        x-text="appSettings.tagSort === 'count' ? '#' : 'A-Z'"></button>
                             </div>
                             <div x-show="tagSearchQuery.length > 0" class="text-xs text-gray-500 mt-1">
                                 <span x-text="filteredTags.length"></span> of <span x-text="sortedTags.length"></span> tags
                             </div>
                         </div>
-                        <div class="flex-1 overflow-y-auto scroller px-2 pb-2 min-h-0">
-                        <template x-for="[tag, count] in filteredTags" :key="tag">
-                            <button @click="toggleTag(tag)"
+                        <div class="flex-1 overflow-y-auto scroller px-2 pb-2 min-h-0" @mouseenter="sbHover('tags', true)" @mouseleave="sbHover('tags', false)">
+                        <template x-for="[tag, count, sep] in filteredTags" :key="tag">
+                            <button @click="sbHoldOrder('tags'); toggleTag(tag)" @contextmenu.prevent.stop="sbHoldOrder('tags'); excludeTag(tag)"
+                                    title="Click: include / exclude / clear. Right-click: exclude"
                                     class="w-full text-left px-3 py-1 rounded text-xs hover:bg-gray-700 truncate flex items-center justify-between"
-                                    :class="count === 0 ? 'opacity-40' : ''">
+                                    :class="[count === 0 && !activeTags[tag] ? 'opacity-40' : '', sep ? 'mt-1 border-t border-gray-700 rounded-none' : '']">
                                 <span :class="activeTags[tag] === 1 ? 'text-green-400 font-bold' : (activeTags[tag] === -1 ? 'text-red-400' : (count === 0 ? 'text-gray-600' : 'text-gray-400'))">
                                     <span :class="activeTags[tag] === -1 ? 'line-through' : ''" x-text="tag"></span> 
                                     <span class="text-gray-600" x-text="`(${count})`"></span>
@@ -13703,22 +13973,29 @@ No metadata is changed.`)) return;
                     <!-- Sites Tab Content -->
                     <div x-show="activeTagTab === 'sites'" class="flex-1 flex flex-col min-h-0">
                         <div class="p-2 pb-1 shrink-0">
-                            <div class="relative">
+                            <div class="flex items-center gap-1">
+                            <div class="relative flex-1 min-w-0">
                                 <input type="text" x-model="siteSearchQuery" placeholder="Filter sites..."
                                        class="w-full bg-gray-800 text-white text-xs px-3 py-1.5 pr-8 rounded border border-gray-600 focus:border-blue-500 outline-none"
-                                       @keydown.escape="siteSearchQuery = ''">
+                                       @keydown.escape="siteSearchQuery = ''" @keydown.enter.prevent="includeFirstMatch('sites')">
                                 <button x-show="siteSearchQuery.length > 0" @click="siteSearchQuery = ''"
                                         class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-lg leading-none">&times;</button>
+                            </div>
+                                <button @click="setTagSort(appSettings.tagSort === 'count' ? 'az' : 'count')"
+                                        class="shrink-0 w-9 py-1.5 rounded border border-gray-600 text-xs text-gray-400 hover:text-white hover:border-gray-400"
+                                        :title="appSettings.tagSort === 'count' ? 'Sorted by most videos (click for A-Z)' : 'Sorted A-Z (click for most videos)'"
+                                        x-text="appSettings.tagSort === 'count' ? '#' : 'A-Z'"></button>
                             </div>
                             <div x-show="siteSearchQuery.length > 0" class="text-xs text-gray-500 mt-1">
                                 <span x-text="filteredSites.length"></span> of <span x-text="sortedSites.length"></span> sites
                             </div>
                         </div>
-                        <div class="flex-1 overflow-y-auto scroller px-2 pb-2 min-h-0">
-                        <template x-for="[site, count] in filteredSites" :key="site">
-                            <button @click="toggleSite(site)"
+                        <div class="flex-1 overflow-y-auto scroller px-2 pb-2 min-h-0" @mouseenter="sbHover('sites', true)" @mouseleave="sbHover('sites', false)">
+                        <template x-for="[site, count, sep] in filteredSites" :key="site">
+                            <button @click="sbHoldOrder('sites'); toggleSite(site)" @contextmenu.prevent.stop="sbHoldOrder('sites'); excludeSite(site)"
+                                    title="Click: include / exclude / clear. Right-click: exclude"
                                     class="w-full text-left px-3 py-1 rounded text-xs hover:bg-gray-700 truncate flex items-center justify-between"
-                                    :class="count === 0 ? 'opacity-40' : ''">
+                                    :class="[count === 0 && !activeSites[site] ? 'opacity-40' : '', sep ? 'mt-1 border-t border-gray-700 rounded-none' : '']">
                                 <span :class="activeSites[site] === 1 ? 'text-green-400 font-bold' : (activeSites[site] === -1 ? 'text-red-400' : (count === 0 ? 'text-gray-600' : 'text-gray-400'))">
                                     <span :class="activeSites[site] === -1 ? 'line-through' : ''" x-text="site"></span> 
                                     <span class="text-gray-600" x-text="`(${count})`"></span>
@@ -13974,7 +14251,8 @@ No metadata is changed.`)) return;
                          :style="mainScrollX ? `transform:translateX(${mainScrollX}px)` : ''"
                          x-init="new ResizeObserver(() => { tabsH = $el.offsetHeight; jumpMeasure(); }).observe($el)">
                         <template x-for="tb in libTabNames" :key="tb[0]">
-                            <button @click="if (libraryTab !== tb[0]) navPush(); setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
+                            <button x-show="tb[0] !== 'images' || imgCount() > 0 || libraryTab === 'images'"
+                                    @click="if (libraryTab !== tb[0]) navPush(); setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
                                     :class="libraryTab === tb[0] ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'" x-text="tb[1]"></button>
                         </template>
                         <button x-show="libraryTab === 'library'" @click="collSaveSmart()" class="ml-auto mb-1 px-3 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-300"
@@ -14526,6 +14804,62 @@ No metadata is changed.`)) return;
                                         StashDB has no movies, so only ThePornDB can be used here.</p>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Images tab (images.py): albums by folder -> an album's images -> the viewer -->
+                    <div x-show="imgTabActive()" class="p-6">
+                        <div x-show="!img.folder">
+                            <div class="flex flex-wrap items-center gap-2 mb-4 text-sm">
+                                <input type="text" x-model="img.q" @input="imgSearch()" placeholder="Find an album…"
+                                       class="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-56">
+                                <select x-model="img.sort" @change="imgLoadAlbums()" class="bg-gray-800 border border-gray-700 rounded px-2 py-1">
+                                    <option value="name">Name</option><option value="newest">Newest</option>
+                                    <option value="count">Most images</option><option value="favorites">Favorites first</option>
+                                </select>
+                                <span class="text-gray-500" x-text="img.albums.length + ' album' + (img.albums.length === 1 ? '' : 's') + ', ' + img.albums.reduce((n, a) => n + a.count, 0) + ' images'"></span>
+                                <span x-show="img.loading" class="text-gray-500">Loading…</span>
+                            </div>
+                            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                                <template x-for="a in img.albums" :key="a.folder">
+                                    <div @click="imgOpen(a.folder)" class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden cursor-pointer hover:border-blue-500 group relative" :title="a.folder">
+                                        <div class="aspect-square bg-gray-900">
+                                            <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover">
+                                        </div>
+                                        <button @click.stop="imgAlbumFav(a)" class="absolute top-1 right-1 text-xl leading-none px-1 rounded bg-black/40"
+                                                :class="a.favorite ? 'text-yellow-400' : 'text-white/60 opacity-0 group-hover:opacity-100'" title="Favorite album">&#9733;</button>
+                                        <div class="p-2">
+                                            <div class="text-sm font-bold truncate" x-text="a.name"></div>
+                                            <div class="text-xs text-gray-400" x-text="a.count + ' image' + (a.count === 1 ? '' : 's')"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                            <div x-show="!img.loading && !img.albums.length" class="text-center py-20 text-gray-500" x-text="img.q ? 'No album matches.' : 'No images in this library.'"></div>
+                        </div>
+
+                        <div x-show="img.folder">
+                            <div class="flex flex-wrap items-center gap-3 mb-4">
+                                <button @click="imgBack()" class="px-2 py-1 rounded text-sm bg-gray-800 hover:bg-gray-700 text-gray-300">‹ Albums</button>
+                                <h2 class="text-lg font-bold truncate" x-text="img.name" :title="img.folder"></h2>
+                                <span class="text-sm text-gray-500" x-text="img.items.length + ' images'"></span>
+                                <button @click="imgAlbumFav(null)" class="text-xl leading-none" :class="img.favorite ? 'text-yellow-400' : 'text-gray-500 hover:text-yellow-300'" title="Favorite album">&#9733;</button>
+                                <button x-show="img.items.length" @click="ivOpen(0); ivSlideshow()" class="ml-auto px-3 py-1 rounded text-sm bg-gray-800 hover:bg-gray-700 text-gray-300">▶ Slideshow</button>
+                                <span x-show="img.msg" class="text-xs text-gray-400" x-text="img.msg"></span>
+                            </div>
+                            <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5">
+                                <template x-for="(it, i) in img.items.slice(0, img.shown)" :key="it.id">
+                                    <div @click="ivOpen(i)" class="relative aspect-square bg-gray-900 rounded overflow-hidden cursor-zoom-in group" :title="it.filename">
+                                        <img :src="imgThumb(it.id, it.mtime)" loading="lazy" class="w-full h-full object-cover">
+                                        <button @click.stop="imgFav(it)" class="absolute top-0.5 right-0.5 text-lg leading-none px-1 rounded bg-black/40"
+                                                :class="it.favorite ? 'text-yellow-400' : 'text-white/70 opacity-0 group-hover:opacity-100'" title="Favorite">&#9733;</button>
+                                        <button @click.stop="imgSetCover(it)" class="absolute bottom-0.5 right-0.5 text-[10px] px-1 rounded bg-black/60 text-white opacity-0 group-hover:opacity-100" title="Use as the album's cover">cover</button>
+                                    </div>
+                                </template>
+                            </div>
+                            <div x-show="img.shown < img.items.length" class="text-center py-4 text-gray-500 text-sm"
+                                 x-init="new IntersectionObserver(es => { if (es[0].isIntersecting) imgMore(); }, { rootMargin: '1200px' }).observe($el)"
+                                 x-text="'Loading more… (' + (img.items.length - img.shown) + ' to go)'"></div>
                         </div>
                     </div>
 
@@ -15311,6 +15645,9 @@ No metadata is changed.`)) return;
             <button @click="refreshVideoMetadata" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-green-400">Refresh Metadata</button>
             <div class="border-t border-gray-700 my-1"></div>
             <button @click="openFileInfo" class="w-full text-left px-4 py-2 hover:bg-blue-600" x-show="selectedPaths.size === 1">File Info</button>
+            <button x-show="selectedPaths.size === 1 && !!menuVideo?.movie_id" @click="activeMenu = null; mvOpenFromVideo(menuVideo)"
+                    class="w-full text-left px-4 py-2 hover:bg-blue-600 text-blue-300 truncate" :title="menuVideo?.movie"
+                    x-text="'Go to Movie: ' + (menuVideo?.movie || '')"></button>
             <button @click="extSceneOpen()" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-emerald-400" x-show="selectedPaths.size === 1"
                     title="Find this video's scene on StashDB">🌐 Find scene…</button>
             <button @click="extSceneBulkFromSelection()" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-emerald-400" x-show="selectedPaths.size > 1"
@@ -15480,6 +15817,33 @@ No metadata is changed.`)) return;
                     </button>
                 </div>
             </template>
+        </div>
+
+        <!-- Images: the viewer (← → / swipe, wheel / pinch / double-click zoom, Space slideshow, F full screen, S favorite) -->
+        <div id="imgViewer" x-show="iv.open" x-cloak class="fixed inset-0 z-[95] bg-black select-none" @keydown.window="ivKey($event)">
+            <template x-if="iv.open && ivCur()">
+                <div class="absolute inset-0 overflow-hidden touch-none" @wheel.prevent="ivWheel($event)"
+                     @pointerdown="ivDown($event)" @pointermove="ivMove($event)" @pointerup="ivUp($event)" @pointercancel="ivUp($event)"
+                     @dblclick="ivZoomTo(iv.z > 1 ? 1 : 2.5, $event.clientX, $event.clientY)">
+                    <img :src="imgFile(ivCur())" draggable="false" class="absolute inset-0 w-full h-full object-contain"
+                         :style="`transform: translate(${iv.x}px, ${iv.y}px) scale(${iv.z}); transition: ${iv.drag || iv.pinch ? 'none' : 'transform .15s'}; cursor: ${iv.z > 1 ? 'grab' : 'default'}`">
+                </div>
+            </template>
+            <div class="absolute top-0 inset-x-0 flex items-center gap-3 px-4 py-2 bg-gradient-to-b from-black/70 to-transparent text-sm text-gray-200 pointer-events-none">
+                <span class="truncate" x-text="ivCur()?.filename"></span>
+                <span class="text-gray-400 whitespace-nowrap" x-text="(iv.idx + 1) + ' / ' + img.items.length"></span>
+                <div class="ml-auto flex items-center gap-1 pointer-events-auto">
+                    <button @click="imgFav(ivCur())" class="px-2 py-1 rounded hover:bg-white/10 text-lg leading-none" :class="ivCur()?.favorite ? 'text-yellow-400' : 'text-gray-300'" title="Favorite (S)">&#9733;</button>
+                    <button @click="imgSetCover(ivCur())" class="px-2 py-1 rounded hover:bg-white/10" title="Use as the album's cover">Cover</button>
+                    <button @click="ivSlideshow()" class="px-2 py-1 rounded hover:bg-white/10" :title="'Slideshow (Space)'" x-text="iv.slide ? '❚❚' : '▶'"></button>
+                    <button @click="ivZoomTo(iv.z > 1 ? 1 : 2.5)" class="px-2 py-1 rounded hover:bg-white/10" title="Zoom (+ / - / 0, wheel, double-click)" x-text="iv.z > 1 ? Math.round(iv.z * 100) + '%' : '1:1'"></button>
+                    <button @click="ivFullscreen(document.getElementById('imgViewer'))" class="px-2 py-1 rounded hover:bg-white/10" title="Full screen (F)">⛶</button>
+                    <a :href="imgFile(ivCur())" target="_blank" class="px-2 py-1 rounded hover:bg-white/10" title="Open the original">↗</a>
+                    <button @click="ivClose()" class="px-2 py-1 rounded hover:bg-white/10 text-xl leading-none" title="Close (Esc)">&times;</button>
+                </div>
+            </div>
+            <button @click="ivGo(-1)" class="absolute left-2 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-black/40 hover:bg-black/70 text-white text-2xl hidden sm:block" title="Previous (←)">‹</button>
+            <button @click="ivGo(1)" class="absolute right-2 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-black/40 hover:bg-black/70 text-white text-2xl hidden sm:block" title="Next (→)">›</button>
         </div>
 
         <!-- Group Editor Modal -->
@@ -16727,6 +17091,15 @@ No metadata is changed.`)) return;
                             </div>
                         </div>
 
+                        <div x-show="sPage('browsing')" class="bg-gray-900 p-3 rounded space-y-2" x-init="imgLoadSkip()">
+                            <div><span class="block text-sm font-bold">Images tab: folders to skip</span>
+                                <span class="block text-xs text-gray-500">Image folders with one of these names (at any depth, any case) aren't shown - e.g. the screenshots that come with videos. Comma-separated.</span></div>
+                            <div class="flex gap-2">
+                                <input type="text" x-model="img.skipText" @keydown.enter="imgSaveSkip()" class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm">
+                                <button @click="imgSaveSkip()" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm">Save</button>
+                            </div>
+                        </div>
+
                         <button x-show="sPage('metadata')" @click="qtOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
                             <span>Edit Quick Tags <span class="text-xs text-gray-500">- the quick-pick buttons in Edit Metadata</span></span><span>🏷️</span>
                         </button>
@@ -16912,6 +17285,11 @@ No metadata is changed.`)) return;
                         <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">
                             <div><span class="block text-sm font-medium">Same-name performers: show their number</span><span class="block text-xs text-gray-500">Different people with one name are stored as Jane Doe (1), Jane Doe (2). Show the number on video cards, list rows and in the player too (bios, File Info and pickers always show it)</span></div>
                             <button @click="toggleSetting('showCastNumbers')" class="w-10 h-5 rounded-full transition-colors relative flex-shrink-0" :class="appSettings.showCastNumbers ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.showCastNumbers ? 'translate-x-5' : ''"></div></button>
+                        </div>
+
+                        <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">
+                            <div><span class="block text-sm font-medium">Sidebar: Hide Unavailable Tags / Sites</span><span class="block text-xs text-gray-500">Leave out the tags and sites with no videos under the current filters, instead of greying them out (selected ones always stay)</span></div>
+                            <button @click="toggleSetting('sidebarHideUnavailable')" class="w-10 h-5 rounded-full transition-colors relative flex-shrink-0" :class="appSettings.sidebarHideUnavailable ? 'bg-blue-600' : 'bg-gray-600'"><div class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform" :class="appSettings.sidebarHideUnavailable ? 'translate-x-5' : ''"></div></button>
                         </div>
 
                         <div x-show="sPage('browsing')" class="flex items-center justify-between bg-gray-900 p-3 rounded">

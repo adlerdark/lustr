@@ -574,7 +574,8 @@ def smart_parse(filename, ctx, library=None):
             if re.fullmatch(r'\d+|[0-9a-f]{8,}', p, re.I):                     # "41736 - ..." / hash ids
                 continue
             key = ctx.site_of(p)
-            if key and not ctx.known_name(p):
+            if key and (not ctx.known_name(p) or len(p.split()) == 1):           # 'BABES - ...': one word is the site,
+                                                                                # even when a past parse made it a performer
                 _set_site(out, key, ctx)
                 continue
             if not ctx.known_name(p) and _new_studio(out, p, ctx):              # 'The Country Hotwife - ...'

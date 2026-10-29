@@ -51,6 +51,17 @@ class DirInTitle(unittest.TestCase):
         r = self.parse('%D/%C - downthehatch21_%T_1_1', {})
         self.assertEqual(r['data']['title'], 'Down The Hatch 21 downthehatch21_scene11')
 
+    def test_names_are_one_word_with_spaces(self):
+        path = '/media/x/BABES - ALEXA GRACE OFFERS RICKY A THERAPEUTIC HANDJOB.mp4'
+        r = self.parse('%S - %F %L %T', {'title_case': True}, path=path)
+        self.assertEqual(r['data'], {'site': 'babes', 'cast': ['Alexa Grace'], 'title': 'Offers Ricky A Therapeutic Handjob'})
+        r = self.parse('%S - %F %M %L %T', {}, path='/media/x/Site - Jane Ann Doe Does It.mp4')
+        self.assertEqual(r['data']['cast'], ['Jane Ann Doe'])
+        r = self.parse('%S - %T', {}, path='/media/x/Team Skeet - Part One - Part Two.mp4')
+        self.assertEqual((r['data']['site'], r['data']['title']), ('team skeet', 'Part One - Part Two'))
+        r = self.parse('%S.%F.%L.%T', {'clean_dots': True}, path='/media/x/site.jane.doe.the.title.mp4')
+        self.assertEqual(r['data'], {'site': 'site', 'cast': ['jane doe'], 'title': 'the title'})
+
 
 
 class NewSites(unittest.TestCase):
@@ -96,6 +107,14 @@ class NewSites(unittest.TestCase):
         self.assertIsNone(self.parse('1a601e33-e042-4773-b764-b2edb497f964')['site_new'])
         self.assertEqual(self.parse('Men.com - Joey In The Middle Part 2 (1080p)')['site_new'], 'men.com')
         self.assertEqual(self.parse('[LegalPorno.com - AnalVids.com - PornBox.com] Emma Without Rules')['site_new'], 'legalporno')
+
+    def test_a_one_word_site_beats_a_performer_of_the_same_name(self):
+        self.ctx.site_keys['babes'] = 'babes'
+        self.ctx.site_display['babes'] = 'babes'
+        self.ctx.cast_idx.update({'babes': 'BABES', 'alexagrace': 'Alexa Grace'})        # 'BABES' from an old parse
+        p = self.parse('BABES - ALEXA GRACE OFFERS RICKY A THERAPEUTIC HANDJOB THAT TURNS INTO FUCKING')
+        self.assertEqual((p['site_key'], [n['name'] for n in p['names']]), ('babes', ['Alexa Grace']))
+        self.assertTrue(p['title'].startswith('Alexa Grace Offers'), p['title'])
 
     def test_a_known_site_is_never_new(self):
         p = self.parse('[Brazzers] Some Title')

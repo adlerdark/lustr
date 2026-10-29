@@ -101,8 +101,7 @@ def smart_parse_apply(req: SmartApplyRequest, model = Depends(get_model)):
     result = filename_parser.apply(model.db.get_connection(), req.items)
     try:
         import routes.videos as rv
-        with rv._cache_lock:
-            rv._filter_cache.clear()
+        rv.clear_filter_caches()
     except Exception:
         pass
     return result
@@ -159,10 +158,10 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
         Generate regex from pattern tokens.
 
         Tokens (sorted longest-first so %MM is matched before %M):
-          %S   -- site (single dot-part, always lowercased)
-          %F   -- first name (single dot-part)
-          %M   -- middle name (single dot-part)
-          %L   -- last name  (single dot-part)
+          %S   -- site (single dot-part, the shortest that fits; always lowercased)
+          %F   -- first name (one word: a single dot-part, no spaces)
+          %M   -- middle name (one word)
+          %L   -- last name  (one word)
           %C   -- cast (greedy multi-name, smart-split in Python)
           %T   -- title (greedy to end)
           %Y   -- 4-digit year
@@ -189,11 +188,13 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
             # This prevents backtracking from matching e.g. "080p" from "1080p".
             '%R':   r'(?P<resolution>(?:2160|1440|1080|720|600|540|480|360|240)p)',
             # [^./]+ : stops at both dots AND slashes so a single dot-segment
-            # token can never accidentally consume a path separator.
-            '%S':   r'(?P<site>[^./]+)',
-            '%F':   r'(?P<firstname>[^./]+)',
-            '%M':   r'(?P<middlename>[^./]+)',
-            '%L':   r'(?P<lastname>[^./]+)',
+            # token can never accidentally consume a path separator. Names are one word, so
+            # '%S - %F %L %T' on 'Site - Jane Doe Does It' is Jane / Doe / Does It, not
+            # 'Jane Doe Does' / 'It'; the site is the shortest that fits ('%S - %T': the first ' - ').
+            '%S':   r'(?P<site>[^./]+?)',
+            '%F':   r'(?P<firstname>[^./\s]+)',
+            '%M':   r'(?P<middlename>[^./\s]+)',
+            '%L':   r'(?P<lastname>[^./\s]+)',
             '%D':   r'(?P<directory>[^/]+)',   # immediate parent directory name
             '%T':   r'(?P<title>.+)',   # greedy; trimmed below when %R present
             '%C':   r'(?P<cast>.+?)',
