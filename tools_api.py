@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from config import DATA_FILE, LIST_FIELDS
 import db_maintenance as dm
 import cast_names
+import gender_check
+import resolution_fix
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -379,6 +381,61 @@ def maintenance_cast_spellings_not_same(body: NamesBody):
     conn = _conn()
     cast_names.mark_not_same(conn, body.names)
     conn.commit()
+    return {'success': True}
+
+
+class GenderFixBody(BaseModel):
+    fixes: List[Dict]           # [{name, action: 'gender' | 'mark' | 'unmark', gender}]
+
+
+class GenderIgnoreBody(BaseModel):
+    name: str
+    kind: str
+    ignore: bool = True
+
+
+@router.get("/maintenance/gender-check")
+def maintenance_gender_check():
+    """Performers whose gender or Male Cast mark doesn't fit the orientation of their videos."""
+    return gender_check.report(_conn(), _model)
+
+
+@router.post("/maintenance/gender-check/fix")
+def maintenance_gender_check_fix(body: GenderFixBody):
+    conn = _conn()
+    fixes = body.fixes or []
+    backup = dm.make_backup(conn) if len(fixes) > 1 else None
+    people = gender_check.performers(conn, _model)
+    genders = videos = 0
+    for f in fixes:
+        name, action = f.get('name'), f.get('action')
+        if action == 'gender':
+            try:
+                _model.db.set_cast_gender(name, f.get('gender'))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            genders += 1
+        elif action in ('mark', 'unmark'):
+            videos += gender_check.set_marks(conn, people.get(name) or {}, action == 'mark')
+        else:
+            raise HTTPException(status_code=400, detail=f'Unknown fix: {action}')
+    return {'success': True, 'genders': genders, 'videos': videos, 'backup': backup}
+
+
+@router.get("/maintenance/resolutions")
+def maintenance_resolutions():
+    return resolution_fix.status()
+
+
+@router.post("/maintenance/resolutions/fix")
+def maintenance_resolutions_fix():
+    """Re-read every file and correct resolutions stored from the long side, in the background."""
+    return {'success': True, **resolution_fix.start(_model)}
+
+
+@router.post("/maintenance/gender-check/ignore")
+def maintenance_gender_check_ignore(body: GenderIgnoreBody):
+    gender_check.set_ignored(_conn(), body.name, body.kind, body.ignore)
     return {'success': True}
 
 

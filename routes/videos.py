@@ -287,6 +287,33 @@ def _pop_scene_filter(field_filters):
     return str(v).strip().lower() or None
 
 
+RES_MINIMUMS = {'4k': 2160, 'hd': 670, 'sdhigh': 540, 'sdlow': 1}       # 670: cropped 720p (1280x674) is still HD
+
+
+def _pop_resolution_filter(field_filters):
+    """res:4k / hd / sdhigh / sdlow -> the lowest resolution to show, removed from the parsed filters."""
+    vals = field_filters.pop('res', None)
+    for group in field_filters.get('__or_groups__') or []:
+        group.pop('res', None)
+    if field_filters.get('__or_groups__') is not None:
+        field_filters['__or_groups__'] = [g for g in field_filters['__or_groups__'] if g]
+    if not vals:
+        return None
+    v = vals[0] if isinstance(vals, list) else vals
+    return RES_MINIMUMS.get(str(v[1] if isinstance(v, tuple) else v).strip().lower())
+
+
+def _add_resolution_condition(minimum, conditions, params, conn, col='v.video_id'):
+    """A video goes by its preferred version, the one its badge shows."""
+    if not minimum:
+        return
+    values = [r[0] for r in conn.execute('SELECT DISTINCT resolution FROM file_versions')
+              if (_resolution_num(r[0]) or 0) >= minimum]
+    conditions.append(f"{col} IN (SELECT video_id FROM file_versions WHERE is_preferred = 1 AND deleted_at IS NULL "
+                      f"AND resolution IN ({','.join('?' * len(values)) or 'NULL'}))")
+    params.extend(values)
+
+
 def _pop_movie_filter(field_filters):
     """movie:"Name" / movie:yes / movie:no -> its values, removed from the parsed filters (movies.py)."""
     vals = field_filters.pop('movie', None)
@@ -569,6 +596,7 @@ def _get_videos_sql_fast(
     cc_filter = _pop_captions_filter(field_filters)
     ch_filters = _pop_chapters_filter(field_filters)
     movie_filter = _pop_movie_filter(field_filters)
+    res_min = _pop_resolution_filter(field_filters)
     tag_fields = [f.lower() for f in LIST_FIELDS if f.lower() not in ['site', 'cast']]
     
     conn = model.db.get_connection()
@@ -640,6 +668,7 @@ def _get_videos_sql_fast(
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.video_id')
     _add_scene_condition(scene_kind, conditions, params)
+    _add_resolution_condition(res_min, conditions, params, conn)
     if cc_filter is not None:
         conditions.append(_captions_sql(cc_filter))
     conditions.extend(_chapters_sql(ch_filters))
@@ -925,6 +954,7 @@ def get_videos(
     scene_kind = _pop_scene_filter(field_filters)
     cc_filter = _pop_captions_filter(field_filters)
     ch_filters = _pop_chapters_filter(field_filters)
+    res_min = _pop_resolution_filter(field_filters)
     cc_paths = None
     movie_filter = _pop_movie_filter(field_filters)
     movie_vids = None
@@ -1097,6 +1127,7 @@ def get_videos(
 
         # --- FILTERS ---
         if favorites_only and not data.get('favorite', False): continue
+        if res_min and (_resolution_num(data.get('resolution')) or 0) < res_min: continue
         
         # Length filter (supports multiple ranges)
         if length_filter:
@@ -1352,6 +1383,7 @@ def _get_available_filters_uncached(
     scene_kind = _pop_scene_filter(field_filters)
     cc_filter = _pop_captions_filter(field_filters)
     ch_filters = _pop_chapters_filter(field_filters)
+    res_min = _pop_resolution_filter(field_filters)
     is_cast_search_all = (library == "All Videos" and 'cast' in field_filters and not library_filters)
     
     required_tags = set(t.strip().lower() for t in tags.split(',') if t.strip()) if tags else set()
@@ -1424,6 +1456,7 @@ def _get_available_filters_uncached(
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, base_conditions, base_params, video_id_col='v.video_id')
     _add_scene_condition(scene_kind, base_conditions, base_params)
+    _add_resolution_condition(res_min, base_conditions, base_params, conn)
     if cc_filter is not None:
         base_conditions.append(_captions_sql(cc_filter))
     base_conditions.extend(_chapters_sql(ch_filters))

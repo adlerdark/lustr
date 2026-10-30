@@ -52,6 +52,23 @@ class GenderTests(unittest.TestCase):
         for raw in ('Trans', 'NON_BINARY', 'UNKNOWN', None, ''):
             self.assertIsNone(f(raw))
 
+    def test_suggested_gender_default(self):
+        f = ext_db.default_gender
+        self.assertEqual(f('female', 'male', True, True), 'female')          # yours wins
+        self.assertEqual(f(None, 'female', False, True), 'female')           # then the scene's
+        self.assertEqual(f(None, None, False, True), 'male')                 # a gay video, nothing known
+        self.assertEqual(f(None, None, True, False), 'male')                 # a man in a straight scene
+        self.assertEqual(f(None, None, False, False), 'female')
+
+    def test_gay_library_is_not_a_straight_scene(self):
+        f = ext_db.scene_is_straight
+        both = ['male', 'female']
+        self.assertFalse(f(['gay'], [], both))
+        self.assertFalse(f(['bisexual'], [], both))
+        self.assertTrue(f([], [], both))                                     # unknown: the old guess
+        self.assertTrue(f(['straight'], [], both))
+        self.assertTrue(f(['straight'], ['Straight'], ['female']))
+
     def test_migration(self):
         path = os.path.join(tempfile.mkdtemp(dir=_DATA), 'library.db')
         old_library(path)

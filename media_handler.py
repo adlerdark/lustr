@@ -118,6 +118,15 @@ class MediaHandler:
             }
 
     @staticmethod
+    def resolution_label(width, height):
+        """1080p, 720p, 4K...: the short side, so a vertical 1080x1920 is 1080p."""
+        if height > 0 and width > 0:
+            return "4K" if max(width, height) >= 3800 else f"{min(width, height)}p"
+        if height > 0:
+            return f"{height}p"
+        return f"{width}w" if width > 0 else ""
+
+    @staticmethod
     def get_file_info(path):
         """Returns formatted strings and raw data dict."""
         try:
@@ -147,14 +156,7 @@ class MediaHandler:
                 bitrate_str = "0 kbps"
                 
             # Resolution String (Shorthand Logic)
-            res_str = ""
-            if meta['height'] > 0:
-                # Basic shorthand: 1080p, 720p, 480p, etc.
-                res_str = f"{meta['height']}p"
-                # Optional: Add 4K label if needed, but height is usually preferred for sorting
-                if meta['width'] >= 3800: res_str = "4K"
-            elif meta['width'] > 0:
-                res_str = f"{meta['width']}w"
+            res_str = MediaHandler.resolution_label(meta['width'], meta['height'])
 
             return {
                 "length": length_str,

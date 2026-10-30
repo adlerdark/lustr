@@ -4105,7 +4105,20 @@ def _scene_gender(p, local):
     return g or local or None
 
 
-FULL_MOVIE_TAG = 'full.movie'       # a video with this tag is the whole movie: suggest the movie's full cast
+def default_gender(stored, ext, is_man, gay):
+    """The gender Suggest Metadata offers: yours, else the scene's, else what the video implies."""
+    return stored or ext or ('male' if is_man or gay else 'female')
+
+
+def scene_is_straight(known, orientations, genders):
+    """known: the video's types from its tags or library. A gay (or other non-straight) library settles it,
+    whatever the cast looks like; otherwise is_straight_video decides."""
+    if known and 'straight' not in known:
+        return False
+    return is_straight_video(orientations, genders)
+
+
+from movies import FULL_MOVIE_TAG   # a video with this tag is the whole movie: suggest the movie's full cast
 
 
 def build_scene_suggestions(conn, path, full_movie=None):
@@ -4207,7 +4220,8 @@ def build_scene_suggestions(conn, path, full_movie=None):
                 how = 'tpdb-name' if source == 'tpdb' else 'name'      # ThePornDB performers match by canonical/credited name
         gender = _scene_gender(p, genders.get(local) if local else None)
         resolved.append((p, local, how, gender))
-    straight = is_straight_video(orient, [g for *_, g in resolved if g])
+    straight = scene_is_straight(video_types(conn, vid, orient), orient, [g for *_, g in resolved if g])
+    vtypes = video_types(conn, vid, orient, straight)
     for p, local, how, gender in resolved:
         ext_label = p.get('name') or '?'
         if p.get('as') and norm_name(p['as']) != norm_name(ext_label):
@@ -4218,7 +4232,7 @@ def build_scene_suggestions(conn, path, full_movie=None):
         stored = genders.get(local) if local else None
         ext_g = gender_from_external(p.get('gender'))
         gx = {'gender': stored, 'ext_gender': ext_g,
-              'gender_default': stored or ext_g or ('male' if is_man else 'female')}
+              'gender_default': default_gender(stored, ext_g, is_man, vtypes == ['gay'])}
         if local:
             in_cast = local.lower() in cast_prim
             if how in ('linked', 'tpdb-name'):
@@ -4244,7 +4258,6 @@ def build_scene_suggestions(conn, path, full_movie=None):
                 (' · man in a straight scene' if is_man else ''), False, already_set=False, new_cast=True, **gx)
 
     # --- tags, through the tag mapping ---
-    vtypes = video_types(conn, vid, orient, straight)
     unmapped, ignored = [], []
     for t in link.get('ext_tags') or []:
         name = (t.get('name') or '').strip()

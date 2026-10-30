@@ -25,6 +25,7 @@ from collections import Counter
 _schema_ready = set()
 _KEEP = object()
 UPDATE_KEYS = ('movie', 'movie_scene', 'movie_part', 'movie_whole')
+FULL_MOVIE_TAG = 'full.movie'       # goes with whole=1: each sets the other when it first happens
 
 
 _MOVIES_TABLE = '''CREATE TABLE IF NOT EXISTS {name} (
@@ -327,9 +328,26 @@ def get_or_create(conn, title, edition=None):
                         (title, title_key(title), ed, title_key(ed))).lastrowid
 
 
+def has_full_movie_tag(conn, video_id):
+    fk = _tags_fk(conn)
+    return conn.execute(f'SELECT 1 FROM video_tags_junction j JOIN video_tags t ON t.id = j.{fk} '
+                        'WHERE j.video_id = ? AND LOWER(t.value) = ? LIMIT 1', (video_id, FULL_MOVIE_TAG)).fetchone() is not None
+
+
+def add_full_movie_tag(conn, video_id):
+    row = conn.execute('SELECT id FROM video_tags WHERE LOWER(value) = ?', (FULL_MOVIE_TAG,)).fetchone()
+    tid = row[0] if row else conn.execute('INSERT INTO video_tags (value) VALUES (?)', (FULL_MOVIE_TAG,)).lastrowid
+    conn.execute(f'INSERT OR IGNORE INTO video_tags_junction (video_id, {_tags_fk(conn)}) VALUES (?, ?)', (video_id, tid))
+
+
+def _tags_fk(conn):
+    return next(r[1] for r in conn.execute('PRAGMA table_info(video_tags_junction)') if r[1].endswith('_id') and r[1] != 'video_id')
+
+
 def set_video_movie(conn, video_id, title=_KEEP, scene=_KEEP, part=_KEEP, whole=_KEEP, source='manual', commit=True):
     """Put a video in a movie (found by name, or made), change its scene / part / whole, or take it
-    out (title ''). _KEEP leaves a value as it is. Returns the movie id (None when out)."""
+    out (title ''). _KEEP leaves a value as it is. Returns the movie id (None when out).
+    A full.movie video joining a movie becomes whole; a video becoming whole gets the tag."""
     ensure_schema(conn)
     old = conn.execute('SELECT movie_id, scene, part, whole FROM video_movie WHERE video_id = ?', (video_id,)).fetchone()
     if title is not _KEEP and not title_key(title or ''):
@@ -349,6 +367,10 @@ def set_video_movie(conn, video_id, title=_KEEP, scene=_KEEP, part=_KEEP, whole=
     vals = (scene if scene is not _KEEP else (old[1] if old else None),
             part if part is not _KEEP else (old[2] if old else None),
             (1 if whole and str(whole) not in ('0', 'false', '') else 0) if whole is not _KEEP else (old[3] if old else 0))
+    if not old and whole is _KEEP and has_full_movie_tag(conn, video_id):
+        vals = vals[:2] + (1,)
+    if vals[2] and not (old and old[3]):
+        add_full_movie_tag(conn, video_id)
     conn.execute('INSERT OR REPLACE INTO video_movie (video_id, movie_id, scene, part, whole, source) VALUES (?, ?, ?, ?, ?, ?)',
                  (video_id, mid) + vals + (source,))
     if old and old[0] != mid:
@@ -1697,8 +1719,11 @@ def apply_found(conn, groups):
                 if not vid or vid in taken or vid not in alive:
                     continue
                 taken.add(vid)
+                is_whole = bool(v.get('whole')) or has_full_movie_tag(conn, vid)
+                if is_whole:
+                    add_full_movie_tag(conn, vid)
                 conn.execute('INSERT INTO video_movie (video_id, movie_id, scene, part, whole, source) VALUES (?, ?, ?, ?, ?, ?)',
-                             (vid, mid, _int_or_none(v.get('scene')), _int_or_none(v.get('part')), 1 if v.get('whole') else 0,
+                             (vid, mid, _int_or_none(v.get('scene')), _int_or_none(v.get('part')), 1 if is_whole else 0,
                               'ext' if v.get('source') == 'ext' else 'title'))
                 n_videos += 1
                 if v.get('source') == 'ext':
@@ -1776,8 +1801,8 @@ def on_video_linked(conn, video_id, kind, raw, scene_number=None, image=None):
             own = parse_video(vt[0], vt[1]) if vt else None
             if own and title_key(own['movie']) == title_key(mraw['title']):
                 n = own['scene']
-        conn.execute('INSERT INTO video_movie (video_id, movie_id, scene, whole, source) VALUES (?, ?, ?, 0, ?)',
-                     (video_id, mid, n, 'ext'))
+        conn.execute('INSERT INTO video_movie (video_id, movie_id, scene, whole, source) VALUES (?, ?, ?, ?, ?)',
+                     (video_id, mid, n, 1 if has_full_movie_tag(conn, video_id) else 0, 'ext'))
     linked = conn.execute('SELECT ext_id, cover IS NOT NULL FROM movies WHERE id = ?', (mid,)).fetchone()
     if linked and not linked[0] and not (ext_id and row and row[0] != mid):
         _fill_from_tpdb(conn, mid, mraw, ext_id or mraw.get('slug'))

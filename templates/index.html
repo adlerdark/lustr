@@ -680,6 +680,9 @@
                               ['notes', '📝 Notes'], ['playlists', '📋 Playlists'], ['cast', '👥 Cast'], ['metadata', '🔍 Metadata'],
                               ['filters', '⏷ Filters (captions / chapters / markers)'], ['scene', '🌐 Scene link filter'], ['match', '🌐 Match scenes'],
                               ['display', '👁 Libraries and videos shown'], ['tv', '📺 Link a TV'], ['thumbs', '📷 Generate all thumbnails'], ['rescan', 'Rescan']],
+                resFilter: '',             // library filter: the lowest resolution to show (sent as a hidden res: keyword)
+                resFilters: [['4k', '4K'], ['hd', 'HD'], ['sdhigh', 'SD High'], ['sdlow', 'SD Low']],
+                maintRes: { running: false, done: 0, total: 0, changed: 0, unreadable: 0, error: '', backup: null, finished: false },
                 sceneFilter: '',           // library filter: '' | linked | unlinked | review (sent as a hidden scene: keyword)
                 // Male Cast: men in straight scenes (they stay in the cast; shown after the women, ignored when sorting)
                 maleCast: { map: {}, counts: {}, loaded: false },
@@ -974,7 +977,7 @@
                       subs: [['overview', 'Overview'], ['tagmap', 'Tag mappings'], ['sites', 'Site Linking'], ['links', 'Linked videos']] },
                     { id: 'maintenance', label: 'Maintenance', group: 'Data', icon: '🧹', wide: true,
                       subs: [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'],
-                             ['spell', 'Same performer, different spelling'], ['tags', 'Tag cleanup'], ['backups', 'Backups']] },
+                             ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['backups', 'Backups']] },
                     { id: 'importexport', label: 'Import / Export', group: 'Data', icon: '📁' },
                 ],
                 // Settings -> General -> Play History (library_stats.py: play_log, watch_stats)
@@ -1016,6 +1019,7 @@
                          deleted: { rows: [], total: 0, page: 1, per_page: 200, library: '', reason: '', q: '', libraries: {}, selected: {}, loading: false },
                          cast: { rows: [], selected: {}, loading: false },
                          spell: { groups: [], keep: {}, loading: false },      // same performer, different spelling
+                         gender: { rows: [], ignored: [], counts: {}, kind: '', selected: {}, open: {}, showIgnored: false, loading: false },   // gender_check.py
                          backups: { rows: [], bytes: 0, selected: {}, keep: 3, loading: false },
                          tags: { changes: [], sites: [], counts: {}, selected: {}, keep: {}, loading: false, loaded: false } },
                 browserLayout: 'grid', // 'grid' or 'table'
@@ -4331,8 +4335,9 @@
                         const ci = this.extScene.castIdx || { names: [], genders: {} };
                         const known = ci.names.includes(value);
                         const g = (ci.genders || {})[value] || null;
+                        const gay = (this.extScene.suggest.videoTypes || []).join() === 'gay';
                         Object.assign(it, { new_value: false, new_cast: !known, gender: g, ext_gender: null,
-                                            gender_default: g || (field === 'male_cast' ? 'male' : 'female') });
+                                            gender_default: g || (field === 'male_cast' || gay ? 'male' : 'female') });
                     }
                     return it;
                 },
@@ -4416,6 +4421,18 @@
                     const c = { ...this.extScene.suggest.checked };
                     const k = this.extSceneSuggestKey(it);
                     if (c[k]) delete c[k]; else c[k] = true;
+                    this.extScene.suggest.checked = c;
+                },
+
+                // a Cast / Male Cast group's tick-all: everyone still to add, except same-name rows waiting for "which one?"
+                extSceneCheckable(g) { return g.items.filter(i => !i.already_set && !(i.choices && i.choices.length > 1 && !i.picked)); },
+                extSceneGroupAllChecked(g) {
+                    const list = this.extSceneCheckable(g);
+                    return !!list.length && list.every(i => this.extSceneSuggestIsChecked(i));
+                },
+                extSceneGroupToggleAll(g, on) {
+                    const c = { ...this.extScene.suggest.checked };
+                    this.extSceneCheckable(g).forEach(i => { if (on) c[this.extSceneSuggestKey(i)] = true; else delete c[this.extSceneSuggestKey(i)]; });
                     this.extScene.suggest.checked = c;
                 },
 
@@ -4532,6 +4549,7 @@
                 apiQuery() {
                     const parts = [(this.searchQuery || '').trim()];
                     if (this.sceneFilter) parts.push('scene:' + this.sceneFilter);
+                    if (this.resFilter) parts.push('res:' + this.resFilter);
                     for (const [k, v] of Object.entries(this.quickFilters)) if (v) parts.push(k + ':' + v);
                     return parts.filter(Boolean).join(' ');
                 },
@@ -4553,6 +4571,12 @@
                         this.quickFilters = { captions: '', chapters: '', markers: '' }; this.page = 1; this.fetchVideos('reset');
                     }
                     if (hidden.has(k) && k === 'scene' && this.sceneFilter) this.setSceneFilter('');
+                },
+
+                setResFilter(v) {
+                    this.resFilter = this.resFilter === v ? '' : v;
+                    this.page = 1;
+                    this.fetchVideos('reset');
                 },
 
                 setSceneFilter(v) {
@@ -5937,7 +5961,7 @@ No metadata is changed.`)) return;
                     this.selectedPaths.clear();
                     
                     // Refresh library data if needed (not for browser source)
-                    if (source !== 'browser' && source !== 'bulk' && source !== 'sugbulk' && this.currentLibrary && this.currentLibrary !== 'Home' && this.currentView === 'library') {
+                    if (source !== 'browser' && source !== 'bulk' && source !== 'sugbulk' && source !== 'gendercheck' && this.currentLibrary && this.currentLibrary !== 'Home' && this.currentView === 'library') {
                         console.log('Refreshing library before closing cast bio:', this.currentLibrary);
                         await this.fetchVideos('reset');
                     }
@@ -5957,6 +5981,9 @@ No metadata is changed.`)) return;
                         // Came from Bulk suggest: back to the list, ticks kept
                         this.showCastBrowserModal = true;
                         this.extSug.open = true;
+                    } else if (source === 'gendercheck') {
+                        // Came from Gender check: back to the list, ticks and place kept
+                        this.maintGenderBack();
                     } else if (source === 'browser') {
                         // Return to cast browser
                         this.showCastBrowserModal = true;
@@ -6003,8 +6030,8 @@ No metadata is changed.`)) return;
                         this.savedScrollPosition = scroller.scrollTop;
                     }
                     
-                    // Track where we came from
-                    this.castBioSource = source;
+                    // Track where we came from (a co-star opened from the bio still returns to Gender check)
+                    if (!(this.castBioMode && this.castBioSource === 'gendercheck')) this.castBioSource = source;
                     
                     // Close the browser modal if it's open
                     this.showCastBrowserModal = false;
@@ -9937,6 +9964,7 @@ No metadata is changed.`)) return;
                         m.settings = { retention_days: m.audit.settings.retention_days, daily: m.audit.settings.daily,
                                        auto_backups_keep: m.audit.settings.auto_backups_keep };
                         m.loaded = true;
+                        this.maintResLoad();
                     } catch (e) {
                         m.error = 'Could not read the database report: ' + e.message;
                     } finally {
@@ -9945,6 +9973,23 @@ No metadata is changed.`)) return;
                 },
 
                 maintPost(url, body) { return this.extDbPostAny(url, body); },
+
+                // ----- Fix resolutions: vertical files stored by their long side (resolution_fix.py) -----
+                async maintResLoad() {
+                    const was = this.maintRes.running;
+                    try {
+                        this.maintRes = await (await fetch('/api/tools/maintenance/resolutions')).json();
+                    } catch (e) { return; }
+                    if (this.maintRes.running) { clearTimeout(this._maintResTimer); this._maintResTimer = setTimeout(() => this.maintResLoad(), 3000); }
+                    else if (was) this.fetchVideos('none');
+                },
+                async maintResStart() {
+                    if (!confirm('Re-read every file and correct resolutions?\n\nA backup of the database is made first. This runs in the background and can take about half an hour. Resolutions you typed in yourself are kept.')) return;
+                    try {
+                        this.maintRes = await this.maintPost('/api/tools/maintenance/resolutions/fix', {});
+                        this.maintResLoad();
+                    } catch (e) { this.maint.error = e.message; }
+                },
 
                 async extDbPostAny(url, body) {
                     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
@@ -10019,6 +10064,7 @@ No metadata is changed.`)) return;
                     if (view === 'deleted') await this.maintLoadDeleted(1);
                     if (view === 'cast') await this.maintLoadCast();
                     if (view === 'spell') await this.maintLoadSpell();
+                    if (view === 'gender') await this.maintLoadGender();
                     if (view === 'backups') await this.maintLoadBackups();
                     if (view === 'tags') await this.maintLoadTags();
                 },
@@ -10176,6 +10222,88 @@ No metadata is changed.`)) return;
                     try {
                         await this.maintPost('/api/tools/maintenance/cast-spellings/not-same', { names: g.values.map(v => v.value) });
                         this.maint.spell.groups = this.maint.spell.groups.filter(x => x.key !== g.key);
+                    } catch (e) { this.maint.error = e.message; }
+                },
+
+                // ----- Gender check: gender / Male Cast marks vs the orientation of their videos (gender_check.py) -----
+                async maintLoadGender(keepTicks = false) {
+                    const G = this.maint.gender;
+                    G.loading = true;
+                    try {
+                        const d = await (await fetch('/api/tools/maintenance/gender-check')).json();
+                        const rows = d.findings || [], selected = {};
+                        if (keepTicks) rows.forEach(r => { if (G.selected[r.key]) selected[r.key] = true; });
+                        Object.assign(G, { rows, ignored: d.ignored || [], counts: d.counts || {}, selected });
+                        if (G.kind && !G.counts[G.kind]) G.kind = '';
+                    } catch (e) { this.maint.error = e.message; } finally { G.loading = false; }
+                },
+                // Settings sits above the cast page: leave it, and closing the bio comes back here as it was
+                maintGenderOpenCast(name) {
+                    this.maint.gender.scroll = this.$refs.genderList?.scrollTop || 0;
+                    this.modals.settings = false;
+                    this.openCastBio(name, 'gendercheck');
+                },
+                async maintGenderBack() {
+                    this.modals.settings = true;
+                    await this.maintLoadGender(true);                  // the bio may have changed their gender
+                    this.$nextTick(() => requestAnimationFrame(() => {
+                        if (this.$refs.genderList) this.$refs.genderList.scrollTop = this.maint.gender.scroll || 0;
+                    }));
+                },
+                maintGenderRows() {
+                    const G = this.maint.gender;
+                    return G.showIgnored ? G.ignored : G.rows.filter(r => !G.kind || r.kind === G.kind);
+                },
+                maintGenderKinds() {
+                    return [['gender', 'Gender looks wrong'], ['unset', 'No gender, looks male'], ['unmarked', 'Male, not marked Male Cast'],
+                            ['marked', 'Marked Male Cast, not male'], ['odd', 'One-off videos']];
+                },
+                maintGenderProblem(r) {
+                    const n = r.count + ' video' + (r.count === 1 ? '' : 's');
+                    return { gender: `Set as ${this.genderLabel(r.gender)}, but ${n} point to ${this.genderLabel(r.expected)}`,
+                             unset: `No gender set, but ${n} point to ${this.genderLabel(r.expected)}`,
+                             unmarked: `Male, but in Cast (not Male Cast) on ${n} that look straight`,
+                             marked: `Set as ${this.genderLabel(r.gender)}, but marked Male Cast on ${n}`,
+                             odd: `Fits overall, but ${n} don't: check the video's tags or cast` }[r.kind] || '';
+                },
+                maintGenderEvidence(r) {
+                    const c = r.counts || {};
+                    return [[c.straight_cast, 'straight (Cast)'], [c.straight_male, 'straight (Male Cast)'], [c.gay, 'gay'], [c.lesbian, 'lesbian'],
+                            [c.bisexual, 'bi'], [c.trans, 'trans'], [c.other, 'other / unknown']]
+                        .filter(x => x[0]).map(x => x[0] + ' ' + x[1]).join(' · ');
+                },
+                // what "apply suggested" does for a finding; null when it's for you to judge
+                maintGenderFix(r) {
+                    if (r.kind === 'gender' || r.kind === 'unset') return { name: r.name, action: 'gender', gender: r.expected };
+                    if (r.kind === 'unmarked' && r.expected === 'male') return { name: r.name, action: 'mark' };
+                    return null;
+                },
+                async maintGenderApply(fixes, what) {
+                    if (!fixes.length || (fixes.length > 1 && !confirm(`${what} for ${fixes.length} performers?\n\nA backup of the database is made first.`))) return;
+                    this.maint.busy = 'gender';
+                    try {
+                        const d = await this.maintPost('/api/tools/maintenance/gender-check/fix', { fixes });
+                        this.maint.message = `Done: ${d.genders} gender${d.genders === 1 ? '' : 's'} set, ${d.videos} Male Cast mark${d.videos === 1 ? '' : 's'} changed`
+                                             + (d.backup ? ` · backup: ${d.backup}` : '');
+                        await this.maintLoadGender();
+                        this.fetchVideos('none');
+                    } catch (e) { this.maint.error = e.message; } finally { this.maint.busy = ''; }
+                },
+                // the rows showing that have a suggested fix: what select all and Apply work on
+                maintGenderSelectable() { return this.maint.gender.showIgnored ? [] : this.maintGenderRows().filter(r => this.maintGenderFix(r)); },
+                maintGenderPicked() { return this.maintGenderSelectable().filter(r => this.maint.gender.selected[r.key]); },
+                maintGenderSelectAll(on) {
+                    const sel = {};
+                    if (on) this.maintGenderSelectable().forEach(r => { sel[r.key] = true; });
+                    this.maint.gender.selected = sel;
+                },
+                maintGenderApplySelected() {
+                    this.maintGenderApply(this.maintGenderPicked().map(r => this.maintGenderFix(r)), 'Apply the suggested fix');
+                },
+                async maintGenderIgnore(r, ignore) {
+                    try {
+                        await this.maintPost('/api/tools/maintenance/gender-check/ignore', { name: r.name, kind: r.kind, ignore });
+                        await this.maintLoadGender();
                     } catch (e) { this.maint.error = e.message; }
                 },
 
@@ -13620,7 +13748,7 @@ No metadata is changed.`)) return;
                              tab: this.libraryTab, collId: this.coll.view?.id ?? null, movieId: this.mv.view?.id ?? null, imgFolder: this.img.folder,
                              search: this._navQuery, tags: { ...this.activeTags }, excludeTags: { ...(this.excludeTags || {}) },
                              sites: { ...this.activeSites }, excludeSites: { ...(this.excludeSites || {}) }, fav: this.favoritesOnly,
-                             lengths: [...this.activeLengthFilters], sortField: this.sortField, sortDesc: this.sortDesc, viewMode: this.viewMode,
+                             lengths: [...this.activeLengthFilters], res: this.resFilter, sortField: this.sortField, sortDesc: this.sortDesc, viewMode: this.viewMode,
                              scroll: el ? el.scrollTop : 0 };
                 },
                 navKey(s) { const { scroll, ...k } = s; return JSON.stringify(k); },
@@ -13687,7 +13815,7 @@ No metadata is changed.`)) return;
                             Object.assign(this, { currentView: 'library', currentPlaylist: null, currentLibrary: s.library, previousLibrary: s.previousLibrary,
                                                   currentFolder: s.folder, folderMode: s.folderMode, searchQuery: s.search, _navQuery: s.search,
                                                   activeTags: { ...s.tags }, excludeTags: { ...s.excludeTags }, activeSites: { ...s.sites }, excludeSites: { ...s.excludeSites },
-                                                  favoritesOnly: s.fav, activeLengthFilters: [...s.lengths], sortField: s.sortField, sortDesc: s.sortDesc,
+                                                  favoritesOnly: s.fav, activeLengthFilters: [...s.lengths], resFilter: s.res || '', sortField: s.sortField, sortDesc: s.sortDesc,
                                                   viewMode: s.viewMode, libraryTab: s.tab, page: 1 });
                             if (s.library !== 'Home') this.libraryTabs[s.library] = s.tab;
                             if (s.tab !== 'collections' || !s.collId) this.coll.view = null;
@@ -13907,6 +14035,17 @@ No metadata is changed.`)) return;
                             class="w-full px-2 py-1 rounded text-xs text-red-400 hover:text-white hover:bg-red-600 transition-colors">
                             ✕ Reset Range
                         </button>
+                    </div>
+                </div>
+
+                <!-- Resolution Filter Section -->
+                <div x-show="currentView === 'library' && currentLibrary !== 'Home' && libraryTab === 'library'" class="px-3 py-3 border-b border-gray-700 bg-gray-800 shrink-0">
+                    <div class="text-xs font-bold uppercase text-gray-500 mb-2">Resolution</div>
+                    <div class="flex flex-wrap gap-1.5">
+                        <template x-for="[k, label] in resFilters" :key="'res-' + k">
+                            <button @click="setResFilter(k)" class="px-2 py-1 rounded text-xs transition-colors"
+                                    :class="resFilter === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="label"></button>
+                        </template>
                     </div>
                 </div>
 
@@ -17644,7 +17783,7 @@ No metadata is changed.`)) return;
                         <!-- Database Maintenance (db_maintenance.py) -->
                         <div x-show="toolsActiveTab === 'cleanup'" class="space-y-3 text-sm">
                             <div class="flex flex-wrap gap-2 items-center">
-                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['tags', 'Tag cleanup'], ['backups', 'Backups']]" :key="k">
+                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['backups', 'Backups']]" :key="k">
                                     <button x-show="settingsLayout !== 'page'" @click="maintShow(k)" class="px-3 py-1 rounded text-xs"
                                             :class="maint.view === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="label"></button>
                                 </template>
@@ -17688,6 +17827,13 @@ No metadata is changed.`)) return;
                                         <span x-text="`${maint.audit?.legacy.table_count} tables (${(maint.audit?.legacy.rows || 0).toLocaleString()} rows), views: ${(maint.audit?.legacy.views || []).join(', ') || 'none'} - no longer used; removed by scripts/migrate_drop_legacy.py`"></span></div>
                                     <div><span class="text-gray-400">Last maintenance:</span>
                                         <span x-text="maint.audit?.settings.last_run ? (maint.audit.settings.last_run.slice(0, 16).replace('T', ' ') + (maint.audit.settings.last_result?.auto ? ' (automatic)' : '') + ' · ' + (maint.audit.settings.last_result?.removed_total || 0) + ' rows removed') : 'never'"></span></div>
+                                </div>
+                                <div class="bg-gray-900 p-3 rounded flex flex-wrap items-center gap-3 text-xs">
+                                    <button @click="maintResStart()" :disabled="!!maintRes.running" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50">Fix resolutions</button>
+                                    <span x-show="maintRes.running" x-text="maintRes.total ? `Reading files: ${maintRes.done.toLocaleString()} of ${maintRes.total.toLocaleString()}, ${maintRes.changed.toLocaleString()} corrected` : 'Making a backup…'"></span>
+                                    <span x-show="!maintRes.running && maintRes.finished" class="text-green-400" x-text="`Done: ${maintRes.changed.toLocaleString()} corrected, ${maintRes.unreadable.toLocaleString()} could not be read` + (maintRes.backup ? ` (backup: ${maintRes.backup})` : '')"></span>
+                                    <span x-show="maintRes.error" class="text-red-400" x-text="maintRes.error"></span>
+                                    <p class="w-full text-gray-500">Re-reads every file so vertical videos show their real resolution: 1080x1920 is 1080p, not 1920p. Resolutions you typed in yourself are kept.</p>
                                 </div>
                                 <div class="bg-gray-900 p-3 rounded flex flex-wrap items-center gap-3 text-xs">
                                     <label class="flex items-center gap-1">Keep deleted files for
@@ -17833,6 +17979,81 @@ No metadata is changed.`)) return;
                                     <button @click="maintMergeSpell(maint.spell.groups)" :disabled="!maint.spell.groups.length || !!maint.busy"
                                             class="px-2 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40"
                                             x-text="'Merge all (' + maint.spell.groups.length + ')'"></button>
+                                </div>
+                            </div>
+
+                            <!-- Gender check (gender_check.py) -->
+                            <div x-show="maint.view === 'gender'" class="space-y-2">
+                                <p class="text-xs text-gray-400">Performers whose gender or Male Cast mark doesn't fit their videos. A video's orientation comes from its tag, else its movie,
+                                    else its library. Bisexual and trans videos fit anyone, so a performer in those is judged by their other videos. Nothing changes until you pick a fix;
+                                    <b>Ignore</b> hides a finding for good.</p>
+                                <div class="flex flex-wrap gap-2 items-center text-xs">
+                                    <button @click="maint.gender.kind = ''; maint.gender.showIgnored = false" class="px-2 py-0.5 rounded"
+                                            :class="!maint.gender.kind && !maint.gender.showIgnored ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                                            x-text="'All (' + maint.gender.rows.length + ')'"></button>
+                                    <template x-for="[k, label] in maintGenderKinds()" :key="k">
+                                        <button x-show="maint.gender.counts[k]" @click="maint.gender.kind = k; maint.gender.showIgnored = false" class="px-2 py-0.5 rounded"
+                                                :class="maint.gender.kind === k && !maint.gender.showIgnored ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                                                x-text="label + ' (' + (maint.gender.counts[k] || 0) + ')'"></button>
+                                    </template>
+                                    <button x-show="maint.gender.ignored.length" @click="maint.gender.showIgnored = !maint.gender.showIgnored" class="px-2 py-0.5 rounded"
+                                            :class="maint.gender.showIgnored ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                                            x-text="'Ignored (' + maint.gender.ignored.length + ')'"></button>
+                                </div>
+                                <label x-show="maintGenderSelectable().length" class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer w-fit">
+                                    <input type="checkbox" class="rounded" @change="maintGenderSelectAll($event.target.checked)"
+                                           :checked="!!(maintGenderSelectable().length && maintGenderPicked().length === maintGenderSelectable().length)">
+                                    <span x-text="'Select all / none (' + maintGenderPicked().length + ' of ' + maintGenderSelectable().length + ' selected)'"></span>
+                                </label>
+                                <div x-ref="genderList" class="bg-gray-900 rounded overflow-auto max-h-[55vh] border border-gray-700 divide-y divide-gray-800">
+                                    <template x-for="r in maintGenderRows()" :key="r.key">
+                                        <div class="p-2 text-xs">
+                                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                                <input x-show="!maint.gender.showIgnored && maintGenderFix(r)" type="checkbox" class="rounded" :checked="!!maint.gender.selected[r.key]"
+                                                       @change="maint.gender.selected = { ...maint.gender.selected, [r.key]: $event.target.checked }">
+                                                <a @click="maintGenderOpenCast(r.name)" class="text-blue-300 hover:underline cursor-pointer font-medium" x-text="r.name"></a>
+                                                <span x-show="!r.strong" class="px-1 rounded bg-gray-700 text-gray-300" title="Only a video or two to go on">weak</span>
+                                                <span class="text-gray-300" x-text="maintGenderProblem(r)"></span>
+                                                <span class="flex-1"></span>
+                                                <template x-if="!maint.gender.showIgnored">
+                                                    <span class="flex flex-wrap items-center gap-1">
+                                                        <button x-show="r.kind === 'unmarked'" @click="maintGenderApply([{ name: r.name, action: 'mark' }])" :disabled="!!maint.busy"
+                                                                class="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-40">Mark Male Cast</button>
+                                                        <button x-show="r.kind === 'marked'" @click="maintGenderApply([{ name: r.name, action: 'unmark' }])" :disabled="!!maint.busy"
+                                                                class="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-40">Remove mark</button>
+                                                        <select @change="$event.target.value && maintGenderApply([{ name: r.name, action: 'gender', gender: $event.target.value }]); $event.target.value = ''"
+                                                                :disabled="!!maint.busy" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5">
+                                                            <option value="">Set gender…</option>
+                                                            <template x-for="[g, label] in genderOptions()" :key="g"><option :value="g" x-text="label"></option></template>
+                                                        </select>
+                                                        <button @click="maintGenderIgnore(r, true)" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600">Ignore</button>
+                                                    </span>
+                                                </template>
+                                                <button x-show="maint.gender.showIgnored" @click="maintGenderIgnore(r, false)" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600">Bring back</button>
+                                                <button @click="maint.gender.open = { ...maint.gender.open, [r.key]: !maint.gender.open[r.key] }" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600"
+                                                        x-text="maint.gender.open[r.key] ? 'Hide videos' : 'Videos'"></button>
+                                            </div>
+                                            <div class="text-gray-500 mt-0.5" x-text="'All their videos: ' + maintGenderEvidence(r)"></div>
+                                            <template x-if="maint.gender.open[r.key]">
+                                                <div class="mt-1 pl-4 space-y-0.5">
+                                                    <template x-for="v in r.videos" :key="v.path">
+                                                        <div class="flex gap-2">
+                                                            <a @click="openFileInfoFor(v.path)" class="text-blue-300 hover:underline cursor-pointer truncate" :title="v.path" x-text="v.filename"></a>
+                                                            <span class="text-gray-500 whitespace-nowrap" x-text="v.orientation + ' (from ' + v.source + ')'"></span>
+                                                        </div>
+                                                    </template>
+                                                    <div x-show="r.count > r.videos.length" class="text-gray-500" x-text="'… and ' + (r.count - r.videos.length) + ' more'"></div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <p x-show="!maint.gender.loading && !maintGenderRows().length" class="p-4 text-center text-gray-500">Nothing here.</p>
+                                    <p x-show="maint.gender.loading" class="p-4 text-center text-gray-500">Checking…</p>
+                                </div>
+                                <div class="flex justify-end">
+                                    <button @click="maintGenderApplySelected()" :disabled="!!(maint.busy || !maintGenderPicked().length)"
+                                            class="px-2 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40"
+                                            x-text="'Apply suggested fix to selected (' + maintGenderPicked().length + ')'"></button>
                                 </div>
                             </div>
 
@@ -20935,6 +21156,10 @@ No metadata is changed.`)) return;
                             <button x-show="!['title', 'year'].includes(g.field)" type="button" @click="extSceneOpenAdd(g.field)"
                                     class="text-xs px-1.5 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white"
                                     :title="'Add ' + g.label.toLowerCase() + ' to this video only'" x-text="extScene.suggest.addOpen === g.field ? '− Add' : '+ Add'"></button>
+                            <label x-show="['cast', 'male_cast'].includes(g.field) && extSceneCheckable(g).length" class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer">
+                                <input type="checkbox" class="rounded" :checked="!!extSceneGroupAllChecked(g)" @change="extSceneGroupToggleAll(g, $event.target.checked)">
+                                <span x-text="'All (' + extSceneCheckable(g).length + ')'"></span>
+                            </label>
                         </div>
                         <div x-show="extScene.suggest.addOpen === g.field" class="flex flex-wrap items-center gap-2 bg-gray-900 rounded px-3 py-2 mb-1">
                             <template x-if="extScene.suggest.addOpen === g.field">

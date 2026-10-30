@@ -120,6 +120,67 @@ class MovieBase(Base):
         return self.c.execute('SELECT COUNT(*) FROM movies').fetchone()[0]
 
 
+class FullMovieTagTests(MovieBase):
+    def tagged(self, vid):
+        return movies.has_full_movie_tag(self.c, vid)
+
+    def whole(self, vid):
+        return self.c.execute('SELECT whole FROM video_movie WHERE video_id = ?', (vid,)).fetchone()[0]
+
+    def test_tagged_video_joining_a_movie_is_whole(self):
+        movies.add_full_movie_tag(self.c, 'v1')
+        movies.set_video_movie(self.c, 'v1', 'Alpha', scene=2)
+        self.assertEqual(self.whole('v1'), 1)
+        self.assertEqual(self.c.execute("SELECT scene FROM video_movie WHERE video_id = 'v1'").fetchone()[0], 2)
+
+    def test_untagged_video_is_not(self):
+        movies.set_video_movie(self.c, 'v1', 'Alpha')
+        self.assertEqual(self.whole('v1'), 0)
+        self.assertFalse(self.tagged('v1'))
+
+    def test_becoming_whole_adds_the_tag_once(self):
+        movies.add_full_movie_tag(self.c, 'v2')
+        movies.set_video_movie(self.c, 'v1', 'Alpha')
+        movies.apply_updates(self.c, 'v1', {'movie_whole': '1'})
+        self.assertTrue(self.tagged('v1'))
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM video_tags WHERE LOWER(value) = 'full.movie'").fetchone()[0], 1)
+
+    def test_existing_capitals_are_reused(self):
+        self.c.execute("INSERT INTO video_tags (value) VALUES ('Full.Movie')")
+        movies.set_video_movie(self.c, 'v1', 'Alpha', whole=1)
+        self.assertTrue(self.tagged('v1'))
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM video_tags WHERE LOWER(value) = 'full.movie'").fetchone()[0], 1)
+
+    def test_a_stated_choice_wins(self):
+        movies.add_full_movie_tag(self.c, 'v1')
+        movies.set_video_movie(self.c, 'v1', 'Alpha', whole='')
+        self.assertEqual(self.whole('v1'), 0)
+
+    def test_moving_between_movies_is_not_joining(self):
+        movies.set_video_movie(self.c, 'v1', 'Alpha')
+        movies.add_full_movie_tag(self.c, 'v1')
+        movies.set_video_movie(self.c, 'v1', 'Beta')
+        self.assertEqual(self.whole('v1'), 0)
+
+    def test_unticking_keeps_the_tag(self):
+        movies.set_video_movie(self.c, 'v1', 'Alpha', whole=1)
+        movies.set_video_movie(self.c, 'v1', whole='')
+        self.assertEqual(self.whole('v1'), 0)
+        self.assertTrue(self.tagged('v1'))
+
+    def test_tpdb_link(self):
+        movies.add_full_movie_tag(self.c, 'v1')
+        movies.on_video_linked(self.c, 'v1', 'movie', {'id': 'tp-1', 'title': 'Big Movie 2'}, None)
+        self.assertEqual(self.whole('v1'), 1)
+
+    def test_find_movies(self):
+        movies.add_full_movie_tag(self.c, 'v1')
+        movies.apply_found(self.c, [{'name': 'Alpha', 'videos': [{'video_id': 'v1', 'scene': 1}, {'video_id': 'v2', 'whole': True}]}])
+        self.assertEqual(self.whole('v1'), 1)
+        self.assertEqual(self.whole('v2'), 1)
+        self.assertTrue(self.tagged('v2'))
+
+
 class VideoMovieTests(MovieBase):
     def test_set_change_clear(self):
         movies.set_video_movie(self.c, 'v1', 'Summer Road Trip 13', scene=2)
