@@ -823,7 +823,8 @@ class LibraryModel:
                 if r in owner:
                     roots, paths = per_lib.setdefault(owner[r], ([], []))
                     roots.append(r)
-                    paths.extend(os.path.join(d, f) for d, _dirs, files in tree for f in files if images.is_image(f))
+                    paths.extend(os.path.join(d, f) for d, _dirs, files in tree for f in files
+                                 if images.is_image(f) or images.is_archive(f))
             conn = self.db.get_connection()
             for lib, (roots, paths) in per_lib.items():
                 n = images.sync(conn, lib, roots, paths)

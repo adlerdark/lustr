@@ -816,8 +816,8 @@
                 gridStale: false, _gridSeq: 0,   // a library opened on another tab: its grid loads after that tab (gridCatchUp)
                 // Images tab (images.py): albums by folder, an album's images, the viewer (iv)
                 img: { counts: {}, albums: [], sort: 'name', q: '', qTimer: null, loading: false, msg: '',
-                       folder: null, name: '', favorite: false, items: [], shown: 300, backScroll: null, skipText: '' },
-                iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false },
+                       folder: null, name: '', favorite: false, items: [], shown: 300, backScroll: null, skipText: '', info: null },
+                iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false, wheelAt: 0 },
                 
                 sortField: 'Filename',
                 sortSeed: Math.floor(Math.random() * 1e9),          // Random sort: same order while paging
@@ -2483,6 +2483,7 @@
                 },
 
                 handleEscape() {
+                    if (this.img.info) { this.img.info = null; return; }
                     if (this.iv.open) { this.ivClose(); return; }
                     // Always close menus first
                     if (this.activeMenu) {
@@ -2512,6 +2513,7 @@
                     else if (this.modals.playHistory) { if (this.ph.colMenu) this.ph.colMenu = null; else this.phClose(); }
                     else if (this.modals.settings) this.closeSettings();
                     else if (this.activeVideo) this.closeVideo(); // Replaced activeVideo = null
+                    else if (this.imgTabActive() && this.img.folder) this.imgBack();     // an album -> the albums
                     else if (this.selectedPaths.size > 0) {
                         this.selectedPaths.clear();
                         this.selectedPaths = new Set();
@@ -13615,6 +13617,21 @@ No metadata is changed.`)) return;
                     this.$nextTick(() => { const el = document.querySelector('.scroller-main'); if (el) el.scrollTop = y; });
                 },
                 imgMore() { if (this.img.shown < this.img.items.length) this.img.shown += 300; },
+                // right-click: File Info for an image ({ id }) or an album ({ folder })
+                async imgShowInfo({ id, folder }) {
+                    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});      // it opens over the page
+                    try {
+                        const url = folder ? '/api/images/album/info?folder=' + encodeURIComponent(folder) : `/api/images/${id}/info`;
+                        const d = await (await fetch(url)).json();
+                        if (!d.success) throw new Error(d.error);
+                        this.img.info = { ...d.info, album: !!folder };
+                    } catch (e) { alert('Could not get the file info: ' + e.message); }
+                },
+                imgInfoSize(n) {
+                    if (!n) return '';
+                    const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), 3);
+                    return (n / 1024 ** i).toFixed(i ? 1 : 0) + ' ' + ['B', 'KB', 'MB', 'GB'][i];
+                },
 
                 async imgPost(url, body) {
                     const d = await (await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
@@ -13685,7 +13702,7 @@ No metadata is changed.`)) return;
                     else el.requestFullscreen().catch(() => {});
                 },
                 ivKey(e) {
-                    if (!this.iv.open || e.target.closest('input, textarea, select')) return;
+                    if (!this.iv.open || this.img.info || e.target.closest('input, textarea, select')) return;
                     const k = e.key;
                     if (k === 'ArrowRight' || k === 'PageDown') { e.preventDefault(); this.ivGo(1); }
                     else if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); this.ivGo(-1); }
@@ -13704,8 +13721,15 @@ No metadata is changed.`)) return;
                     iv.y = nz === 1 ? 0 : oy - (oy - iv.y) * nz / iv.z;
                     iv.z = nz;
                 },
-                ivWheel(e) { this.ivZoomTo(this.iv.z * (e.deltaY < 0 ? 1.25 : 0.8), e.clientX, e.clientY); },
+                // scroll: next / previous (one step per 150ms: a trackpad sends dozens). Ctrl (or a trackpad pinch): zoom
+                ivWheel(e) {
+                    if (e.ctrlKey) { this.ivZoomTo(this.iv.z * (e.deltaY < 0 ? 1.25 : 0.8), e.clientX, e.clientY); return; }
+                    if (!e.deltaY || e.timeStamp - this.iv.wheelAt < 150) return;
+                    this.iv.wheelAt = e.timeStamp;
+                    this.ivGo(e.deltaY > 0 ? 1 : -1);
+                },
                 ivDown(e) {
+                    if (e.button) return;                                        // right-click: File Info
                     const iv = this.iv;
                     iv.pts[e.pointerId] = { x: e.clientX, y: e.clientY };
                     const p = Object.values(iv.pts);
@@ -14961,7 +14985,7 @@ No metadata is changed.`)) return;
                             </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                                 <template x-for="a in img.albums" :key="a.folder">
-                                    <div @click="imgOpen(a.folder)" class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden cursor-pointer hover:border-blue-500 group relative" :title="a.folder">
+                                    <div @click="imgOpen(a.folder)" @contextmenu.prevent.stop="imgShowInfo({ folder: a.folder })" class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden cursor-pointer hover:border-blue-500 group relative" :title="a.folder">
                                         <div class="aspect-square bg-gray-900">
                                             <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover">
                                         </div>
@@ -14988,7 +15012,7 @@ No metadata is changed.`)) return;
                             </div>
                             <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5">
                                 <template x-for="(it, i) in img.items.slice(0, img.shown)" :key="it.id">
-                                    <div @click="ivOpen(i)" class="relative aspect-square bg-gray-900 rounded overflow-hidden cursor-zoom-in group" :title="it.filename">
+                                    <div @click="ivOpen(i)" @contextmenu.prevent.stop="imgShowInfo({ id: it.id })" class="relative aspect-square bg-gray-900 rounded overflow-hidden cursor-zoom-in group" :title="it.filename">
                                         <img :src="imgThumb(it.id, it.mtime)" loading="lazy" class="w-full h-full object-cover">
                                         <button @click.stop="imgFav(it)" class="absolute top-0.5 right-0.5 text-lg leading-none px-1 rounded bg-black/40"
                                                 :class="it.favorite ? 'text-yellow-400' : 'text-white/70 opacity-0 group-hover:opacity-100'" title="Favorite">&#9733;</button>
@@ -15961,7 +15985,7 @@ No metadata is changed.`)) return;
         <!-- Images: the viewer (← → / swipe, wheel / pinch / double-click zoom, Space slideshow, F full screen, S favorite) -->
         <div id="imgViewer" x-show="iv.open" x-cloak class="fixed inset-0 z-[95] bg-black select-none" @keydown.window="ivKey($event)">
             <template x-if="iv.open && ivCur()">
-                <div class="absolute inset-0 overflow-hidden touch-none" @wheel.prevent="ivWheel($event)"
+                <div class="absolute inset-0 overflow-hidden touch-none" @wheel.prevent="ivWheel($event)" @contextmenu.prevent="imgShowInfo({ id: ivCur().id })"
                      @pointerdown="ivDown($event)" @pointermove="ivMove($event)" @pointerup="ivUp($event)" @pointercancel="ivUp($event)"
                      @dblclick="ivZoomTo(iv.z > 1 ? 1 : 2.5, $event.clientX, $event.clientY)">
                     <img :src="imgFile(ivCur())" draggable="false" class="absolute inset-0 w-full h-full object-contain"
@@ -15975,7 +15999,7 @@ No metadata is changed.`)) return;
                     <button @click="imgFav(ivCur())" class="px-2 py-1 rounded hover:bg-white/10 text-lg leading-none" :class="ivCur()?.favorite ? 'text-yellow-400' : 'text-gray-300'" title="Favorite (S)">&#9733;</button>
                     <button @click="imgSetCover(ivCur())" class="px-2 py-1 rounded hover:bg-white/10" title="Use as the album's cover">Cover</button>
                     <button @click="ivSlideshow()" class="px-2 py-1 rounded hover:bg-white/10" :title="'Slideshow (Space)'" x-text="iv.slide ? '❚❚' : '▶'"></button>
-                    <button @click="ivZoomTo(iv.z > 1 ? 1 : 2.5)" class="px-2 py-1 rounded hover:bg-white/10" title="Zoom (+ / - / 0, wheel, double-click)" x-text="iv.z > 1 ? Math.round(iv.z * 100) + '%' : '1:1'"></button>
+                    <button @click="ivZoomTo(iv.z > 1 ? 1 : 2.5)" class="px-2 py-1 rounded hover:bg-white/10" title="Zoom (+ / - / 0, Ctrl+wheel, double-click)" x-text="iv.z > 1 ? Math.round(iv.z * 100) + '%' : '1:1'"></button>
                     <button @click="ivFullscreen(document.getElementById('imgViewer'))" class="px-2 py-1 rounded hover:bg-white/10" title="Full screen (F)">⛶</button>
                     <a :href="imgFile(ivCur())" target="_blank" class="px-2 py-1 rounded hover:bg-white/10" title="Open the original">↗</a>
                     <button @click="ivClose()" class="px-2 py-1 rounded hover:bg-white/10 text-xl leading-none" title="Close (Esc)">&times;</button>
@@ -15983,6 +16007,34 @@ No metadata is changed.`)) return;
             </div>
             <button @click="ivGo(-1)" class="absolute left-2 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-black/40 hover:bg-black/70 text-white text-2xl hidden sm:block" title="Previous (←)">‹</button>
             <button @click="ivGo(1)" class="absolute right-2 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-black/40 hover:bg-black/70 text-white text-2xl hidden sm:block" title="Next (→)">›</button>
+        </div>
+
+        <!-- Images: File Info (right-click an image or album) -->
+        <div x-show="img.info" x-cloak class="fixed inset-0 z-[96] bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-[95%] max-w-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" @click.outside="img.info = null">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">File Info</h2>
+                    <button @click="img.info = null" class="text-gray-400 text-2xl">&times;</button>
+                </div>
+                <div class="space-y-3 text-sm">
+                    <div>
+                        <div class="text-gray-400" x-text="img.info?.album ? 'Folder' : 'Path'"></div>
+                        <div class="break-all" style="user-select: all" x-text="img.info?.path"></div>
+                    </div>
+                    <div x-show="img.info?.archive">
+                        <div class="text-gray-400">Inside zip</div>
+                        <div class="break-all" style="user-select: all" x-text="img.info?.archive"></div>
+                    </div>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        <div><div class="text-gray-400">Library</div><div x-text="img.info?.library"></div></div>
+                        <div x-show="img.info?.album"><div class="text-gray-400">Images</div><div x-text="img.info?.count"></div></div>
+                        <div><div class="text-gray-400">Size</div><div x-text="imgInfoSize(img.info?.size)"></div></div>
+                        <div x-show="img.info?.width"><div class="text-gray-400">Dimensions</div><div x-text="img.info?.width + ' × ' + img.info?.height"></div></div>
+                        <div x-show="img.info?.mtime"><div class="text-gray-400">Modified</div><div x-text="img.info?.mtime ? new Date(img.info.mtime * 1000).toLocaleString() : ''"></div></div>
+                    </div>
+                </div>
+                <div class="mt-6 flex justify-end"><button @click="img.info = null" class="bg-blue-600 px-4 py-2 rounded">Close</button></div>
+            </div>
         </div>
 
         <!-- Group Editor Modal -->

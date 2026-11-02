@@ -81,8 +81,28 @@ def album(folder: str, model=Depends(get_model)):
         if not _may_see(conn, folder=folder):
             return _err('Not found')
         meta = conn.execute('SELECT favorite FROM image_albums WHERE folder = ?', (folder,)).fetchone()
-        return {'success': True, 'folder': folder, 'name': os.path.basename(folder), 'favorite': bool(meta and meta[0]),
+        return {'success': True, 'folder': folder, 'name': images.title(folder), 'favorite': bool(meta and meta[0]),
                 'images': images.album_images(conn, folder)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/album/info')
+def album_info(folder: str, model=Depends(get_model)):
+    try:
+        conn = _conn()
+        info = images.album_info(conn, folder) if _may_see(conn, folder=folder) else None
+        return {'success': True, 'info': info} if info else _err('Not found')
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/{image_id}/info')
+def image_info(image_id: int, model=Depends(get_model)):
+    try:
+        conn = _conn()
+        info = images.image_info(conn, image_id) if _may_see(conn, image_id=image_id) else None
+        return {'success': True, 'info': info} if info else _err('Not found')
     except Exception as e:
         return _err(e)
 
@@ -103,10 +123,15 @@ def file(image_id: int, model=Depends(get_model)):
     """The original image. Found by id: only a path the scan recorded is ever served."""
     conn = _conn()
     g = images.get(conn, image_id)
-    if not g or not _may_see(conn, image_id=image_id) or not os.path.isfile(g[0]):
+    if not g or not _may_see(conn, image_id=image_id):
         return Response(status_code=404)
-    ext = os.path.splitext(g[0])[1].lower()
-    return FileResponse(g[0], media_type=images.TYPES.get(ext, 'application/octet-stream'), headers=KEEP)
+    kind = images.TYPES.get(os.path.splitext(g[0])[1].lower(), 'application/octet-stream')
+    data = images.archived(conn, image_id)
+    if data is not None:
+        return Response(data, media_type=kind, headers=KEEP)
+    if not os.path.isfile(g[0]):
+        return Response(status_code=404)
+    return FileResponse(g[0], media_type=kind, headers=KEEP)
 
 
 class FavoriteBody(BaseModel):
