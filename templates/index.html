@@ -16464,7 +16464,10 @@ No metadata is changed.`)) return;
 
         <!-- Images: File Info (right-click an image or album) -->
         <div x-show="img.info" x-cloak class="fixed inset-0 z-[96] bg-black/80 flex items-center justify-center p-4">
-            <div class="bg-gray-800 rounded-lg w-[95%] max-w-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" @click.outside="img.info = null">
+            <div x-init="$nextTick(() => { addResizeGrips($el, 320, 200);
+                                           document.addEventListener('pointerdown', e => { if (!$el.contains(e.target)) $el._downInside = false; }, true); })"
+                 class="bg-gray-800 rounded-lg p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+                 style="width: min(42rem, 95vw); max-width: 98vw" @click.outside="if (!$el._downInside) img.info = null">
                 <div class="flex justify-between items-center mb-4">
                     <h2 class="text-xl font-bold">File Info</h2>
                     <button @click="img.info = null" class="text-gray-400 text-2xl">&times;</button>
@@ -16529,12 +16532,15 @@ No metadata is changed.`)) return;
 
         <!-- Images: Edit Album (one album or several) - the fields scenes have, album-wide -->
         <div x-show="imgEdit.open" x-cloak class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4">
-            <div class="bg-gray-800 rounded-lg flex flex-col max-h-[95vh] shadow-2xl w-[95%] max-w-4xl">
-                <div class="p-4 border-b border-gray-700 flex justify-between items-center gap-3 shrink-0">
+            <div x-init="$nextTick(() => { makeDraggable($el); metaSizeInit($el, 'imgEditSize'); })" class="bg-gray-800 rounded-lg flex flex-col max-h-[95vh] shadow-2xl"
+                 style="width: min(56rem, 95vw); max-width: 98vw; min-width: 420px; min-height: 260px; overflow: hidden;">
+                <div class="p-4 border-b border-gray-700 flex justify-between items-center gap-3 shrink-0" data-drag-handle style="cursor: move">
                     <span class="flex-1 min-w-0"><span class="font-bold block" x-text="imgEdit.folders.length > 1 ? 'Edit ' + imgEdit.folders.length + ' albums' : 'Edit Album'"></span>
                         <span class="block text-xs text-gray-400 truncate" x-text="imgEdit.folders.length === 1 ? imgEdit.folders[0] : 'Only what you change is saved; values shown are the ones every album has.'"
                               :title="imgEdit.folders.join('\n')"></span></span>
-                    <span class="text-xs text-gray-500">Ctrl+Enter to Save</span>
+                    <span class="text-xs text-gray-500">Ctrl+Enter to Save · drag the corner to resize</span>
+                    <button @click.stop="metaSizeReset($el.closest('[data-drag-handle]').parentElement, 'imgEditSize', 'min(56rem, 95vw)')"
+                            class="text-gray-500 hover:text-white text-sm" title="Reset the size and place">↺</button>
                 </div>
                 <div class="flex border-b border-gray-700 overflow-x-auto shrink-0">
                     <template x-for="tab in ['General', 'Appearance', 'Attributes'].concat(imgEdit.folders.length === 1 ? ['Videos'] : [])" :key="'ie' + tab">
