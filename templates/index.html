@@ -823,6 +823,7 @@
                 imgEdit: { open: false, folders: [], data: {}, orig: {}, common: {}, tab: 'General', busy: false, msg: '',
                            videos: [], sugg: [], q: '', qTimer: null, results: [], searching: false },
                 castAlbums: [],                  // the cast page's Photo albums row
+                imgLinkedIds: new Set(),         // videos with a photo album (the 📷 on their cards)
                 infoAlbums: [], _infoAlbumsFor: null,   // a video's File Info: the albums linked to it
                 iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false, wheelAt: 0 },
                 
@@ -2747,6 +2748,7 @@
 
                 async fetchVideos(mode = 'reset') {
                     this.ccIndexLoad();
+                    this.imgLinkedLoad();
                     this.isSearching = true;
                     const startTime = performance.now();
                     console.log('=== fetchVideos START ===');
@@ -12529,6 +12531,20 @@ No metadata is changed.`)) return;
                 // ----- closed captions (captions.py) -----
                 ccTrackAttrs(t) { return { kind: 'subtitles', src: t.src, srclang: t.lang, label: t.label }; },
                 hasCC(v) { return !!(v && v.video_id && this.ccIds.has(v.video_id)); },
+                // ----- a video's photo albums (images.py): the 📷 on its card, its menu -----
+                hasAlbum(v) { return !!(v && v.video_id && this.imgLinkedIds.has(v.video_id)); },
+                async imgLinkedLoad() {
+                    try { const d = await (await fetch('/api/images/linked')).json(); if (d.success) this.imgLinkedIds = new Set(d.video_ids || []); } catch (e) {}
+                },
+                async imgOpenForVideo(v) {               // one album: open it; several: File Info lists them
+                    this.activeMenu = null;
+                    try {
+                        const d = await (await fetch('/api/images/by-video?path=' + encodeURIComponent(v.path))).json();
+                        const list = d.success ? d.albums : [];
+                        if (list.length === 1) await this.imgOpenAlbum(list[0].folder);
+                        else if (list.length > 1) { this.infoVideo = v; this.modals.fileInfo = true; }
+                    } catch (e) {}
+                },
                 async ccIndexLoad(force = false) {
                     if (!force && Date.now() - this.ccIdsAt < 30000) return;
                     this.ccIdsAt = Date.now();
@@ -13979,6 +13995,7 @@ No metadata is changed.`)) return;
                         const d = await this.imgPost('/api/images/videos/link', { folder, video_ids: [v.video_id], on });
                         E.videos = d.videos;
                         E.sugg = E.sugg.filter(x => x.video_id !== v.video_id);
+                        this.imgLinkedLoad();
                         if (!on) this.imgEditSuggest();
                         if (this.img.folder === folder) this.img.videos = d.videos;
                     } catch (e) { E.msg = 'Could not change the link: ' + e.message; }
@@ -15515,6 +15532,8 @@ No metadata is changed.`)) return;
                                         <span x-show="video.favorite" class="text-yellow-400 text-xl shadow-sm">&#9733;</span>
                                     </div>
                                     <div x-show="hasCC(video)" class="absolute bottom-2 left-1 bg-black/70 text-white text-[10px] font-bold px-1 rounded pointer-events-none" title="Has captions">CC</div>
+                                    <button x-show="hasAlbum(video)" @click.stop="imgOpenForVideo(video)" @dblclick.stop class="absolute bottom-2 bg-black/70 hover:bg-blue-600 text-white text-[10px] leading-4 px-1 rounded"
+                                            :class="hasCC(video) ? 'left-8' : 'left-1'" title="Has a photo album - open it">📷</button>
                                     <div x-show="video.length" class="absolute bottom-2 right-1 bg-black/60 text-white text-[10px] px-1 rounded pointer-events-none" x-text="video.length"></div>
                                 </div>
                                 <div class="p-2">
@@ -15577,6 +15596,8 @@ No metadata is changed.`)) return;
                                     <span x-show="video.favorite" class="text-yellow-400 text-xl shadow-sm">&#9733;</span>
                                 </div>
                                 <div x-show="hasCC(video)" class="absolute bottom-2 left-1 bg-black/70 text-white text-[10px] font-bold px-1 rounded pointer-events-none" title="Has captions">CC</div>
+                                <button x-show="hasAlbum(video)" @click.stop="imgOpenForVideo(video)" @dblclick.stop class="absolute bottom-2 bg-black/70 hover:bg-blue-600 text-white text-[10px] leading-4 px-1 rounded"
+                                        :class="hasCC(video) ? 'left-8' : 'left-1'" title="Has a photo album - open it">📷</button>
                                 
                                 <!-- Version badge -->
                                 <div x-show="video.versions && video.versions.length > 1" 
@@ -15813,6 +15834,8 @@ No metadata is changed.`)) return;
                                         <span x-show="video.favorite" class="text-yellow-400 text-xl shadow-sm">★</span>
                                     </div>
                                     <div x-show="hasCC(video)" class="absolute bottom-2 left-1 bg-black/70 text-white text-[10px] font-bold px-1 rounded pointer-events-none" title="Has captions">CC</div>
+                                    <button x-show="hasAlbum(video)" @click.stop="imgOpenForVideo(video)" @dblclick.stop class="absolute bottom-2 bg-black/70 hover:bg-blue-600 text-white text-[10px] leading-4 px-1 rounded"
+                                            :class="hasCC(video) ? 'left-8' : 'left-1'" title="Has a photo album - open it">📷</button>
                                     
                                     <!-- Version badge -->
                                     <div x-show="video.versions && video.versions.length > 1" 
@@ -16118,21 +16141,6 @@ No metadata is changed.`)) return;
                             </div>
                         </div>
 
-                        <!-- Photo albums (images.py) with them in the cast -->
-                        <div x-show="castAlbums.length" class="mb-6">
-                            <h2 class="text-xl font-semibold mb-3">Photo albums (<span x-text="castAlbums.length"></span>)</h2>
-                            <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
-                                <template x-for="a in castAlbums" :key="a.folder">
-                                    <div @click="imgOpenAlbum(a.folder)" class="cursor-pointer group" :title="a.folder">
-                                        <div class="aspect-square bg-gray-800 rounded overflow-hidden border border-gray-700 group-hover:border-blue-500">
-                                            <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover"></div>
-                                        <div class="text-xs truncate mt-1" x-text="a.name"></div>
-                                        <div class="text-[10px] text-gray-500" x-text="a.count + ' photos'"></div>
-                                    </div>
-                                </template>
-                            </div>
-                        </div>
-
                         <!-- Videos Grid -->
                         <div>
                             <div class="flex items-center justify-between mb-3 sm:mb-4 flex-wrap gap-2">
@@ -16239,6 +16247,21 @@ No metadata is changed.`)) return;
                                 </button>
                             </div>
                         </div>
+
+                        <!-- Photo albums (images.py) with them in the cast -->
+                        <div x-show="castAlbums.length" class="mt-8">
+                            <h2 class="text-xl font-semibold mb-3">Photo albums (<span x-text="castAlbums.length"></span>)</h2>
+                            <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
+                                <template x-for="a in castAlbums" :key="a.folder">
+                                    <div @click="imgOpenAlbum(a.folder)" class="cursor-pointer group" :title="a.folder">
+                                        <div class="aspect-square bg-gray-800 rounded overflow-hidden border border-gray-700 group-hover:border-blue-500">
+                                            <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover"></div>
+                                        <div class="text-xs truncate mt-1" x-text="a.name"></div>
+                                        <div class="text-[10px] text-gray-500" x-text="a.count + ' photos'"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
@@ -16265,6 +16288,8 @@ No metadata is changed.`)) return;
             <button x-show="selectedPaths.size === 1 && !!menuVideo?.movie_id" @click="activeMenu = null; mvOpenFromVideo(menuVideo)"
                     class="w-full text-left px-4 py-2 hover:bg-blue-600 text-blue-300 truncate" :title="menuVideo?.movie"
                     x-text="'Go to Movie: ' + (menuVideo?.movie || '')"></button>
+            <button x-show="selectedPaths.size === 1 && hasAlbum(menuVideo)" @click="imgOpenForVideo(menuVideo)"
+                    class="w-full text-left px-4 py-2 hover:bg-blue-600 text-blue-300">📷 Go to Photo album</button>
             <button @click="extSceneOpen()" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-emerald-400" x-show="selectedPaths.size === 1"
                     title="Find this video's scene on StashDB">🌐 Find scene…</button>
             <button @click="extSceneBulkFromSelection()" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-emerald-400" x-show="selectedPaths.size > 1"

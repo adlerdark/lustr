@@ -264,8 +264,11 @@ class Images(unittest.TestCase):
         self.assertEqual(images.linked_videos(self.conn, album), [('v0', os.path.join(self.root, 'Set Kat/kat.mp4'))])
         self.assertEqual(self._names(images.suggest_videos(self.conn, album)), ['Kat Doe - Beach.mp4', 'x.mp4'])
         self.assertEqual(images.albums_of_video(self.conn, 'v0'), [{'folder': album, 'name': 'pics'}])
+        self.assertEqual(images.linked_video_ids(self.conn, ['Lib']), ['v0'])          # the 📷 on its card
+        self.assertEqual(images.linked_video_ids(self.conn, ['Other']), [])             # an album you can't see: none
         images.link_videos(self.conn, album, ['v0'], on=False)
         self.assertEqual(images.linked_videos(self.conn, album), [])
+        self.assertEqual(images.linked_video_ids(self.conn, ['Lib']), [])
 
     def test_its_own_folder_and_the_ones_next_to_it(self):
         a, = self.add('Misc/pics/1.jpg')

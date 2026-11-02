@@ -223,6 +223,16 @@ def videos_search(folder: str, q: str, request: Request, model=Depends(get_model
         return _err(e)
 
 
+@router.get('/linked')
+def linked(model=Depends(get_model)):
+    """Every video that has a photo album (the 📷 on video cards)."""
+    try:
+        conn = _conn()
+        return {'success': True, 'video_ids': images.linked_video_ids(conn, _shown_libraries(conn))}
+    except Exception as e:
+        return _err(e)
+
+
 @router.get('/by-video')
 def by_video(path: str, model=Depends(get_model)):
     """The albums linked to a video (its File Info)."""

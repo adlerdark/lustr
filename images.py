@@ -559,6 +559,14 @@ def link_videos(conn, folder, video_ids, on=True):
     conn.commit()
 
 
+def linked_video_ids(conn, libraries):
+    """The videos with an album (one of these libraries', with photos left): the video cards' 📷."""
+    if not libraries:
+        return []
+    return [r[0] for r in conn.execute(f'SELECT DISTINCT l.video_id FROM image_album_videos l JOIN images i ON i.folder = l.folder '
+                                       f'AND i.deleted_at IS NULL WHERE i.library IN ({",".join("?" * len(libraries))})', list(libraries))]
+
+
 def albums_of_video(conn, video_id):
     """[{folder, name}] of the albums (still with photos) linked to this video."""
     out = []
