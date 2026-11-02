@@ -491,6 +491,7 @@ class LibraryModel:
         """
         found_files = set()
         new_files = []
+        changed_files = []         # already known, but the file on disk is a different size now
         joined_files = set()          # new copies added to an existing video (not flagged as new)
         recovered_files = []
         
@@ -543,54 +544,23 @@ class LibraryModel:
                             conn = self.db.get_connection()
                             cursor = conn.cursor()
                             cursor.execute('''
-                                SELECT path, deleted_at FROM file_versions WHERE path = ?
+                                SELECT path, deleted_at, file_size FROM file_versions WHERE path = ?
                             ''', (full_path,))
                             existing = cursor.fetchone()
                             
                             if existing:
                                 existing_dict = dict(existing)
                                 if existing_dict['deleted_at'] is None:
-                                    # File exists and is active - check if modified
                                     file_exists = True
-                                    
-                                    # Check if file has been replaced (size or mtime changed)
+                                    # A different size than stored (stored rounded to 2 places: '1.54 GB'):
+                                    # replaced, re-encoded, or added while it was still downloading (0 bytes).
+                                    # Re-read in the background after the scan, not here, so the scan stays quick
                                     try:
-                                        current_stats = os.stat(full_path)
-                                        current_size = current_stats.st_size
-                                        
-                                        # Parse file_size string to bytes if needed
-                                        stored_size_str = existing_dict.get('file_size', '')
-                                        if stored_size_str:
-                                            stored_size = self._convert_file_size_to_bytes(stored_size_str)
-                                            
-                                            # If file size changed, it's been replaced
-                                            if stored_size and stored_size != current_size:
-                                                print(f"File replaced (size changed): {filename}")
-                                                # Refresh technical metadata
-                                                from media_handler import MediaHandler
-                                                metadata = MediaHandler.get_extended_metadata(full_path)
-                                                info = MediaHandler.get_file_info(full_path)
-                                                
-                                                cursor.execute('''
-                                                    UPDATE file_versions
-                                                    SET 
-                                                        length = ?,
-                                                        length_seconds = ?,
-                                                        file_size = ?,
-                                                        codec = ?,
-                                                        total_bitrate = ?,
-                                                        resolution = ?
-                                                    WHERE path = ?
-                                                ''', (
-                                                    info.get('length', ''),
-                                                    int(metadata.get('duration', 0)),
-                                                    info.get('file_size'),
-                                                    info.get('codec', ''),
-                                                    info.get('total_bitrate', ''),
-                                                    info.get('resolution', ''),
-                                                    full_path
-                                                ))
-                                                conn.commit()
+                                        current_size = os.path.getsize(full_path)
+                                        stored = existing_dict.get('file_size') or ''      # '': never read - the filler has it already
+                                        stored_size = self._convert_file_size_to_bytes(stored)
+                                        if current_size and stored and abs((stored_size or 0) - current_size) > max(current_size * 0.005, 65536):
+                                            changed_files.append(full_path)
                                     except Exception as e:
                                         print(f"Error checking file modification: {e}")
                                 else:
@@ -758,7 +728,8 @@ class LibraryModel:
         # a fast scan skips the technical details (codec, length, resolution) of new files, and older
         # scans could leave some unread: read every file still missing them in the background, so the
         # files play, sort and show up (length filters, Home rows) without a manual refresh
-        self.fill_missing_metadata(list(new_files) if fast else [])
+        # (and files whose size changed since they were read)
+        self.fill_missing_metadata((list(new_files) if fast else []) + changed_files)
 
         return new_files, removed_files
 
@@ -839,7 +810,9 @@ class LibraryModel:
     def _still_writing(self, path):
         try:
             import time
-            return time.time() - os.path.getmtime(path) < self.WRITING_SECONDS
+            st = os.stat(path)
+            # an empty file too: downloaders can create it first and set its time to the upload's
+            return st.st_size == 0 or time.time() - st.st_mtime < self.WRITING_SECONDS
         except OSError:
             return False
 
