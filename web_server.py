@@ -307,6 +307,7 @@ def inject_dependencies():
     routes.movies.set_model(model)
     import routes.images                    # the Images tab (images.py)
     routes.images.set_model(model)
+    routes.images.set_watch_history(watch_history_instance)
     routes.movies.set_watch_history(watch_history_instance)
     if getattr(model, 'db', None):
         try:

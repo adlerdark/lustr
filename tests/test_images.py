@@ -198,6 +198,100 @@ class Images(unittest.TestCase):
         self.assertIsNone(images.album_info(self.conn, '/nowhere'))
         self.assertIsNone(images.image_info(self.conn, 9999))
 
+    # ----- album details -----
+    def albums3(self):
+        a, b, c, d = self.add('Kat Set/1.jpg', 'Beach/1.jpg', 'Beach/2.jpg', 'Zed/1.jpg')
+        self.sync([a, b, c, d])
+        return [os.path.dirname(x) for x in (a, b, d)]
+
+    def test_rename_and_metadata_for_one_or_several_albums(self):
+        kat, beach, zed = self.albums3()
+        images.set_album_meta(self.conn, [kat], updates={'title': 'Kat at Home', 'year': '2021'},
+                              add={'cast': ['Kat Doe'], 'tags': ['outdoor'], 'site': ['ExampleSite']})
+        images.set_album_meta(self.conn, [kat, beach], add={'tags': ['Outdoor', 'bikini'], 'cast': ['Ann Roe']})
+        m = images.album_meta(self.conn)
+        self.assertEqual(m[kat]['tags'], ['bikini', 'outdoor'])                         # 'Outdoor' not added twice
+        self.assertEqual(m[beach]['cast'], ['Ann Roe'])
+        self.assertEqual(m[kat]['year'], ['2021'])
+        self.assertEqual(images.album_title(self.conn, kat), 'Kat at Home')
+        images.set_album_meta(self.conn, [kat, beach], remove={'cast': ['Ann Roe']}, updates={'year': ''})
+        m = images.album_meta(self.conn)
+        self.assertEqual(m[kat]['cast'], ['Kat Doe'])
+        self.assertNotIn('cast', m.get(beach, {}))
+        self.assertNotIn('year', m[kat])
+        images.set_album_meta(self.conn, [kat], updates={'title': ''})                 # back to the folder's name
+        self.assertEqual(images.album_title(self.conn, kat), 'Kat Set')
+
+    def test_search_filter_sort_and_pages(self):
+        kat, beach, zed = self.albums3()
+        images.set_album_meta(self.conn, [kat], add={'cast': ['Zoe Moe'], 'tags': ['indoor'], 'site': ['SiteA']})
+        images.set_album_meta(self.conn, [zed], add={'cast': ['Amy Lee'], 'tags': ['outdoor']})
+        images.set_album_meta(self.conn, [beach], updates={'title': '#1 Beach'})
+        names = lambda **k: [a['name'] for a in images.albums(self.conn, ['Lib'], **k)]
+        self.assertEqual(names(), ['#1 Beach', 'Kat Set', 'Zed'])
+        self.assertEqual(names(sort='cast'), ['Zed', 'Kat Set', '#1 Beach'])           # no cast: last
+        self.assertEqual(names(sort='count')[0], '#1 Beach')
+        self.assertEqual(names(q='zoe'), ['Kat Set'])                                  # any value is searched
+        self.assertEqual(names(q='beach'), ['#1 Beach'])
+        self.assertEqual(names(tags='outdoor'), ['Zed'])
+        self.assertEqual(names(tags_exclude='outdoor'), ['#1 Beach', 'Kat Set'])
+        self.assertEqual(names(sites='sitea'), ['Kat Set'])
+        self.assertEqual(names(cast='amy lee'), ['Zed'])
+        page = images.listing(self.conn, ['Lib'], 'name', '', page=2, limit=2)
+        self.assertEqual(([a['name'] for a in page['albums']], page['total']), (['Zed'], 3))
+        self.assertEqual(page['letters'], [{'letter': '#', 'index': 0}, {'letter': 'K', 'index': 1}, {'letter': 'Z', 'index': 2}])
+        self.assertTrue(page['albums'][0]['cover_id'])
+        self.assertEqual(images.listing(self.conn, ['Lib'], 'cast')['letters'], [{'letter': 'A', 'index': 0}, {'letter': 'Z', 'index': 1}])
+        self.assertEqual(images.filter_counts(self.conn, ['Lib']), {'tags': {'indoor': 1, 'outdoor': 1}, 'sites': {'SiteA': 1}})
+
+    def _videos(self, *paths):
+        self.conn.execute('CREATE TABLE IF NOT EXISTS file_versions (path TEXT PRIMARY KEY, video_id TEXT, is_preferred INTEGER, deleted_at TEXT)')
+        for i, p in enumerate(paths):
+            self.conn.execute('INSERT INTO file_versions VALUES (?, ?, 1, NULL)', (os.path.join(self.root, p), f'v{i}'))
+        self.conn.commit()
+
+    def test_linking_and_suggesting_videos(self):
+        a, = self.add('Set Kat/pics/1.jpg')
+        self.sync([a])
+        album = os.path.dirname(a)
+        self._videos('Set Kat/kat.mp4', 'Set Kat/pics/x.mp4', 'Other/far.mp4', 'loose.mp4', 'Set Kat/vids/v.mp4')
+        sug = [os.path.basename(p) for _v, p in images.suggest_videos(self.conn, album)]
+        self.assertEqual(sug[0], 'x.mp4')                                              # in the album's own folder first
+        self.assertEqual(set(sug), {'x.mp4', 'kat.mp4', 'v.mp4'})                    # a folder next to it too                               # not further up or elsewhere
+        images.link_videos(self.conn, album, ['v0'])
+        self.assertEqual(images.linked_videos(self.conn, album), [('v0', os.path.join(self.root, 'Set Kat/kat.mp4'))])
+        self.assertNotIn('kat.mp4', [os.path.basename(p) for _v, p in images.suggest_videos(self.conn, album)])
+        self.assertEqual(images.albums_of_video(self.conn, 'v0'), [{'folder': album, 'name': 'pics'}])
+        images.link_videos(self.conn, album, ['v0'], on=False)
+        self.assertEqual(images.linked_videos(self.conn, album), [])
+
+    def test_an_album_at_the_library_folder_suggests_only_its_own(self):
+        a, = self.add('1.jpg')
+        self.sync([a])
+        self._videos('top.mp4', 'Sub/deep.mp4')
+        self.assertEqual(sorted(os.path.basename(p) for _v, p in images.suggest_videos(self.conn, self.root)), ['deep.mp4', 'top.mp4'])
+
+    def test_sizes_are_read_from_the_header(self):
+        a, = self.add('S/wide.jpg')
+        r = os.path.join(self.root, 'S/rot.jpg')
+        _jpeg(r, size=(200, 100), orientation=6)
+        z = self.zip('Z.zip', ['p.jpg'])
+        self.sync([a, r, z])
+        self.assertEqual(images.fill_sizes(self.conn, os.path.dirname(a)), 2)
+        dims = {i['filename']: (i['width'], i['height']) for i in images.album_images(self.conn, os.path.dirname(a))}
+        self.assertEqual(dims, {'wide.jpg': (200, 100), 'rot.jpg': (100, 200)})
+        self.assertEqual(images.fill_sizes(self.conn, z), 1)
+        self.assertEqual(images.fill_sizes(self.conn, z), 0)                            # once
+
+    def test_a_big_album_reads_the_first_sizes_now_in_name_order(self):
+        paths = self.add(*[f'Big/{n}.jpg' for n in (10, 2, 1, 3)])
+        self.sync(paths)
+        folder = os.path.dirname(paths[0])
+        self.assertEqual(images.fill_sizes(self.conn, folder, limit=2), 2)
+        self.assertEqual({i['filename'] for i in images.album_images(self.conn, folder) if i['width']}, {'1.jpg', '2.jpg'})
+        self.assertEqual(len(images.sizes(self.conn, folder)), 2)
+        self.assertEqual(images.fill_sizes(self.conn, folder), 2)                       # the rest
+
     def test_an_older_database_gains_the_zip_columns(self):
         conn = sqlite3.connect(':memory:')
         conn.execute('CREATE TABLE images (id INTEGER PRIMARY KEY, path TEXT UNIQUE, library TEXT, folder TEXT, '
@@ -205,6 +299,7 @@ class Images(unittest.TestCase):
         images.ensure_schema(conn)
         images.ensure_schema(conn)
         self.assertTrue({'archive', 'member'} <= {r[1] for r in conn.execute('PRAGMA table_info(images)')})
+        self.assertIn('title', {r[1] for r in conn.execute('PRAGMA table_info(image_albums)')})
 
 
 if __name__ == '__main__':

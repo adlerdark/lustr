@@ -11,15 +11,22 @@ A .zip counts as a folder: its images are rows like any other, path <zip>/<name 
 skipped folders and favorites just work. Nothing is unpacked: `archive` + `member` say where to read
 one from. What's in a zip is kept in image_archives and only read again when the zip changes.
 
-Browse and view only for now: favorites, a chosen album cover. No tags / cast.
+An album (a folder) has what a scene has, album-wide: a title of your own, cast, site, tags and the other
+list fields (image_album_meta, one row per value), and the videos it goes with (image_album_videos, by
+video_id). Photos themselves have no tags. Width / height are read from the file's header when an album
+is first opened (fill_sizes), so its grid can show every photo whole.
+
 No FastAPI imports.
 """
+import difflib
 import io
 import json
 import os
 import re
 import threading
 import zipfile
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif'}
@@ -60,11 +67,20 @@ def ensure_schema(conn):
         folder TEXT PRIMARY KEY,
         favorite INTEGER DEFAULT 0,
         cover_id INTEGER)''')
+    if 'title' not in {r[1] for r in conn.execute('PRAGMA table_info(image_albums)')}:
+        conn.execute('ALTER TABLE image_albums ADD COLUMN title TEXT')         # your own name; NULL = the folder's
     conn.execute('''CREATE TABLE IF NOT EXISTS image_archives (
         path TEXT PRIMARY KEY,
         size INTEGER,
         mtime INTEGER,
         members TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS image_album_meta (
+        folder TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL,
+        PRIMARY KEY (folder, field, value))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS image_album_videos (
+        folder TEXT NOT NULL, video_id TEXT NOT NULL,
+        PRIMARY KEY (folder, video_id))''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_image_album_videos_video ON image_album_videos(video_id)')
     conn.commit()
 
 
@@ -246,28 +262,115 @@ def counts(conn, libraries):
     return out
 
 
-def albums(conn, libraries, sort='name', q=''):
+CAST_FIELDS = ('cast', 'male_cast')
+TEXT_FIELDS = ('year', 'rating')                  # one value each; the title lives in image_albums
+
+
+def _tag_fields():
+    try:
+        from config import LIST_FIELDS
+        return {f.lower() for f in LIST_FIELDS} - {'site', 'cast'}
+    except Exception:
+        return {'tags'}
+
+
+def _csv(v):
+    if isinstance(v, str):
+        return {x.strip().lower() for x in v.split(',') if x.strip()}
+    return {str(x).strip().lower() for x in (v or []) if str(x).strip()}
+
+
+def albums(conn, libraries, sort='name', q='', tags=None, tags_exclude=None, sites=None, sites_exclude=None,
+           cast=None, favorites=False, covers=True):
+    """The albums of these libraries, searched (folder, name and every value), filtered like the sidebar
+    filters movies (tags = every list field but site / cast, lowercase; sites; cast) and sorted."""
     folders = _folders(conn, libraries)
     if not folders:
         return []
-    meta = {r[0]: (r[1], r[2]) for r in conn.execute('SELECT folder, favorite, cover_id FROM image_albums')}
+    extra = {r[0]: (r[1], r[2], r[3]) for r in conn.execute('SELECT folder, favorite, cover_id, title FROM image_albums')}
+    meta = album_meta(conn)
     base_count = {}
     for f in folders:
         b = os.path.basename(f).lower()
         base_count[b] = base_count.get(b, 0) + 1
     out = []
     ql = (q or '').strip().lower()
+    inc_t, exc_t, inc_s, exc_s, inc_c = _csv(tags), _csv(tags_exclude), _csv(sites), _csv(sites_exclude), _csv(cast)
+    tag_fields = _tag_fields()
     for f, d in folders.items():
+        fav, cover, own = extra.get(f, (0, None, None))
+        m = meta.get(f, {})
         base = os.path.basename(f)
-        name = title(f)
-        if base_count[base.lower()] > 1 and f != d['root']:                 # several 'Images' folders: 'Set / Images'
+        name = own or title(f)
+        if not own and base_count[base.lower()] > 1 and f != d['root']:     # several 'Images' folders: 'Set / Images'
             name = f'{os.path.basename(os.path.dirname(f))} / {base}'
-        if ql and ql not in f.lower():
+        if ql and ql not in f.lower() and ql not in name.lower() and not any(ql in v.lower() for vs in m.values() for v in vs):
             continue
-        fav, cover = meta.get(f, (0, None))
+        if favorites and not fav:
+            continue
+        people = sorted({v for k in CAST_FIELDS for v in m.get(k, [])}, key=str.lower)
+        if inc_c and not inc_c <= {p.lower() for p in people}:
+            continue
+        if inc_t or exc_t or inc_s or exc_s:
+            t = {v.lower() for k, vs in m.items() if k in tag_fields for v in vs}
+            s = {v.lower() for v in m.get('site', [])}
+            if not (inc_t <= t and not (exc_t & t) and inc_s <= s and not (exc_s & s)):
+                continue
         out.append({'folder': f, 'name': name, 'library': d['library'], 'count': d['count'], 'newest': d['newest'],
-                    'favorite': bool(fav), 'cover_id': cover})
-    # covers: the chosen one if it's still there, else the first image by name
+                    'favorite': bool(fav), 'cover_id': cover, 'cast': sorted(m.get('cast', []), key=str.lower) or people,
+                    'renamed': bool(own)})
+    keys = {'newest': lambda a: (-a['newest'], _natural(a['name'])),
+            'count': lambda a: (-a['count'], _natural(a['name'])),
+            'favorites': lambda a: (not a['favorite'], _natural(a['name'])),
+            'cast': lambda a: (not a['cast'], (a['cast'] or [''])[0].lower(), _natural(a['name']))}
+    out.sort(key=keys.get(sort, lambda a: _natural(a['name'])))
+    if covers:
+        add_covers(conn, out)
+    return out
+
+
+def listing(conn, libraries, sort='name', q='', page=1, limit=120, **filters):
+    """One page of albums() -> {albums, total, letters}. letters: where each # A-Z starts (by name, or by
+    first cast name when sorted by cast; albums without cast come last and get none)."""
+    out = albums(conn, libraries, sort, q, covers=False, **filters)
+    letters = _letter_index(out, sort) if sort in ('name', 'cast') else []
+    limit = max(1, int(limit or 120))
+    start = (max(1, int(page or 1)) - 1) * limit
+    shown = out[start:start + limit]
+    add_covers(conn, shown)
+    return {'albums': shown, 'total': len(out), 'letters': letters}
+
+
+def _letter_index(albums_, sort):
+    out, seen = [], set()
+    for i, a in enumerate(albums_):
+        text = (a['cast'] or [''])[0] if sort == 'cast' else a['name']
+        if not text:
+            continue
+        ch = text.strip()[:1].upper()
+        L = ch if 'A' <= ch <= 'Z' else '#'
+        if L not in seen:
+            seen.add(L)
+            out.append({'letter': L, 'index': i})
+    return out
+
+
+def filter_counts(conn, libraries, q='', **filters):
+    """The sidebar's Tags / Sites for the Images tab: how many of the shown albums have each one."""
+    shown = albums(conn, libraries, 'name', q, covers=False, **filters)
+    meta, tag_fields = album_meta(conn, [a['folder'] for a in shown]), _tag_fields()
+    tc, sc, spell = Counter(), Counter(), {}
+    for a in shown:
+        m = meta.get(a['folder'], {})
+        tc.update({v.lower() for k, vs in m.items() if k in tag_fields for v in vs})
+        for v in {v.strip() for v in m.get('site', [])}:
+            sc[v.lower()] += 1
+            spell.setdefault(v.lower(), v)
+    return {'tags': dict(tc), 'sites': {spell[k]: n for k, n in sc.items()}}
+
+
+def add_covers(conn, out):
+    """Each album's cover: the chosen one if it's still there, else the first image by name."""
     need = [a for a in out if not a['cover_id']]
     chosen = [a['cover_id'] for a in out if a['cover_id']]
     alive = set()
@@ -295,18 +398,13 @@ def albums(conn, libraries, sort='name', q=''):
         covers.update(conn.execute(f'SELECT id, mtime FROM images WHERE id IN ({",".join("?" * len(chunk))})', chunk).fetchall())
     for a in out:
         a['cover_v'] = covers.get(a['cover_id'], 0)
-    keys = {'newest': lambda a: (-a['newest'], _natural(a['name'])),
-            'count': lambda a: (-a['count'], _natural(a['name'])),
-            'favorites': lambda a: (not a['favorite'], _natural(a['name']))}
-    out.sort(key=keys.get(sort, lambda a: _natural(a['name'])))
-    return out
 
 
 def album_images(conn, folder):
-    rows = conn.execute('SELECT id, filename, width, height, mtime, favorite, size FROM images '
+    rows = conn.execute('SELECT id, filename, width, height, mtime, favorite, size, path FROM images '
                         'WHERE deleted_at IS NULL AND folder = ?', (folder,)).fetchall()
     items = [{'id': r[0], 'filename': r[1], 'width': r[2], 'height': r[3], 'mtime': r[4] or 0,
-              'favorite': bool(r[5]), 'size': r[6]} for r in rows]
+              'favorite': bool(r[5]), 'size': r[6], 'path': r[7]} for r in rows]
     items.sort(key=lambda i: _natural(i['filename']))
     return items
 
@@ -326,7 +424,8 @@ def album_info(conn, folder):
                      'WHERE folder = ? AND deleted_at IS NULL', (folder,)).fetchone()
     if not r or not r[0]:
         return None
-    return {'path': folder, 'count': r[0], 'size': r[1] or 0, 'mtime': r[2], 'library': r[3], 'archive': r[4]}
+    return {'path': folder, 'name': album_title(conn, folder), 'count': r[0], 'size': r[1] or 0, 'mtime': r[2],
+            'library': r[3], 'archive': r[4]}
 
 
 def get(conn, image_id):
@@ -376,6 +475,213 @@ def set_cover(conn, folder, image_id):
 
 
 # ---------------------------------------------------------------------------
+# album metadata: title, year, rating and the list fields (cast, site, tags, ...)
+# ---------------------------------------------------------------------------
+_FIELD = re.compile(r'^[a-z][a-z0-9_]{0,39}$')
+
+
+def album_meta(conn, folders=None):
+    """{folder: {field: [values]}} (every album with any, or just these)."""
+    out = {}
+    if folders is None:
+        rows = conn.execute('SELECT folder, field, value FROM image_album_meta').fetchall()
+    else:
+        folders, rows = list(folders), []
+        for k in range(0, len(folders), 500):
+            chunk = folders[k:k + 500]
+            rows += conn.execute(f'SELECT folder, field, value FROM image_album_meta WHERE folder IN ({",".join("?" * len(chunk))})',
+                                 chunk).fetchall()
+    for folder, field, value in rows:
+        out.setdefault(folder, {}).setdefault(field, []).append(value)
+    for m in out.values():
+        for vs in m.values():
+            vs.sort(key=str.lower)
+    return out
+
+
+def album_title(conn, folder):
+    r = conn.execute('SELECT title FROM image_albums WHERE folder = ?', (folder,)).fetchone()
+    return (r and r[0]) or title(folder)
+
+
+def set_album_meta(conn, folders, updates=None, add=None, remove=None):
+    """Edit Album, for one album or several at once (the same shape the scene editor saves):
+    updates {title / year / rating: text ('' clears)}, add / remove {field: [values]}.
+    A value already there in another case isn't added twice."""
+    for folder in folders:
+        for k, v in (updates or {}).items():
+            v = (v or '').strip()
+            if k == 'title':
+                conn.execute('INSERT INTO image_albums (folder, title) VALUES (?, ?) '
+                             'ON CONFLICT(folder) DO UPDATE SET title = excluded.title', (folder, v or None))
+            elif k in TEXT_FIELDS:
+                conn.execute('DELETE FROM image_album_meta WHERE folder = ? AND field = ?', (folder, k))
+                if v:
+                    conn.execute('INSERT INTO image_album_meta (folder, field, value) VALUES (?, ?, ?)', (folder, k, v))
+        for field, values in (remove or {}).items():
+            for v in values or []:
+                conn.execute('DELETE FROM image_album_meta WHERE folder = ? AND field = ? AND value = ?', (folder, field, v))
+        for field, values in (add or {}).items():
+            if not _FIELD.match(field or '') or field in TEXT_FIELDS:
+                continue
+            have = {r[0].lower() for r in conn.execute('SELECT value FROM image_album_meta WHERE folder = ? AND field = ?',
+                                                       (folder, field))}
+            for v in values or []:
+                v = str(v).strip()
+                if v and v.lower() not in have:
+                    conn.execute('INSERT INTO image_album_meta (folder, field, value) VALUES (?, ?, ?)', (folder, field, v))
+                    have.add(v.lower())
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# the videos an album goes with
+# ---------------------------------------------------------------------------
+def linked_videos(conn, folder):
+    """[(video_id, path)] of the album's videos that still have a file (the preferred one first)."""
+    rows = conn.execute('SELECT l.video_id, (SELECT path FROM file_versions fv WHERE fv.video_id = l.video_id '
+                        'AND fv.deleted_at IS NULL ORDER BY fv.is_preferred DESC LIMIT 1) FROM image_album_videos l '
+                        'WHERE l.folder = ? ORDER BY l.rowid', (folder,)).fetchall()
+    return [r for r in rows if r[1]]
+
+
+def link_videos(conn, folder, video_ids, on=True):
+    for vid in video_ids or []:
+        if on:
+            conn.execute('INSERT OR IGNORE INTO image_album_videos (folder, video_id) VALUES (?, ?)', (folder, str(vid)))
+        else:
+            conn.execute('DELETE FROM image_album_videos WHERE folder = ? AND video_id = ?', (folder, str(vid)))
+    conn.commit()
+
+
+def albums_of_video(conn, video_id):
+    """[{folder, name}] of the albums (still with photos) linked to this video."""
+    out = []
+    for (folder,) in conn.execute('SELECT folder FROM image_album_videos WHERE video_id = ? ORDER BY rowid', (str(video_id),)):
+        if conn.execute('SELECT 1 FROM images WHERE folder = ? AND deleted_at IS NULL LIMIT 1', (folder,)).fetchone():
+            out.append({'folder': folder, 'name': album_title(conn, folder)})
+    return out
+
+
+def suggest_videos(conn, folder, limit=40):
+    """[(video_id, path)]: videos likely to go with this album, not linked yet - in its folder (or a zip's)
+    or one below, loose in the folder above it, or in a folder next to it - never above its library folder.
+    The ones named most like the album come first."""
+    r = conn.execute('SELECT root, archive FROM images WHERE folder = ? AND deleted_at IS NULL LIMIT 1', (folder,)).fetchone()
+    if not r:
+        return []
+    root, archive = r
+    base = os.path.dirname(archive) if archive else folder                  # a real folder, not one inside a zip
+    parent = os.path.dirname(base)
+    inside_root = root and (parent == root or parent.startswith(root.rstrip(os.sep) + os.sep))
+    linked = {x[0] for x in conn.execute('SELECT video_id FROM image_album_videos WHERE folder = ?', (folder,))}
+    rows = conn.execute("SELECT video_id, path FROM file_versions WHERE deleted_at IS NULL AND path LIKE ? ESCAPE '\\'",
+                        (_like_prefix(parent if inside_root else base),)).fetchall()
+    seen, out = set(), []
+    for vid, path in rows:
+        d = os.path.dirname(path)
+        near = d == base or os.path.dirname(d) == base or (inside_root and (d == parent or os.path.dirname(d) == parent))
+        if near and vid not in linked and vid not in seen:
+            seen.add(vid)
+            out.append((vid, path))
+    name = album_title(conn, folder).lower()
+    out.sort(key=lambda x: (not x[1].startswith(base + os.sep),
+                            -difflib.SequenceMatcher(None, name, os.path.splitext(os.path.basename(x[1]))[0].lower()).ratio()))
+    return out[:limit]
+
+
+# ---------------------------------------------------------------------------
+# photo sizes (the album grid shows each photo whole, so it needs them before the thumbnails load)
+# ---------------------------------------------------------------------------
+def _upright(im):
+    """(width, height) the way the photo is shown: EXIF says 5-8 when it's stored sideways."""
+    w, h = im.size
+    try:
+        if (im.getexif() or {}).get(0x0112) in (5, 6, 7, 8):
+            return h, w
+    except Exception:
+        pass
+    return w, h
+
+
+def _size_of(path):
+    from PIL import Image
+    try:
+        with Image.open(path) as im:                                       # reads the header only
+            return _upright(im)
+    except Exception:
+        return None
+
+
+def fill_sizes(conn, folder, limit=None):
+    """Read width / height for the album's photos that don't have them yet (once per photo), the first
+    `limit` in name order (None: all). -> how many were read. ~3 ms a photo on a network share."""
+    rows = conn.execute('SELECT id, path, archive, member, filename FROM images WHERE folder = ? AND deleted_at IS NULL '
+                        'AND (width IS NULL OR height IS NULL)', (folder,)).fetchall()
+    rows = [r[:4] for r in sorted(rows, key=lambda r: _natural(r[4]))][:limit]
+    if not rows:
+        return 0
+    sizes = {}
+    plain = [(i, p) for i, p, a, _m in rows if not a]
+    if plain:
+        with ThreadPoolExecutor(max_workers=8) as pool:                     # a network share answers faster in parallel
+            for (i, _p), s in zip(plain, pool.map(lambda x: _size_of(x[1]), plain)):
+                sizes[i] = s
+    zips = {}
+    for i, _p, a, m in rows:
+        if a:
+            zips.setdefault(a, []).append((i, m))
+    for a, members in zips.items():
+        try:
+            from PIL import Image
+            with zipfile.ZipFile(a) as z:
+                for i, m in members:
+                    try:
+                        with z.open(m) as f, Image.open(f) as im:          # seekable: only the header is read
+                            sizes[i] = _upright(im)
+                    except Exception:
+                        sizes[i] = None
+        except (OSError, zipfile.BadZipFile, ValueError) as e:
+            print(f'[images] can\'t read {a}: {e}')
+    n = 0
+    for i, s in sizes.items():
+        if s:
+            conn.execute('UPDATE images SET width = ?, height = ? WHERE id = ?', (s[0], s[1], i))
+            n += 1
+    conn.commit()
+    return n
+
+
+_filling = set()
+
+
+def fill_sizes_later(get_conn, folder):
+    """The rest of a big album in the background (its own connection); one run per album at a time."""
+    if folder in _filling:
+        return
+    _filling.add(folder)
+
+    def run():
+        conn = None
+        try:
+            conn = get_conn()
+            fill_sizes(conn, folder)
+        except Exception as e:
+            print(f'[images] sizes for {folder}: {e}')
+        finally:
+            _filling.discard(folder)
+            if conn is not None:
+                conn.close()
+    threading.Thread(target=run, daemon=True, name='image-sizes').start()
+
+
+def sizes(conn, folder):
+    """{id: [width, height]} of the album's photos whose size is known (the grid catching up)."""
+    return {r[0]: [r[1], r[2]] for r in conn.execute('SELECT id, width, height FROM images WHERE folder = ? AND deleted_at IS NULL '
+                                                     'AND width IS NOT NULL AND height IS NOT NULL', (folder,))}
+
+
+# ---------------------------------------------------------------------------
 # thumbnails
 # ---------------------------------------------------------------------------
 def thumb(conn, image_id, cache_dir):
@@ -395,9 +701,7 @@ def thumb(conn, image_id, cache_dir):
             from PIL import Image, ImageOps
             data = archived(conn, image_id)
             with Image.open(path if data is None else io.BytesIO(data)) as im:
-                w, h = im.size
-                if (im.getexif() or {}).get(0x0112) in (5, 6, 7, 8):                # stored sideways: upright size
-                    w, h = h, w
+                w, h = _upright(im)
                 if im.format == 'JPEG':
                     im.draft('RGB', (THUMB_SIZE * 2, THUMB_SIZE * 2))              # decode at a fraction of the size: much faster
                 im = ImageOps.exif_transpose(im)

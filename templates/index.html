@@ -815,8 +815,15 @@
                 navStack: [], _navSkip: false, _navHold: 0, _navQuery: '',
                 gridStale: false, _gridSeq: 0,   // a library opened on another tab: its grid loads after that tab (gridCatchUp)
                 // Images tab (images.py): albums by folder, an album's images, the viewer (iv)
-                img: { counts: {}, albums: [], sort: 'name', q: '', qTimer: null, loading: false, msg: '',
-                       folder: null, name: '', favorite: false, items: [], shown: 300, backScroll: null, skipText: '', info: null },
+                img: { counts: {}, albums: [], sort: 'name', q: '', qTimer: null, loading: false, msg: '', seq: 0,
+                       total: 0, letters: [], page: 1, startPage: 1, pageEdit: false, pageInput: 1, sel: {}, selLast: null,
+                       menu: { open: false, x: 0, y: 0, a: null, it: null },
+                       folder: null, name: '', favorite: false, items: [], meta: {}, videos: [], shown: 300, photoPage: 1,
+                       backScroll: null, skipText: '', info: null },
+                imgEdit: { open: false, folders: [], data: {}, orig: {}, common: {}, tab: 'General', busy: false, msg: '',
+                           videos: [], sugg: [], q: '', qTimer: null, results: [] },
+                castAlbums: [],                  // the cast page's Photo albums row
+                infoAlbums: [], _infoAlbumsFor: null,   // a video's File Info: the albums linked to it
                 iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false, wheelAt: 0 },
                 
                 sortField: 'Filename',
@@ -842,6 +849,9 @@
                     paginationMode: 'button',
                     mvPagination: 'button',      // Movies tab: 'button' (Load more) | 'pages' | 'scroll' | 'all'
                     mvPerPage: 120,
+                    imgPagination: 'pages',      // Images tab (albums and an album's photos): same choices as mvPagination
+                    imgAlbumsPerPage: 120,
+                    imgPhotosPerPage: 300,
                     hideZeroLength: 'hide', // 'button' or 'prevnext'
                     lockScreenInfo: false,  // new player: title + thumbnail in the Media Session (lock screen)
                     folderSort: 'added',    // library folder lists: 'added' (order added) or 'name' (A-Z)
@@ -1968,6 +1978,7 @@
                         if (this.np.open) { this.npKey(e); return; }          // the new player has its own keys
                         if (e.key === 'Escape') this.handleEscape();
                         if (e.key === 'Enter' && e.ctrlKey && this.modals.metadata) this.saveMetadata();
+                        if (e.key === 'Enter' && e.ctrlKey && this.imgEdit.open) this.imgEditSave();
                         
                         // Video player keyboard controls (only when video is active)
                         if (this.activeVideo && this.$refs.player) {
@@ -2089,6 +2100,9 @@
                     if(!this.appSettings.itemsPerPage) this.appSettings.itemsPerPage = 150;
                     if (!(parseInt(this.appSettings.mvPerPage) > 0)) this.appSettings.mvPerPage = 120;
                     if (!['button', 'pages', 'scroll', 'all'].includes(this.appSettings.mvPagination)) this.appSettings.mvPagination = 'button';
+                    if (!(parseInt(this.appSettings.imgAlbumsPerPage) > 0)) this.appSettings.imgAlbumsPerPage = 120;
+                    if (!(parseInt(this.appSettings.imgPhotosPerPage) > 0)) this.appSettings.imgPhotosPerPage = 300;
+                    if (!['button', 'pages', 'scroll', 'all'].includes(this.appSettings.imgPagination)) this.appSettings.imgPagination = 'pages';
                     try {                                   // once per browser: the new player becomes the default
                         if (!localStorage.getItem('npDefaultSet')) {
                             this.appSettings.playerMode = 'new';
@@ -2367,6 +2381,14 @@
                 },
                 
                 handleScroll(e) {
+                    if (this.imgTabActive()) {                      // Images tab: its own paging setting
+                        const el = e.target, I = this.img;
+                        if (el && this.appSettings.imgPagination === 'scroll' && !I.loading && el.scrollHeight - el.scrollTop - el.clientHeight < 300) {
+                            if (I.folder) this.imgMore();
+                            else if (I.albums.length && (I.startPage - 1) * this.imgPer() + I.albums.length < I.total) this.imgLoadAlbums(0, 'append');
+                        }
+                        return;
+                    }
                     if (this.mvTabActive()) {                       // Movies tab: its own paging setting
                         const el = e.target, M = this.mv;
                         if (el && !M.view && this.appSettings.mvPagination === 'scroll' && !M.loading && M.list.length
@@ -2483,7 +2505,9 @@
                 },
 
                 handleEscape() {
+                    if (this.img.menu.open) { this.img.menu.open = false; return; }
                     if (this.img.info) { this.img.info = null; return; }
+                    if (this.imgEdit.open && !this.castPicker.open) { this.imgEditClose(); return; }
                     if (this.iv.open) { this.ivClose(); return; }
                     // Always close menus first
                     if (this.activeMenu) {
@@ -3152,17 +3176,18 @@
                 },
                 // ----- # A-Z jump bar: the server says where each letter starts in the sorted list -----
                 mvJumpActive() { return this.mvTabActive() && !this.mv.view && this.mv.letters.length > 0 && this.mv.list.length > 0; },
+                imgJumpActive() { return this.imgTabActive() && !this.img.folder && this.img.letters.length > 0 && this.img.albums.length > 0; },
                 jumpBarShown() {
-                    if (this.mvJumpActive()) return true;
+                    if (this.mvJumpActive() || this.imgJumpActive()) return true;
                     return this.jumpLetters.length > 0 && this.viewMode === 'grid' && this.currentView === 'library'
                         && this.currentLibrary !== 'Home' && this.libraryTab === 'library' && !this.castBioMode;
                 },
                 jumpBarLetters() {
                     const all = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
-                    return this.sortDesc && !this.mvJumpActive() ? all.reverse() : all;
+                    return this.sortDesc && !this.mvJumpActive() && !this.imgJumpActive() ? all.reverse() : all;
                 },
                 jumpIndexOf(L) {
-                    const hit = (this.mvJumpActive() ? this.mv.letters : this.jumpLetters).find(x => x.letter === L);
+                    const hit = (this.mvJumpActive() ? this.mv.letters : this.imgJumpActive() ? this.img.letters : this.jumpLetters).find(x => x.letter === L);
                     return hit ? hit.index : undefined;
                 },
                 jumpTabsOffset() { return this.currentLibrary !== 'Home' && !this.castBioMode ? (this.tabsH || 0) : 0; },
@@ -3185,6 +3210,22 @@
                             await this.$nextTick();
                             const el = document.querySelector(`.scroller-main [data-midx="${all ? i : i - (M.startPage - 1) * per}"]`);
                             if (el) el.scrollIntoView({ block: 'start', behavior: 'instant' });
+                            this.jumpCurrent = L;
+                        } finally { this.jumpBusy = false; }
+                        return;
+                    }
+                    if (this.imgJumpActive()) {                      // the album list: the same, by album
+                        try {
+                            const I = this.img, per = this.imgPer(), all = this.appSettings.imgPagination === 'all';
+                            const from = (I.startPage - 1) * per;
+                            if (!all && (i < from || i >= from + I.albums.length)) await this.imgLoadAlbums(Math.floor(i / per) + 1);
+                            await this.$nextTick();
+                            const el = document.querySelector(`.scroller-main [data-aidx="${all ? i : i - (this.img.startPage - 1) * per}"]`);
+                            if (el) {
+                                el.scrollIntoView({ block: 'start', behavior: 'instant' });
+                                const sc = document.querySelector('.scroller-main');
+                                if (sc) sc.scrollTop -= this.jumpTabsOffset() + (this.$refs.imgToolbar?.offsetHeight || 0) + 8;   // below the sticky bars
+                            }
                             this.jumpCurrent = L;
                         } finally { this.jumpBusy = false; }
                         return;
@@ -3219,16 +3260,18 @@
                         this._jumpRaf = null;
                         const sc = document.querySelector('.scroller-main');
                         if (!sc) return;
-                        const mv = this.mvJumpActive();
-                        const top = sc.getBoundingClientRect().top + this.jumpTabsOffset() + (mv ? (this.$refs.mvToolbar?.offsetHeight || 0) : 0);
-                        const cards = sc.querySelectorAll(mv ? '[data-midx]' : '[data-vidx]');
+                        const mv = this.mvJumpActive(), im = !mv && this.imgJumpActive();
+                        const top = sc.getBoundingClientRect().top + this.jumpTabsOffset()
+                                  + (mv ? (this.$refs.mvToolbar?.offsetHeight || 0) : im ? (this.$refs.imgToolbar?.offsetHeight || 0) : 0);
+                        const cards = sc.querySelectorAll(mv ? '[data-midx]' : im ? '[data-aidx]' : '[data-vidx]');
                         let first = null;
                         for (const c of cards) { if (c.getBoundingClientRect().bottom > top + 4) { first = c; break; } }
                         if (!first) return;
                         const g = mv ? +first.dataset.midx + (this.mv.startPage - 1) * this.mvPer()
+                                 : im ? +first.dataset.aidx + (this.img.startPage - 1) * this.imgPer()
                                      : +first.dataset.vidx + (this.appSettings.loadAll ? 0 : (this.listStartPage - 1) * (parseInt(this.appSettings.itemsPerPage) || 150));
                         let cur = '';
-                        for (const x of (mv ? this.mv.letters : this.jumpLetters)) if (x.index <= g) cur = x.letter;
+                        for (const x of (mv ? this.mv.letters : im ? this.img.letters : this.jumpLetters)) if (x.index <= g) cur = x.letter;
                         this.jumpCurrent = cur;
                     });
                 },
@@ -3409,11 +3452,12 @@
                 },
 
                 // Edit Metadata: a typed cast name that several performers share -> ask which one
-                async castResolveTyped() {
+                // (Edit Album passes its own form and the values it started with)
+                async castResolveTyped(data = this.editData, original = this.commonOriginalListValues) {
                     for (const field of ['cast', 'male_cast']) {
-                        if (!(field in this.editData)) continue;
-                        const before = new Set((this.commonOriginalListValues[field] || []).map(s => s.toLowerCase()));
-                        const list = String(this.editData[field] || '').split(',').map(s => s.trim()).filter(Boolean);
+                        if (!(field in data)) continue;
+                        const before = new Set((original[field] || []).map(s => s.toLowerCase()));
+                        const list = String(data[field] || '').split(',').map(s => s.trim()).filter(Boolean);
                         let changed = false;
                         for (let i = 0; i < list.length; i++) {
                             if (before.has(list[i].toLowerCase()) || this.castNumber(list[i]) !== null) continue;
@@ -3421,7 +3465,7 @@
                             if (pick === null) return false;
                             if (pick !== list[i]) { list[i] = pick; changed = true; }
                         }
-                        if (changed) this.editData[field] = list.join(', ');
+                        if (changed) data[field] = list.join(', ');
                     }
                     return true;
                 },
@@ -3481,6 +3525,7 @@
                         this.currentCastMember = castName;
                         this.castBioMode = true;
                         this.castSameLoad(castName);
+                        this.imgCastLoad(castName);
                         this.extDbLoadLink(castName);   // local DB only - no external call
                     } catch (e) {
                         console.error('Failed to load cast bio:', e);
@@ -6487,10 +6532,11 @@ No metadata is changed.`)) return;
 
                 // ----- library tabs: Recommended | Library | Collections -----
                 setLibraryTab(tab, remember = true) {
-                    const wasMovies = this.libraryTab === 'movies';
+                    const prev = this.libraryTab;
                     this.clearAllSelections();                                     // a tab or library change starts with nothing selected
                     this.libraryTab = tab;
-                    if (wasMovies && tab !== 'movies' && this.currentLibrary !== 'Home') this.fetchAvailableFilters();   // video counts again
+                    // leaving Movies / Images (their own sidebar counts): the counts of what's shown now
+                    if (['movies', 'images'].includes(prev) && tab !== prev && this.currentLibrary !== 'Home') this.fetchAvailableFilters();
                     if (remember && this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = tab;
                     if (this.currentLibrary === 'Home') return;
                     const later = () => { if (this.gridStale) this.gridCatchUp(); };   // a library just opened on this tab
@@ -6498,7 +6544,12 @@ No metadata is changed.`)) return;
                     if (tab === 'recommended') { this.homeRows = []; this.loadHomeData(this.currentLibrary).then(later); }
                     if (tab === 'collections') { this.coll.view = null; this.loadCollections().then(later); }
                     if (tab === 'movies') { this.mv.view = null; this.mv.items = []; this.mvSel = {}; this.loadMovies(1).then(later); }
-                    if (tab === 'images') { this.img.folder = null; this.img.items = []; this.imgLoadAlbums().then(later); }
+                    if (tab === 'images') {
+                        Object.assign(this.img, { folder: null, items: [], videos: [], meta: {} });
+                        this.imgClearSel();
+                        this.imgLoadAlbums(1).then(later);
+                        this.imgFetchFilters();
+                    }
                 },
 
                 // the current Library view as /api/videos parameters (smart collections save these)
@@ -7795,6 +7846,7 @@ No metadata is changed.`)) return;
                 toggleFavoritesOnly() {
                     this.favoritesOnly = !this.favoritesOnly; this.page = 1; this.fetchVideos('reset');
                     if (this.mvTabActive()) this.mvFiltersChanged();          // Movies tab: favorite movies
+                    else if (this.imgTabActive()) this.imgFiltersChanged();   // Images tab: favorite albums
                 },
                 
                 toggleTag(tag) {
@@ -7822,6 +7874,7 @@ No metadata is changed.`)) return;
                     if (next === 0) delete this.activeTags[tag];
                     else this.activeTags[tag] = next;
                     if (this.mvTabActive()) this.loadMovies(1);
+                    else if (this.imgTabActive()) this.imgLoadAlbums(1);
                     
                     // For library view, fetch from server
                     if (this.currentView === 'library') {
@@ -7848,6 +7901,7 @@ No metadata is changed.`)) return;
                     if (next === 0) delete this.activeSites[site];
                     else this.activeSites[site] = next;
                     if (this.mvTabActive()) this.loadMovies(1);
+                    else if (this.imgTabActive()) this.imgLoadAlbums(1);
                     
                     // For library view, fetch from server
                     if (this.currentView === 'library') {
@@ -7911,6 +7965,7 @@ No metadata is changed.`)) return;
                 
                 async fetchAvailableFilters() {
                     if (this.mvTabActive()) return this.mvFetchFilters();     // Movies tab: counts of movies
+                    if (this.imgTabActive()) return this.imgFetchFilters();   // Images tab: counts of albums
                     try {
                         let url = `/api/available_filters?library=${encodeURIComponent(this.currentLibrary)}`;
                         
@@ -7992,6 +8047,7 @@ No metadata is changed.`)) return;
                     
                     // Reset available filters to show all for current context
                     if (this.mvTabActive()) this.mvFiltersChanged();
+                    if (this.imgTabActive()) this.imgFiltersChanged();
                     if (this.currentView === 'library') {
                         this.page = 1; 
                         this.fetchVideos('reset');
@@ -13579,22 +13635,119 @@ No metadata is changed.`)) return;
                     } catch (e) { /* no Images tab until it loads */ }
                 },
 
-                async imgLoadAlbums() {
+                // ----- the album list: pages, # A-Z, the sidebar's tags / sites -----
+                imgPer() { return this.appSettings.imgPagination === 'all' ? 100000 : (parseInt(this.appSettings.imgAlbumsPerPage) || 120); },
+                get imgTotalPages() { return Math.max(1, Math.ceil((this.img.total || 0) / this.imgPer())); },
+                imgFilterParams() {
+                    const pick = (obj, s) => Object.entries(obj || {}).filter(([, v]) => v === s).map(([k]) => k).join(',');
+                    return { tags: pick(this.activeTags, 1), tags_exclude: pick(this.activeTags, -1),
+                             sites: pick(this.activeSites, 1), sites_exclude: pick(this.activeSites, -1), favorites: this.favoritesOnly ? 'true' : 'false' };
+                },
+                // how: as loadMovies - 'reset' (this page) · 'append' (the next, below) · 'prepend' (the one before) ·
+                //      'keep' (every page loaded so far again, e.g. after an edit)
+                async imgLoadAlbums(page = 1, how = 'reset') {
                     const I = this.img;
+                    if (how === 'append' && I.loading) return;
+                    const seq = ++I.seq;
                     I.loading = true;
                     try {
-                        const q = new URLSearchParams({ library: this.currentLibrary, sort: I.sort, q: I.q || '' });
-                        const d = await (await fetch('/api/images/albums?' + q)).json();
-                        if (!d.success) throw new Error(d.error);
-                        Object.assign(I, { albums: d.albums, msg: '' });
+                        const [from, upto] = how === 'keep' ? [I.startPage, I.page] : how === 'append' ? [I.page + 1, I.page + 1]
+                                           : how === 'prepend' ? [I.startPage - 1, I.startPage - 1] : [page, page];
+                        let list = [], d;
+                        for (let p = from; p <= upto; p++) {
+                            const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, sort: I.sort, q: I.q || '', page: p, limit: this.imgPer() },
+                                                                         this.imgFilterParams()));
+                            d = await (await fetch('/api/images/albums?' + qs)).json();
+                            if (!d.success) throw new Error(d.error);
+                            list = list.concat(d.albums);
+                            if (!d.albums.length) break;
+                        }
+                        if (seq !== I.seq) return;                                   // a newer request is on its way
+                        const sc = document.querySelector('.scroller-main'), h0 = sc ? sc.scrollHeight : 0;
+                        if (how === 'append') { I.albums = [...I.albums, ...list]; I.page = upto; }
+                        else if (how === 'prepend') { I.albums = [...list, ...I.albums]; I.startPage = from; }
+                        else { I.albums = list; I.startPage = from; I.page = upto; }
+                        Object.assign(I, { total: d.total, letters: d.letters || [], msg: '' });
+                        if (how === 'prepend' && sc) this.$nextTick(() => { sc.scrollTop += sc.scrollHeight - h0; });
+                        if (how === 'reset' && this.appSettings.imgPagination === 'pages' && sc && !I.folder) sc.scrollTop = 0;
+                        this.$nextTick(() => this.jumpMeasure());
                     } catch (e) { I.msg = 'Could not load the albums: ' + e.message; }
-                    I.loading = false;
+                    finally { if (seq === I.seq) I.loading = false; }
+                },
+                imgGoPage(n) {
+                    const p = parseInt(n);
+                    this.img.pageEdit = false;
+                    if (isNaN(p) || p < 1 || p > this.imgTotalPages || p === this.img.page) return;
+                    this.imgLoadAlbums(p);
+                },
+                imgPagingChanged() {
+                    localStorage.setItem('appSettings', JSON.stringify(this.appSettings));
+                    Object.assign(this.img, { photoPage: 1, shown: this.imgPhotoPer() });
+                    if (this.imgTabActive() && !this.img.folder) this.imgLoadAlbums(1);
+                },
+                imgFiltersChanged() { this.imgClearSel(); this.imgLoadAlbums(1); this.imgFetchFilters(); },
+                async imgFetchFilters() {
+                    // the sidebar's Tags / Sites with album counts: an album has the tags of its own details
+                    try {
+                        const qs = new URLSearchParams(Object.assign({ library: this.currentLibrary, q: this.img.q || '' }, this.imgFilterParams()));
+                        const d = await (await fetch('/api/images/filters?' + qs)).json();
+                        if (!d.success) throw new Error(d.error);
+                        if (!this.imgTabActive()) return;
+                        this.availableTags = d.tags || {};
+                        this.availableSites = d.sites || {};
+                    } catch (e) { console.error('Image filters failed:', e); }
                 },
                 imgSearch() {
                     clearTimeout(this.img.qTimer);
-                    this.img.qTimer = setTimeout(() => this.imgLoadAlbums(), 300);
+                    this.img.qTimer = setTimeout(() => this.imgFiltersChanged(), 300);
+                },
+                imgSearchFor(text) {                     // a cast / tag chip: the albums that have it
+                    if (this.img.folder) { this.navPush(); Object.assign(this.img, { folder: null, items: [], videos: [], meta: {}, backScroll: null }); }
+                    this.img.q = text;
+                    this.imgFiltersChanged();
+                },
+                imgCastOf(m) { return [...((m || {}).cast || []), ...((m || {}).male_cast || [])]; },
+                imgTagsOf(m) {
+                    m = m || {};
+                    const skip = ['cast', 'male_cast', 'rating'];
+                    return [...(m.site || []), ...(m.year || []), ...Object.keys(m).filter(k => !skip.includes(k) && k !== 'site' && k !== 'year').flatMap(k => m[k])];
                 },
 
+                // ----- selecting albums (click opens; Ctrl / Shift-click select, for Edit details) -----
+                get imgSelFolders() { return Object.keys(this.img.sel).filter(k => this.img.sel[k]); },
+                imgClearSel() { this.img.sel = {}; this.img.selLast = null; },
+                imgToggleSel(a, idx) {
+                    const sel = { ...this.img.sel };
+                    if (sel[a.folder]) delete sel[a.folder]; else sel[a.folder] = true;
+                    this.img.sel = sel;
+                    this.img.selLast = idx;
+                },
+                imgCardClick(a, idx, ev) {
+                    if (ev.ctrlKey || ev.metaKey) { this.imgToggleSel(a, idx); return; }
+                    if (ev.shiftKey && this.img.selLast !== null) {
+                        const [x, y] = [Math.min(this.img.selLast, idx), Math.max(this.img.selLast, idx)];
+                        const sel = { ...this.img.sel };
+                        for (const b of this.img.albums.slice(x, y + 1)) sel[b.folder] = true;
+                        this.img.sel = sel;
+                        return;
+                    }
+                    this.imgClearSel();
+                    this.imgOpen(a.folder);
+                },
+
+                // ----- right-click: an album (a card, or the open album's page) or a photo -----
+                imgMenuOpen(ev, a, it = null) {
+                    const w = 240, h = it ? 190 : 300;
+                    Object.assign(this.img.menu, { open: true, a, it, x: Math.max(4, Math.min(ev.clientX, window.innerWidth - w)),
+                                                   y: Math.max(4, Math.min(ev.clientY, window.innerHeight - h)) });
+                },
+                imgMenuFolders() {
+                    const a = this.img.menu.a;
+                    return a && this.img.sel[a.folder] && this.imgSelFolders.length > 1 ? this.imgSelFolders : (a ? [a.folder] : []);
+                },
+                imgCurrentAlbum() { return { folder: this.img.folder, name: this.img.name, favorite: this.img.favorite, current: true }; },
+
+                // ----- an album -----
                 async imgOpen(folder) {
                     const I = this.img, scroller = document.querySelector('.scroller-main');
                     if (I.folder !== folder) this.navPush();
@@ -13603,20 +13756,74 @@ No metadata is changed.`)) return;
                     try {
                         const d = await (await fetch('/api/images/album?folder=' + encodeURIComponent(folder))).json();
                         if (!d.success) throw new Error(d.error);
-                        const a = I.albums.find(x => x.folder === folder);
-                        Object.assign(I, { folder, name: a ? a.name : d.name, favorite: d.favorite, items: d.images, shown: 300, msg: '' });
+                        Object.assign(I, { folder, name: d.name, favorite: d.favorite, items: d.images, meta: d.meta || {}, videos: d.videos || [],
+                                           shown: this.imgPhotoPer(), photoPage: 1, msg: '' });
                         if (scroller) scroller.scrollTop = 0;
                     } catch (e) { I.msg = 'Could not open the album: ' + e.message; }
                     I.loading = false;
                 },
+                // from elsewhere (a video's File Info, a cast page): the album on the Images tab
+                async imgOpenAlbum(folder) {
+                    this.navPush();
+                    this._navHold++;                                               // one step back, not one per change below
+                    try {
+                        this.modals.fileInfo = false;
+                        if (this.castBioMode) Object.assign(this, { castBioMode: false, currentCastMember: null, castBioData: null });
+                        if (this.currentView !== 'library' || this.currentLibrary === 'Home') await this.selectLibraryOrGroup({ type: 'library', name: 'All Videos' });
+                        this.libraryTab = 'images';
+                        if (this.currentLibrary !== 'Home') this.libraryTabs[this.currentLibrary] = 'images';
+                        await this.imgOpen(folder);
+                    } finally { this._navHold--; }
+                },
                 imgBack() {
                     this.navPush();
                     const I = this.img, y = I.backScroll;
-                    Object.assign(I, { folder: null, items: [], backScroll: null });
-                    if (!I.albums.length || y == null) { this.imgLoadAlbums(); return; }
+                    Object.assign(I, { folder: null, items: [], videos: [], meta: {}, backScroll: null });
+                    if (!I.albums.length || y == null) { this.imgLoadAlbums(1); return; }
                     this.$nextTick(() => { const el = document.querySelector('.scroller-main'); if (el) el.scrollTop = y; });
                 },
-                imgMore() { if (this.img.shown < this.img.items.length) this.img.shown += 300; },
+
+                // the album's photos: all loaded (the viewer goes through every one), shown a page at a time
+                imgPhotoPer() { return parseInt(this.appSettings.imgPhotosPerPage) || 300; },
+                get imgPhotoPages() { return Math.max(1, Math.ceil(this.img.items.length / this.imgPhotoPer())); },
+                imgPhotos() {
+                    const I = this.img, n = I.items.length, mode = this.appSettings.imgPagination, per = this.imgPhotoPer();
+                    const [a, b] = mode === 'all' ? [0, n] : mode === 'pages' ? [(I.photoPage - 1) * per, Math.min(n, I.photoPage * per)] : [0, Math.min(n, I.shown)];
+                    return I.items.slice(a, b).map((it, k) => [it, a + k]);
+                },
+                imgMore() { if (this.img.shown < this.img.items.length) { this.img.shown += this.imgPhotoPer(); this.imgCatchSizes(); } },
+                imgPhotoGo(n) {
+                    const p = parseInt(n);
+                    this.img.pageEdit = false;
+                    if (isNaN(p) || p < 1 || p > this.imgPhotoPages || p === this.img.photoPage) return;
+                    this.img.photoPage = p;
+                    this.imgCatchSizes();
+                    const sc = document.querySelector('.scroller-main');
+                    if (sc) sc.scrollTop = 0;
+                },
+                imgFollow(idx) {                         // the viewer's photo stays on the grid's page
+                    const mode = this.appSettings.imgPagination;
+                    const page = Math.floor(idx / this.imgPhotoPer()) + 1;
+                    if (mode === 'pages' && page !== this.img.photoPage) { this.img.photoPage = page; this.imgCatchSizes(); }
+                    else if (mode !== 'all' && mode !== 'pages' && idx >= this.img.shown) { this.img.shown = idx + 1; this.imgCatchSizes(); }
+                },
+                // justified rows: each photo as wide as its shape needs at the row height, every row filled edge to edge
+                imgTileStyle(it) {
+                    const r = it.width && it.height ? it.width / it.height : 1, h = window.innerWidth < 640 ? 140 : 220;
+                    return `flex: ${r} 1 ${Math.round(r * h)}px; aspect-ratio: ${r}`;
+                },
+                imgTileLoaded(it, el) { if (!it.width && el.naturalWidth) Object.assign(it, { width: el.naturalWidth, height: el.naturalHeight }); },
+                // a big album's sizes further down are read in the background: fetch them before those photos show
+                async imgCatchSizes() {
+                    const I = this.img, folder = I.folder;
+                    if (!folder || !this.imgPhotos().some(([it]) => !it.width)) return;
+                    try {
+                        const d = await (await fetch('/api/images/album/sizes?folder=' + encodeURIComponent(folder))).json();
+                        if (!d.success || I.folder !== folder) return;
+                        for (const it of I.items) { const z = d.sizes[it.id]; if (z && !it.width) Object.assign(it, { width: z[0], height: z[1] }); }
+                    } catch (e) {}
+                },
+
                 // right-click: File Info for an image ({ id }) or an album ({ folder })
                 async imgShowInfo({ id, folder }) {
                     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});      // it opens over the page
@@ -13642,15 +13849,18 @@ No metadata is changed.`)) return;
                     try { await this.imgPost('/api/images/favorite', { ids: [it.id], on: !it.favorite }); it.favorite = !it.favorite; }
                     catch (e) { alert('Could not change it: ' + e.message); }
                 },
-                async imgAlbumFav(a) {               // an album card, or the open album (no card given)
-                    const folder = a ? a.folder : this.img.folder, on = !(a ? a.favorite : this.img.favorite);
+                async imgAlbumFav(a, on = null) {        // an album card, or the open album (no card given)
+                    const folder = a ? a.folder : this.img.folder;
+                    if (on === null) on = !(a ? a.favorite : this.img.favorite);
                     try {
                         await this.imgPost('/api/images/favorite', { folder, on });
-                        if (a) a.favorite = on; else this.img.favorite = on;
+                        if (a) a.favorite = on;
+                        if (folder === this.img.folder) this.img.favorite = on;
                         const card = this.img.albums.find(x => x.folder === folder);
                         if (card) card.favorite = on;
                     } catch (e) { alert('Could not change it: ' + e.message); }
                 },
+                async imgFavMany(folders, on) { for (const f of folders) await this.imgAlbumFav(this.img.albums.find(x => x.folder === f) || { folder: f }, on); },
                 async imgSetCover(it) {
                     try {
                         await this.imgPost('/api/images/cover', { folder: this.img.folder, id: it.id });
@@ -13659,6 +13869,148 @@ No metadata is changed.`)) return;
                         this.img.msg = 'Album cover set.';
                     } catch (e) { alert('Could not set the cover: ' + e.message); }
                 },
+                async imgRename(a) {
+                    const t = prompt("Album name (leave empty for the folder's name)", a.name);
+                    if (t === null || t.trim() === a.name) return;
+                    try {
+                        await this.imgPost('/api/images/meta', { folders: [a.folder], updates: { title: t.trim() } });
+                        await this.imgRefreshAfterEdit([a.folder]);
+                    } catch (e) { alert('Could not rename it: ' + e.message); }
+                },
+                // after an edit: the open album's header, the list's cards and the sidebar counts
+                async imgRefreshAfterEdit(folders) {
+                    if (this.img.folder && folders.includes(this.img.folder)) {
+                        try {
+                            const d = await (await fetch('/api/images/album?folder=' + encodeURIComponent(this.img.folder))).json();
+                            if (d.success) Object.assign(this.img, { name: d.name, meta: d.meta || {}, videos: d.videos || [] });
+                        } catch (e) {}
+                    }
+                    if (this.img.albums.length) this.imgLoadAlbums(0, 'keep');
+                    if (this.imgTabActive()) this.imgFetchFilters();
+                },
+
+                // ----- Edit Album: title, year, rating and the scene fields (cast, site, tags...), one album or several -----
+                imgEditFields() { return Array.isArray(this.editFields) ? this.editFields : []; },
+                async imgEditOpen(folders, tab = 'General') {
+                    if (!folders || !folders.length) return;
+                    try {
+                        const d = await this.imgPost('/api/images/meta/info', { folders });
+                        const list = d.albums, one = list.length === 1, data = {}, common = {};
+                        data.title = one ? list[0].title : '';
+                        for (const f of ['year', 'rating']) {
+                            const vals = list.map(a => ((a.meta || {})[f] || [''])[0]);
+                            data[f] = vals.every(v => v === vals[0]) ? vals[0] : '';
+                        }
+                        for (const f of this.imgEditFields()) {            // what every album has (any case)
+                            const sets = list.map(a => new Set(((a.meta || {})[f] || []).map(v => v.toLowerCase())));
+                            common[f] = ((list[0].meta || {})[f] || []).filter(v => sets.every(x => x.has(v.toLowerCase())));
+                            data[f] = common[f].join(', ');
+                        }
+                        Object.assign(this.imgEdit, { open: true, folders: list.map(a => a.folder), data, orig: { ...data }, common,
+                                                      tab: one ? tab : (tab === 'Videos' ? 'General' : tab), busy: false, msg: '',
+                                                      videos: one ? (list[0].videos || []) : [], sugg: [], q: '', results: [] });
+                        if (one) this.imgEditSuggest();
+                    } catch (e) { alert('Could not open it: ' + e.message); }
+                },
+                imgEditDirty() { return JSON.stringify(this.imgEdit.data) !== JSON.stringify(this.imgEdit.orig); },
+                imgEditClose() {
+                    if (this.imgEditDirty() && !confirm('Unsaved changes. Close?')) return;
+                    this.imgEdit.open = false;
+                },
+                imgEditQuick(field, tag) {
+                    const d = this.imgEdit.data, cur = String(d[field] || '').split(',').map(x => x.trim()).filter(Boolean);
+                    if (!cur.some(t => t.toLowerCase() === tag.toLowerCase())) { cur.push(tag); d[field] = cur.join(', '); }
+                },
+                async imgEditSave() {
+                    const E = this.imgEdit;
+                    if (E.busy) return;
+                    if (!(await this.castResolveTyped(E.data, E.common))) return;     // 'which Jane Doe?' - cancelled
+                    const updates = {}, add = {}, remove = {};
+                    for (const k of ['title', 'year', 'rating']) {
+                        if (k === 'title' && E.folders.length > 1) continue;
+                        if ((E.data[k] || '').trim() !== (E.orig[k] || '').trim()) updates[k] = (E.data[k] || '').trim();
+                    }
+                    for (const f of this.imgEditFields()) {
+                        if ((E.data[f] || '').trim() === (E.orig[f] || '').trim()) continue;
+                        const now = String(E.data[f] || '').split(',').map(x => x.trim()).filter(Boolean), was = E.common[f] || [];
+                        const gone = was.filter(x => !now.includes(x)), added = now.filter(x => !was.includes(x));
+                        if (gone.length) remove[f] = gone;
+                        if (added.length) add[f] = added;
+                    }
+                    E.busy = true;
+                    try {
+                        await this.imgPost('/api/images/meta', { folders: E.folders, updates, add, remove });
+                        E.open = false;
+                        await this.imgRefreshAfterEdit(E.folders);
+                    } catch (e) { E.msg = 'Could not save: ' + e.message; }
+                    E.busy = false;
+                },
+                // the videos it goes with (one album): suggestions next to it, a search, Copy from video
+                async imgEditSuggest() {
+                    const folder = this.imgEdit.folders[0];
+                    try {
+                        const d = await (await fetch('/api/images/videos/suggest?folder=' + encodeURIComponent(folder))).json();
+                        if (d.success && this.imgEdit.folders[0] === folder) this.imgEdit.sugg = d.videos;
+                    } catch (e) {}
+                },
+                imgEditSearch() {
+                    const E = this.imgEdit;
+                    clearTimeout(E.qTimer);
+                    E.qTimer = setTimeout(async () => {
+                        const q = E.q.trim();
+                        if (!q) { E.results = []; return; }
+                        try {
+                            const qs = new URLSearchParams({ query: q, library: 'All Videos', page: 1, limit: 20 });
+                            const d = await (await fetch('/api/videos?' + qs)).json();
+                            if (E.q.trim() === q) E.results = (d.items || []).filter(v => v.type !== 'folder' && v.video_id);
+                        } catch (e) { E.results = []; }
+                    }, 300);
+                },
+                imgLinked(v) { return this.imgEdit.videos.some(x => x.video_id === v.video_id); },
+                async imgLink(v, on = true) {
+                    const E = this.imgEdit, folder = E.folders[0];
+                    try {
+                        const d = await this.imgPost('/api/images/videos/link', { folder, video_ids: [v.video_id], on });
+                        E.videos = d.videos;
+                        E.sugg = E.sugg.filter(x => x.video_id !== v.video_id);
+                        if (!on) this.imgEditSuggest();
+                        if (this.img.folder === folder) this.img.videos = d.videos;
+                    } catch (e) { E.msg = 'Could not change the link: ' + e.message; }
+                },
+                imgEditCopy() {                          // the linked videos' values added to the form (nothing removed)
+                    const E = this.imgEdit;
+                    for (const f of this.imgEditFields()) {
+                        const cur = String(E.data[f] || '').split(',').map(x => x.trim()).filter(Boolean);
+                        for (const v of E.videos) {
+                            const vals = f === 'male_cast' ? this.maleCastOf(v)
+                                : f === 'cast' ? (v.cast || []).filter(c => !this.maleCastOf(v).includes(c)) : (Array.isArray(v[f]) ? v[f] : []);
+                            for (const x of vals) if (x && !cur.some(c => c.toLowerCase() === String(x).toLowerCase())) cur.push(String(x));
+                        }
+                        E.data[f] = cur.join(', ');
+                    }
+                    if (!E.data.year) E.data.year = String((E.videos.find(v => v.year) || {}).year || '');
+                    E.msg = 'Copied from ' + E.videos.length + ' video' + (E.videos.length === 1 ? '' : 's') + ' - check, then Save.';
+                    E.tab = 'General';
+                },
+
+                // ----- albums elsewhere: a performer's page, a video's File Info -----
+                async imgCastLoad(name) {
+                    this.castAlbums = [];
+                    try {
+                        const d = await (await fetch('/api/images/albums?' + new URLSearchParams({ cast: name, limit: 500 }))).json();
+                        if (d.success && this.currentCastMember === name) this.castAlbums = d.albums;
+                    } catch (e) {}
+                },
+                async imgVideoAlbums(path) {
+                    if (this._infoAlbumsFor === path) return;
+                    this._infoAlbumsFor = path;
+                    this.infoAlbums = [];
+                    try {
+                        const d = await (await fetch('/api/images/by-video?path=' + encodeURIComponent(path))).json();
+                        if (d.success && this._infoAlbumsFor === path) this.infoAlbums = d.albums;
+                    } catch (e) {}
+                },
+
                 async imgLoadSkip() {
                     try { const d = await (await fetch('/api/images/settings')).json(); if (d.success) this.img.skipText = d.skip_folders.join(', '); } catch (e) {}
                 },
@@ -13667,7 +14019,7 @@ No metadata is changed.`)) return;
                         const d = await this.imgPost('/api/images/settings', { skip_folders: this.img.skipText.split(',').map(s => s.trim()).filter(Boolean) });
                         this.img.skipText = d.skip_folders.join(', ');
                         this.imgLoadCounts();
-                        if (this.imgTabActive() && !this.img.folder) this.imgLoadAlbums();
+                        if (this.imgTabActive() && !this.img.folder) this.imgLoadAlbums(1);
                     } catch (e) { alert('Could not save: ' + e.message); }
                 },
 
@@ -13686,7 +14038,7 @@ No metadata is changed.`)) return;
                     const n = this.img.items.length;
                     if (!n) return;
                     Object.assign(this.iv, { idx: (this.iv.idx + d + n) % n, z: 1, x: 0, y: 0 });
-                    if (this.iv.idx >= this.img.shown) this.img.shown = this.iv.idx + 1;   // the grid keeps up
+                    this.imgFollow(this.iv.idx);                                  // the grid keeps up
                     this.ivPreload();
                 },
                 ivPreload() {
@@ -14970,59 +15322,137 @@ No metadata is changed.`)) return;
                         </div>
                     </div>
 
-                    <!-- Images tab (images.py): albums by folder -> an album's images -> the viewer -->
-                    <div x-show="imgTabActive()" class="p-6">
+                    <!-- Images tab (images.py): albums by folder -> an album's photos -> the viewer -->
+                    <div x-show="imgTabActive()" class="p-6" :class="jumpBarShown() ? 'pr-10' : ''">
                         <div x-show="!img.folder">
-                            <div class="flex flex-wrap items-center gap-2 mb-4 text-sm">
-                                <input type="text" x-model="img.q" @input="imgSearch()" placeholder="Find an album…"
-                                       class="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-56">
-                                <select x-model="img.sort" @change="imgLoadAlbums()" class="bg-gray-800 border border-gray-700 rounded px-2 py-1">
-                                    <option value="name">Name</option><option value="newest">Newest</option>
-                                    <option value="count">Most images</option><option value="favorites">Favorites first</option>
-                                </select>
-                                <span class="text-gray-500" x-text="img.albums.length + ' album' + (img.albums.length === 1 ? '' : 's') + ', ' + img.albums.reduce((n, a) => n + a.count, 0) + ' images'"></span>
-                                <span x-show="img.loading" class="text-gray-500">Loading…</span>
+                            <div class="sticky z-10 bg-gray-900 -mx-6 px-6 pt-1 pb-3 mb-3 -mt-2" :style="`top:${tabsH}px`" x-ref="imgToolbar">
+                                <div class="flex flex-wrap items-center gap-2 text-sm">
+                                    <input type="search" x-model="img.q" @input="imgSearch()" placeholder="Find an album, cast, tag…"
+                                           class="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 w-56">
+                                    <select x-model="img.sort" @change="imgLoadAlbums(1)" class="bg-gray-800 border border-gray-600 rounded px-1 py-1.5">
+                                        <option value="name">Title</option><option value="cast">Cast</option><option value="count">Most photos</option>
+                                        <option value="newest">Newest</option><option value="favorites">Favorites first</option>
+                                    </select>
+                                    <span class="text-gray-500" x-text="img.total + ' album' + (img.total === 1 ? '' : 's')"></span>
+                                    <span x-show="img.loading" class="text-gray-500">Loading…</span>
+                                    <template x-if="imgSelFolders.length">
+                                        <div class="flex items-center gap-2 ml-auto">
+                                            <span class="text-blue-300" x-text="imgSelFolders.length + ' selected'"></span>
+                                            <button @click="imgEditOpen(imgSelFolders)" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white">Edit details…</button>
+                                            <button @click="imgClearSel()" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600">Clear</button>
+                                        </div>
+                                    </template>
+                                    <template x-if="appSettings.imgPagination === 'pages' && imgTotalPages > 1">
+                                        <div class="flex items-center gap-1" :class="imgSelFolders.length ? '' : 'ml-auto'">
+                                            <button @click="imgGoPage(1)" :disabled="img.page <= 1" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="First page">&laquo;</button>
+                                            <button @click="imgGoPage(img.page - 1)" :disabled="img.page <= 1" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="Previous page">&lsaquo;</button>
+                                            <span x-show="!img.pageEdit" @click="img.pageEdit = true; img.pageInput = img.page; $nextTick(() => $refs.imgPageIn?.select())"
+                                                  class="px-2 cursor-pointer hover:text-white text-gray-300" title="Click to jump to a page" x-text="img.page + ' / ' + imgTotalPages"></span>
+                                            <input x-show="img.pageEdit" x-ref="imgPageIn" x-model="img.pageInput" type="number" min="1" :max="imgTotalPages"
+                                                   @keydown.enter="imgGoPage(img.pageInput)" @keydown.escape.stop="img.pageEdit = false" @blur="img.pageEdit = false"
+                                                   class="w-16 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-center">
+                                            <button @click="imgGoPage(img.page + 1)" :disabled="img.page >= imgTotalPages" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="Next page">&rsaquo;</button>
+                                            <button @click="imgGoPage(imgTotalPages)" :disabled="img.page >= imgTotalPages" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="Last page">&raquo;</button>
+                                        </div>
+                                    </template>
+                                </div>
+                                <p x-show="img.msg" class="text-xs text-red-400 mt-2" x-text="img.msg"></p>
+                            </div>
+                            <div x-show="img.startPage > 1 && appSettings.imgPagination !== 'pages' && img.albums.length" class="text-center mb-3">
+                                <button @click="imgLoadAlbums(0, 'prepend')" class="px-4 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Load earlier albums</button>
                             </div>
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                                <template x-for="a in img.albums" :key="a.folder">
-                                    <div @click="imgOpen(a.folder)" @contextmenu.prevent.stop="imgShowInfo({ folder: a.folder })" class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden cursor-pointer hover:border-blue-500 group relative" :title="a.folder">
+                                <template x-for="(a, idx) in img.albums" :key="a.folder">
+                                    <div :data-aidx="idx" @click="imgCardClick(a, idx, $event)" @contextmenu.prevent.stop="imgMenuOpen($event, a)"
+                                         class="bg-gray-800 rounded-lg border overflow-hidden cursor-pointer group relative select-none" :title="a.folder"
+                                         :class="img.sel[a.folder] ? 'border-blue-500 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
                                         <div class="aspect-square bg-gray-900">
                                             <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover">
                                         </div>
+                                        <button @click.stop="imgToggleSel(a, idx)" class="absolute top-1 left-1 w-5 h-5 rounded border text-xs leading-none"
+                                                :class="img.sel[a.folder] ? 'bg-blue-600 border-blue-400 text-white' : 'bg-black/40 border-white/50 text-transparent opacity-0 group-hover:opacity-100'"
+                                                title="Select (Ctrl-click / Shift-click)">✓</button>
                                         <button @click.stop="imgAlbumFav(a)" class="absolute top-1 right-1 text-xl leading-none px-1 rounded bg-black/40"
                                                 :class="a.favorite ? 'text-yellow-400' : 'text-white/60 opacity-0 group-hover:opacity-100'" title="Favorite album">&#9733;</button>
                                         <div class="p-2">
                                             <div class="text-sm font-bold truncate" x-text="a.name"></div>
-                                            <div class="text-xs text-gray-400" x-text="a.count + ' image' + (a.count === 1 ? '' : 's')"></div>
+                                            <div class="text-xs text-gray-400 truncate">
+                                                <span x-text="a.count + ' photo' + (a.count === 1 ? '' : 's')"></span><span x-show="a.cast.length" x-text="' · ' + a.cast.slice(0, 2).join(', ') + (a.cast.length > 2 ? '…' : '')"></span>
+                                            </div>
                                         </div>
                                     </div>
                                 </template>
                             </div>
-                            <div x-show="!img.loading && !img.albums.length" class="text-center py-20 text-gray-500" x-text="img.q ? 'No album matches.' : 'No images in this library.'"></div>
+                            <div class="py-4 text-center text-sm text-gray-500">
+                                <button x-show="appSettings.imgPagination === 'button' && (img.startPage - 1) * imgPer() + img.albums.length < img.total && !img.loading"
+                                        @click="imgLoadAlbums(0, 'append')" class="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-white">Load more</button>
+                                <span x-show="appSettings.imgPagination === 'scroll' && img.loading && img.albums.length">Loading more…</span>
+                            </div>
+                            <div x-show="!img.loading && !img.albums.length" class="text-center py-20 text-gray-500" x-text="img.q || Object.keys(activeTags).length || Object.keys(activeSites).length ? 'No album matches.' : 'No images in this library.'"></div>
                         </div>
 
-                        <div x-show="img.folder">
-                            <div class="flex flex-wrap items-center gap-3 mb-4">
-                                <button @click="imgBack()" class="px-2 py-1 rounded text-sm bg-gray-800 hover:bg-gray-700 text-gray-300">‹ Albums</button>
-                                <h2 class="text-lg font-bold truncate" x-text="img.name" :title="img.folder"></h2>
-                                <span class="text-sm text-gray-500" x-text="img.items.length + ' images'"></span>
-                                <button @click="imgAlbumFav(null)" class="text-xl leading-none" :class="img.favorite ? 'text-yellow-400' : 'text-gray-500 hover:text-yellow-300'" title="Favorite album">&#9733;</button>
-                                <button x-show="img.items.length" @click="ivOpen(0); ivSlideshow()" class="ml-auto px-3 py-1 rounded text-sm bg-gray-800 hover:bg-gray-700 text-gray-300">▶ Slideshow</button>
-                                <span x-show="img.msg" class="text-xs text-gray-400" x-text="img.msg"></span>
+                        <div x-show="img.folder" @contextmenu.prevent="imgMenuOpen($event, imgCurrentAlbum())">
+                            <div class="sticky z-10 bg-gray-900 -mx-6 px-6 pt-1 pb-3 mb-3 -mt-2" :style="`top:${tabsH}px`">
+                                <div class="flex flex-wrap items-center gap-3 text-sm">
+                                    <button @click="imgBack()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="Back to the albums (Esc)">‹ Albums</button>
+                                    <h2 class="text-lg font-bold truncate max-w-[50vw]" x-text="img.name" :title="img.folder"></h2>
+                                    <span class="text-gray-500" x-text="img.items.length + ' photos'"></span>
+                                    <button @click="imgAlbumFav(null)" class="text-xl leading-none" :class="img.favorite ? 'text-yellow-400' : 'text-gray-500 hover:text-yellow-300'" title="Favorite album">&#9733;</button>
+                                    <button @click="imgEditOpen([img.folder])" class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300" title="Title, cast, tags, linked videos">Edit details…</button>
+                                    <button x-show="img.items.length" @click="ivOpen(0); ivSlideshow()" class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">▶ Slideshow</button>
+                                    <span x-show="img.msg" class="text-xs text-gray-400" x-text="img.msg"></span>
+                                    <template x-if="appSettings.imgPagination === 'pages' && imgPhotoPages > 1">
+                                        <div class="flex items-center gap-1 ml-auto">
+                                            <button @click="imgPhotoGo(1)" :disabled="img.photoPage <= 1" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="First page">&laquo;</button>
+                                            <button @click="imgPhotoGo(img.photoPage - 1)" :disabled="img.photoPage <= 1" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="Previous page">&lsaquo;</button>
+                                            <span x-show="!img.pageEdit" @click="img.pageEdit = true; img.pageInput = img.photoPage; $nextTick(() => $refs.imgPhotoPageIn?.select())"
+                                                  class="px-2 cursor-pointer hover:text-white text-gray-300" title="Click to jump to a page" x-text="img.photoPage + ' / ' + imgPhotoPages"></span>
+                                            <input x-show="img.pageEdit" x-ref="imgPhotoPageIn" x-model="img.pageInput" type="number" min="1" :max="imgPhotoPages"
+                                                   @keydown.enter="imgPhotoGo(img.pageInput)" @keydown.escape.stop="img.pageEdit = false" @blur="img.pageEdit = false"
+                                                   class="w-16 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-center">
+                                            <button @click="imgPhotoGo(img.photoPage + 1)" :disabled="img.photoPage >= imgPhotoPages" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="Next page">&rsaquo;</button>
+                                            <button @click="imgPhotoGo(imgPhotoPages)" :disabled="img.photoPage >= imgPhotoPages" class="bg-gray-700 px-2 py-1 rounded font-mono disabled:opacity-30 hover:bg-gray-600" title="Last page">&raquo;</button>
+                                        </div>
+                                    </template>
+                                </div>
+                                <div x-show="imgCastOf(img.meta).length || imgTagsOf(img.meta).length" class="flex flex-wrap items-center gap-1.5 mt-2 text-xs">
+                                    <template x-for="c in imgCastOf(img.meta)" :key="'c' + c">
+                                        <button @click="imgSearchFor(c)" class="bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded text-gray-100" title="Albums with them" x-text="c"></button>
+                                    </template>
+                                    <template x-for="(t, ti) in imgTagsOf(img.meta)" :key="'t' + ti">
+                                        <button @click="imgSearchFor(t)" class="bg-gray-800 hover:bg-gray-700 border border-gray-700 px-2 py-0.5 rounded text-gray-300" x-text="t"></button>
+                                    </template>
+                                </div>
                             </div>
-                            <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5">
-                                <template x-for="(it, i) in img.items.slice(0, img.shown)" :key="it.id">
-                                    <div @click="ivOpen(i)" @contextmenu.prevent.stop="imgShowInfo({ id: it.id })" class="relative aspect-square bg-gray-900 rounded overflow-hidden cursor-zoom-in group" :title="it.filename">
-                                        <img :src="imgThumb(it.id, it.mtime)" loading="lazy" class="w-full h-full object-cover">
+                            <div x-show="img.videos.length" class="mb-4">
+                                <div class="text-xs uppercase text-gray-400 mb-1">Videos</div>
+                                <div class="flex gap-3 overflow-x-auto pb-2">
+                                    <template x-for="v in img.videos" :key="v.path">
+                                        <div class="w-48 flex-shrink-0 cursor-pointer group" @click="openPlayer(v)" @contextmenu.prevent.stop="handleRightClick($event, v)" :title="v.path">
+                                            <div class="aspect-video bg-gray-800 rounded overflow-hidden border border-gray-700 group-hover:border-blue-500"><img :src="getThumb(v)" loading="lazy" class="w-full h-full object-cover"></div>
+                                            <div class="text-xs truncate mt-1" x-text="v.title || v.filename"></div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                            <!-- every photo whole, rows filled edge to edge (the last one needn't be) -->
+                            <div class="flex flex-wrap items-start gap-1.5">
+                                <template x-for="[it, i] in imgPhotos()" :key="it.id">
+                                    <div @click="ivOpen(i)" @contextmenu.prevent.stop="imgMenuOpen($event, imgCurrentAlbum(), it)" :style="imgTileStyle(it)"
+                                         class="relative bg-gray-900 rounded overflow-hidden cursor-zoom-in group" :title="it.path || it.filename">
+                                        <img :src="imgThumb(it.id, it.mtime)" loading="lazy" @load="imgTileLoaded(it, $el)" class="w-full h-full object-cover">
                                         <button @click.stop="imgFav(it)" class="absolute top-0.5 right-0.5 text-lg leading-none px-1 rounded bg-black/40"
                                                 :class="it.favorite ? 'text-yellow-400' : 'text-white/70 opacity-0 group-hover:opacity-100'" title="Favorite">&#9733;</button>
                                         <button @click.stop="imgSetCover(it)" class="absolute bottom-0.5 right-0.5 text-[10px] px-1 rounded bg-black/60 text-white opacity-0 group-hover:opacity-100" title="Use as the album's cover">cover</button>
                                     </div>
                                 </template>
+                                <div style="flex-grow: 1000000"></div>
                             </div>
-                            <div x-show="img.shown < img.items.length" class="text-center py-4 text-gray-500 text-sm"
-                                 x-init="new IntersectionObserver(es => { if (es[0].isIntersecting) imgMore(); }, { rootMargin: '1200px' }).observe($el)"
-                                 x-text="'Loading more… (' + (img.items.length - img.shown) + ' to go)'"></div>
+                            <div class="py-4 text-center text-sm text-gray-500">
+                                <button x-show="appSettings.imgPagination === 'button' && img.shown < img.items.length" @click="imgMore()"
+                                        class="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-white" x-text="'Load more (' + (img.items.length - img.shown) + ' to go)'"></button>
+                                <span x-show="appSettings.imgPagination === 'scroll' && img.shown < img.items.length" x-text="(img.items.length - img.shown) + ' more below'"></span>
+                            </div>
                         </div>
                     </div>
 
@@ -15679,6 +16109,21 @@ No metadata is changed.`)) return;
                             </div>
                         </div>
 
+                        <!-- Photo albums (images.py) with them in the cast -->
+                        <div x-show="castAlbums.length" class="mb-6">
+                            <h2 class="text-xl font-semibold mb-3">Photo albums (<span x-text="castAlbums.length"></span>)</h2>
+                            <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
+                                <template x-for="a in castAlbums" :key="a.folder">
+                                    <div @click="imgOpenAlbum(a.folder)" class="cursor-pointer group" :title="a.folder">
+                                        <div class="aspect-square bg-gray-800 rounded overflow-hidden border border-gray-700 group-hover:border-blue-500">
+                                            <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover"></div>
+                                        <div class="text-xs truncate mt-1" x-text="a.name"></div>
+                                        <div class="text-[10px] text-gray-500" x-text="a.count + ' photos'"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
                         <!-- Videos Grid -->
                         <div>
                             <div class="flex items-center justify-between mb-3 sm:mb-4 flex-wrap gap-2">
@@ -16017,6 +16462,10 @@ No metadata is changed.`)) return;
                     <button @click="img.info = null" class="text-gray-400 text-2xl">&times;</button>
                 </div>
                 <div class="space-y-3 text-sm">
+                    <div x-show="img.info?.album">
+                        <div class="text-gray-400">Album</div>
+                        <div class="break-all" x-text="img.info?.name"></div>
+                    </div>
                     <div>
                         <div class="text-gray-400" x-text="img.info?.album ? 'Folder' : 'Path'"></div>
                         <div class="break-all" style="user-select: all" x-text="img.info?.path"></div>
@@ -16034,6 +16483,128 @@ No metadata is changed.`)) return;
                     </div>
                 </div>
                 <div class="mt-6 flex justify-end"><button @click="img.info = null" class="bg-blue-600 px-4 py-2 rounded">Close</button></div>
+            </div>
+        </div>
+
+        <!-- Images: right-click an album (a card or the open album) or a photo -->
+        <div x-show="img.menu.open" x-cloak class="fixed z-[97] bg-gray-800 border border-gray-600 rounded shadow-2xl py-1 text-sm w-60"
+             :style="`left: ${img.menu.x}px; top: ${img.menu.y}px`" @click.outside="img.menu.open = false" @contextmenu.prevent>
+            <template x-if="img.menu.it">
+                <div>
+                    <div class="px-3 py-1 text-xs text-gray-400 truncate" x-text="img.menu.it.filename"></div>
+                    <button @click="img.menu.open = false; imgShowInfo({ id: img.menu.it.id })" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">File Info</button>
+                    <button @click="img.menu.open = false; imgFav(img.menu.it)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600" x-text="img.menu.it.favorite ? '☆ Remove from favorites' : '★ Favorite'"></button>
+                    <button @click="img.menu.open = false; imgSetCover(img.menu.it)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Use as the album's cover</button>
+                    <div class="border-t border-gray-700 my-1"></div>
+                </div>
+            </template>
+            <template x-if="img.menu.a">
+                <div>
+                    <div class="px-3 py-1 text-xs text-gray-400 truncate" x-text="imgMenuFolders().length > 1 ? imgMenuFolders().length + ' albums' : 'Album: ' + img.menu.a.name"></div>
+                    <button x-show="!img.menu.a.current && imgMenuFolders().length === 1" @click="img.menu.open = false; imgOpen(img.menu.a.folder)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Open</button>
+                    <button @click="img.menu.open = false; imgEditOpen(imgMenuFolders())" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                            x-text="imgMenuFolders().length > 1 ? 'Edit details (' + imgMenuFolders().length + ' albums)…' : 'Edit details…'"></button>
+                    <button x-show="imgMenuFolders().length === 1" @click="img.menu.open = false; imgRename(img.menu.a)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Rename…</button>
+                    <button x-show="imgMenuFolders().length === 1" @click="img.menu.open = false; imgEditOpen(imgMenuFolders(), 'Videos')" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Link videos…</button>
+                    <button x-show="imgMenuFolders().length === 1" @click="img.menu.open = false; imgAlbumFav(img.menu.a.current ? null : img.menu.a)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                            x-text="img.menu.a.favorite ? '☆ Remove from favorites' : '★ Add to favorites'"></button>
+                    <button x-show="imgMenuFolders().length > 1" @click="img.menu.open = false; imgFavMany(imgMenuFolders(), true)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">★ Add to favorites</button>
+                    <button x-show="imgMenuFolders().length > 1" @click="img.menu.open = false; imgFavMany(imgMenuFolders(), false)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">☆ Remove from favorites</button>
+                    <button x-show="!img.menu.a.current" @click="img.menu.open = false; imgToggleSel(img.menu.a, img.albums.indexOf(img.menu.a))" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                            x-text="img.sel[img.menu.a.folder] ? 'Unselect' : 'Select'"></button>
+                    <button x-show="!img.menu.a.current && imgSelFolders.length > 1" @click="img.menu.open = false; imgClearSel()" class="w-full text-left px-3 py-1.5 hover:bg-blue-600"
+                            x-text="'Clear selection (' + imgSelFolders.length + ')'"></button>
+                    <button x-show="imgMenuFolders().length === 1" @click="img.menu.open = false; imgShowInfo({ folder: img.menu.a.folder })" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Album File Info</button>
+                </div>
+            </template>
+        </div>
+
+        <!-- Images: Edit Album (one album or several) - the fields scenes have, album-wide -->
+        <div x-show="imgEdit.open" x-cloak class="fixed inset-0 z-[90] bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg flex flex-col max-h-[95vh] shadow-2xl w-[95%] max-w-4xl">
+                <div class="p-4 border-b border-gray-700 flex justify-between items-center gap-3 shrink-0">
+                    <span class="flex-1 min-w-0"><span class="font-bold block" x-text="imgEdit.folders.length > 1 ? 'Edit ' + imgEdit.folders.length + ' albums' : 'Edit Album'"></span>
+                        <span class="block text-xs text-gray-400 truncate" x-text="imgEdit.folders.length === 1 ? imgEdit.folders[0] : 'Only what you change is saved; values shown are the ones every album has.'"
+                              :title="imgEdit.folders.join('\n')"></span></span>
+                    <span class="text-xs text-gray-500">Ctrl+Enter to Save</span>
+                </div>
+                <div class="flex border-b border-gray-700 overflow-x-auto shrink-0">
+                    <template x-for="tab in ['General', 'Appearance', 'Attributes'].concat(imgEdit.folders.length === 1 ? ['Videos'] : [])" :key="'ie' + tab">
+                        <button @click="imgEdit.tab = tab" class="px-6 py-3 text-sm font-medium border-b-2 whitespace-nowrap"
+                                :class="imgEdit.tab === tab ? 'border-blue-500 text-white bg-gray-700' : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-700'"
+                                x-text="tab === 'Videos' ? 'Videos (' + imgEdit.videos.length + ')' : tab"></button>
+                    </template>
+                </div>
+                <div class="p-6 overflow-y-auto space-y-4 scroller flex-1">
+                    <div x-show="imgEdit.tab === 'General'" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div x-show="imgEdit.folders.length === 1" class="sm:col-span-3"><label class="block text-xs text-gray-400 mb-1">Title <span class="text-gray-500">(empty: the folder's name)</span></label>
+                            <input type="text" x-model="imgEdit.data.title" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
+                        <div><label class="block text-xs text-gray-400 mb-1">Year</label><input type="text" x-model="imgEdit.data.year" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
+                        <div><label class="block text-xs text-gray-400 mb-1">Rating</label><input type="text" x-model="imgEdit.data.rating" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
+                    </div>
+                    <template x-for="grp in ['General', 'Appearance', 'Attributes']" :key="'ieg' + grp">
+                        <div x-show="imgEdit.tab === grp" class="space-y-4">
+                            <template x-for="field in (fieldGroups[grp] || []).filter(f => imgEditFields().includes(f))" :key="'ief' + field">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1" :class="field === 'male_cast' ? '' : 'capitalize'"
+                                           x-text="field === 'male_cast' ? 'Male Cast' : field"></label>
+                                    <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
+                                        <template x-for="tag in qtButtons(field)" :key="tag">
+                                            <button @click="imgEditQuick(field, tag)" type="button" class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs" x-text="tag"></button>
+                                        </template>
+                                    </div>
+                                    <textarea x-model="imgEdit.data[field]" rows="1" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y"
+                                              style="min-height: 2.25rem; max-height: 20rem;" placeholder="comma-separated"></textarea>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                    <div x-show="imgEdit.tab === 'Videos'" class="space-y-5 text-sm">
+                        <div>
+                            <div class="flex items-center gap-3 mb-2">
+                                <span class="text-xs uppercase text-gray-400 flex-1">Linked to this album</span>
+                                <button x-show="imgEdit.videos.length" @click="imgEditCopy()" class="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs"
+                                        title="Add the linked videos' cast, site, tags and the rest to this album's details (nothing is removed)">Copy details from video</button>
+                            </div>
+                            <div x-show="!imgEdit.videos.length" class="text-gray-500 text-xs">None yet - pick from the suggestions or search below.</div>
+                            <template x-for="v in imgEdit.videos" :key="'iv' + v.video_id">
+                                <div class="flex items-center gap-3 py-1">
+                                    <img :src="getThumb(v)" class="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0">
+                                    <div class="flex-1 min-w-0"><div class="truncate" x-text="v.title || v.filename"></div><div class="truncate text-xs text-gray-500" x-text="v.path"></div></div>
+                                    <button @click="imgLink(v, false)" class="px-2 py-1 rounded bg-gray-700 hover:bg-red-700 text-xs">Unlink</button>
+                                </div>
+                            </template>
+                        </div>
+                        <div x-show="imgEdit.sugg.length">
+                            <div class="text-xs uppercase text-gray-400 mb-2">Suggested (next to the album)</div>
+                            <template x-for="v in imgEdit.sugg" :key="'is' + v.video_id">
+                                <div class="flex items-center gap-3 py-1">
+                                    <img :src="getThumb(v)" class="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0">
+                                    <div class="flex-1 min-w-0"><div class="truncate" x-text="v.title || v.filename"></div><div class="truncate text-xs text-gray-500" x-text="v.path"></div></div>
+                                    <button @click="imgLink(v)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">+ Link</button>
+                                </div>
+                            </template>
+                        </div>
+                        <div>
+                            <div class="text-xs uppercase text-gray-400 mb-2">Search all videos</div>
+                            <input type="search" x-model="imgEdit.q" @input="imgEditSearch()" placeholder="Title, cast, filename…"
+                                   class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 mb-2">
+                            <template x-for="v in imgEdit.results" :key="'ir' + v.video_id">
+                                <div class="flex items-center gap-3 py-1">
+                                    <img :src="getThumb(v)" class="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0">
+                                    <div class="flex-1 min-w-0"><div class="truncate" x-text="v.title || v.filename"></div><div class="truncate text-xs text-gray-500" x-text="v.path"></div></div>
+                                    <button x-show="!imgLinked(v)" @click="imgLink(v)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">+ Link</button>
+                                    <span x-show="imgLinked(v)" class="text-xs text-gray-500">linked</span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+                <div class="p-4 border-t border-gray-700 flex items-center justify-end gap-2">
+                    <span class="text-xs text-gray-400 flex-1" x-text="imgEdit.msg"></span>
+                    <button @click="imgEditClose()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel (Esc)</button>
+                    <button @click="imgEditSave()" :disabled="!!imgEdit.busy" class="bg-blue-600 px-4 py-2 rounded hover:bg-blue-500 disabled:opacity-50">Save (Ctrl+Enter)</button>
+                </div>
             </div>
         </div>
 
@@ -16791,6 +17362,12 @@ No metadata is changed.`)) return;
                             <div x-show="infoVideo?.movie" class="col-span-2"><span class="text-gray-400 block text-xs uppercase">Movie</span>
                                 <a href="#" @click.prevent="mvOpenFromVideo(infoVideo)" class="text-blue-300 hover:text-blue-200 hover:underline" title="Open the movie"
                                    x-text="movieLabel(infoVideo)"></a></div>
+                            <div x-show="infoAlbums.length" class="col-span-2" x-effect="modals.fileInfo && infoVideo?.path && imgVideoAlbums(infoVideo.path)">
+                                <span class="text-gray-400 block text-xs uppercase">Photo albums</span>
+                                <template x-for="a in infoAlbums" :key="a.folder">
+                                    <a href="#" @click.prevent="imgOpenAlbum(a.folder)" class="text-blue-300 hover:text-blue-200 hover:underline mr-3" :title="a.folder" x-text="a.name"></a>
+                                </template>
+                            </div>
                         </div>
                         <div class="grid grid-cols-3 gap-3 mt-3" x-effect="modals.fileInfo && infoVideo?.path && phLoadTotals(infoVideo.path)">
                             <div><span class="text-gray-400 block text-xs uppercase">Plays</span><span x-text="infoPlay ? infoPlay.plays : '…'"></span></div>
@@ -17289,6 +17866,24 @@ No metadata is changed.`)) return;
                                 <input type="text" x-model="img.skipText" @keydown.enter="imgSaveSkip()" class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm">
                                 <button @click="imgSaveSkip()" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-sm">Save</button>
                             </div>
+                        </div>
+
+                        <div x-show="sPage('browsing')" class="bg-gray-900 p-3 rounded space-y-2">
+                            <label class="block text-sm font-bold">Images tab</label>
+                            <div class="flex flex-wrap items-center gap-4 text-sm">
+                                <label class="flex items-center gap-2">Albums per page
+                                    <input type="number" min="12" max="2000" x-model="appSettings.imgAlbumsPerPage" @change="imgPagingChanged()" :disabled="appSettings.imgPagination === 'all'"
+                                           class="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm focus:border-blue-500 outline-none"></label>
+                                <label class="flex items-center gap-2">Photos per page (in an album)
+                                    <input type="number" min="24" max="5000" x-model="appSettings.imgPhotosPerPage" @change="imgPagingChanged()" :disabled="appSettings.imgPagination === 'all'"
+                                           class="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm focus:border-blue-500 outline-none"></label>
+                            </div>
+                            <template x-for="o in [['pages', 'Pages (Previous / Next, show only the current page)'], ['button', 'Load More button'], ['scroll', 'Infinite scroll (load more as you scroll)'], ['all', 'Show everything']]" :key="'imp' + o[0]">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" x-model="appSettings.imgPagination" :value="o[0]" @change="imgPagingChanged()">
+                                    <span class="text-sm" x-text="o[1]"></span>
+                                </label>
+                            </template>
                         </div>
 
                         <button x-show="sPage('metadata')" @click="qtOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">

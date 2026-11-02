@@ -1,23 +1,31 @@
 # This file is: ./routes/images.py
-"""Images tab: /api/images (albums by folder, an album's images, thumbnails, the files). See images.py."""
+"""Images tab: /api/images (albums by folder, an album's images and details, thumbnails, the files). See images.py."""
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 import images
 from config import CACHE_DIR
+from helpers import check_auth
 
 router = APIRouter(prefix='/api/images', tags=['images'])
 _model = None
+_watch_history = None
 KEEP = {'Cache-Control': 'private, max-age=31536000, immutable'}     # the URLs carry ?v=<file time>
+FILL_NOW = 400                     # photo sizes read before an album opens (~1-2 s); the rest in the background
 
 
 def set_model(model):
     global _model
     _model = model
+
+
+def set_watch_history(wh):
+    global _watch_history
+    _watch_history = wh
 
 
 def get_model():
@@ -65,24 +73,153 @@ def counts(model=Depends(get_model)):
         return _err(e)
 
 
+def _filters(tags, tags_exclude, sites, sites_exclude, cast, favorites):
+    return {'tags': tags, 'tags_exclude': tags_exclude, 'sites': sites, 'sites_exclude': sites_exclude,
+            'cast': cast, 'favorites': favorites}
+
+
 @router.get('/albums')
-def albums(library: Optional[str] = None, sort: str = 'name', q: str = '', model=Depends(get_model)):
+def albums(library: Optional[str] = None, sort: str = 'name', q: str = '', page: int = 1, limit: int = 120,
+           tags: str = '', tags_exclude: str = '', sites: str = '', sites_exclude: str = '', cast: str = '',
+           favorites: bool = False, model=Depends(get_model)):
+    """One page of albums -> {albums, total, letters}. cast=<name> (with no library): a performer's albums."""
     try:
         conn = _conn()
-        return {'success': True, 'albums': images.albums(conn, _shown_libraries(conn, library), sort, q)}
+        return {'success': True, **images.listing(conn, _shown_libraries(conn, library), sort, q, page, limit,
+                                                  **_filters(tags, tags_exclude, sites, sites_exclude, cast, favorites))}
     except Exception as e:
         return _err(e)
 
 
+@router.get('/filters')
+def filters(library: Optional[str] = None, q: str = '', tags: str = '', tags_exclude: str = '', sites: str = '',
+            sites_exclude: str = '', favorites: bool = False, model=Depends(get_model)):
+    """The sidebar's Tags / Sites with album counts (Images tab)."""
+    try:
+        conn = _conn()
+        return {'success': True, **images.filter_counts(conn, _shown_libraries(conn, library), q,
+                                                        **_filters(tags, tags_exclude, sites, sites_exclude, '', favorites))}
+    except Exception as e:
+        return _err(e)
+
+
+def _cards(conn, rows, request):
+    import home
+    username = check_auth(request)
+    out = []
+    for vid, path in rows:
+        c = home.card(_model, path, username, _watch_history)
+        if c:
+            out.append(c)
+    return out
+
+
 @router.get('/album')
-def album(folder: str, model=Depends(get_model)):
+def album(folder: str, request: Request, model=Depends(get_model)):
     try:
         conn = _conn()
         if not _may_see(conn, folder=folder):
             return _err('Not found')
+        if images.fill_sizes(conn, folder, limit=FILL_NOW) == FILL_NOW:      # a big album: the rest in the background
+            images.fill_sizes_later(_model.db.get_connection, folder)
         meta = conn.execute('SELECT favorite FROM image_albums WHERE folder = ?', (folder,)).fetchone()
-        return {'success': True, 'folder': folder, 'name': images.title(folder), 'favorite': bool(meta and meta[0]),
-                'images': images.album_images(conn, folder)}
+        return {'success': True, 'folder': folder, 'name': images.album_title(conn, folder), 'favorite': bool(meta and meta[0]),
+                'meta': images.album_meta(conn, [folder]).get(folder, {}), 'images': images.album_images(conn, folder),
+                'videos': _cards(conn, images.linked_videos(conn, folder), request)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/album/sizes')
+def album_sizes(folder: str, model=Depends(get_model)):
+    """{id: [w, h]} known so far (the photos further down a big album, read in the background)."""
+    try:
+        conn = _conn()
+        return {'success': True, 'sizes': images.sizes(conn, folder) if _may_see(conn, folder=folder) else {}}
+    except Exception as e:
+        return _err(e)
+
+
+class FoldersBody(BaseModel):
+    folders: List[str] = []
+
+
+class MetaBody(FoldersBody):
+    updates: Dict[str, str] = {}
+    add: Dict[str, List[str]] = {}
+    remove: Dict[str, List[str]] = {}
+
+
+def _visible(conn, folders):
+    ok = [f for f in folders if _may_see(conn, folder=f)]
+    if not ok:
+        raise ValueError('Not found')
+    return ok
+
+
+@router.post('/meta/info')
+def meta_info(body: FoldersBody, request: Request, model=Depends(get_model)):
+    """Edit Album: each album's title and values (several albums: the editor works out what they share);
+    for one album, its linked videos too."""
+    try:
+        conn = _conn()
+        folders = _visible(conn, body.folders)
+        meta = images.album_meta(conn, folders)
+        out = [{'folder': f, 'title': images.album_title(conn, f), 'meta': meta.get(f, {})} for f in folders]
+        if len(out) == 1:
+            out[0]['videos'] = _cards(conn, images.linked_videos(conn, folders[0]), request)
+        return {'success': True, 'albums': out}
+    except Exception as e:
+        return _err(e)
+
+
+@router.post('/meta')
+def meta_save(body: MetaBody, model=Depends(get_model)):
+    try:
+        conn = _conn()
+        images.set_album_meta(conn, _visible(conn, body.folders), body.updates, body.add, body.remove)
+        return {'success': True}
+    except Exception as e:
+        return _err(e)
+
+
+class LinkBody(BaseModel):
+    folder: str
+    video_ids: List[str] = []
+    on: bool = True
+
+
+@router.post('/videos/link')
+def videos_link(body: LinkBody, request: Request, model=Depends(get_model)):
+    """Link (on) or unlink videos -> the album's linked videos as cards."""
+    try:
+        conn = _conn()
+        _visible(conn, [body.folder])
+        images.link_videos(conn, body.folder, body.video_ids, body.on)
+        return {'success': True, 'videos': _cards(conn, images.linked_videos(conn, body.folder), request)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/videos/suggest')
+def videos_suggest(folder: str, request: Request, model=Depends(get_model)):
+    """Videos next to the album, as cards, the likeliest first."""
+    try:
+        conn = _conn()
+        _visible(conn, [folder])
+        return {'success': True, 'videos': _cards(conn, images.suggest_videos(conn, folder), request)}
+    except Exception as e:
+        return _err(e)
+
+
+@router.get('/by-video')
+def by_video(path: str, model=Depends(get_model)):
+    """The albums linked to a video (its File Info)."""
+    try:
+        conn = _conn()
+        r = conn.execute('SELECT video_id FROM file_versions WHERE path = ?', (path,)).fetchone()
+        found = images.albums_of_video(conn, r[0]) if r else []
+        return {'success': True, 'albums': [a for a in found if _may_see(conn, folder=a['folder'])]}
     except Exception as e:
         return _err(e)
 
