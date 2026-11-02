@@ -7213,6 +7213,13 @@ No metadata is changed.`)) return;
                             ...(this.filteredCastBioVideos || [])].find(v => v && v.path === path);
                 },
 
+                // a video's favorite changed: every loaded copy of it (grid, movie page, …) shows the star
+                _markFavorite(path, fav) {
+                    for (const list of [this.videos, this.mv.items, this.coll.items, this.continueWatching, this.castBioData?.exact_matches])
+                        for (const v of list || []) if (v && v.path === path) v.favorite = fav;
+                    if (this.activeVideo?.path === path) this.activeVideo.favorite = fav;
+                },
+
                 get mvDupes() {
                     // the movie's videos that share a scene (and part): probably copies of one scene to merge
                     const groups = {};
@@ -10470,8 +10477,11 @@ No metadata is changed.`)) return;
                 
                 async toggleFavSelection() {
                     this.activeMenu = null;
-                    for (const path of this.selectedPaths) await fetch('/api/toggle_fav', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path}) });
-                    
+                    for (const path of this.selectedPaths) {
+                        const r = await fetch('/api/toggle_fav', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path}) });
+                        if (r.ok) this._markFavorite(path, !!(await r.json()).favorite);
+                    }
+
                     // Reload data based on current context
                     if (this.castBioMode && this.currentCastMember) {
                         // Reload cast bio to update favorite status
@@ -13272,16 +13282,7 @@ No metadata is changed.`)) return;
                             body: JSON.stringify({path: this.activeVideo.path})
                         });
                         
-                        if (response.ok) {
-                            // Toggle the favorite status locally for immediate UI feedback
-                            this.activeVideo.favorite = !this.activeVideo.favorite;
-                            
-                            // Also update in the videos array if present
-                            const videoInList = this.videos.find(v => v.path === this.activeVideo.path);
-                            if (videoInList) {
-                                videoInList.favorite = this.activeVideo.favorite;
-                            }
-                        }
+                        if (response.ok) this._markFavorite(this.activeVideo.path, !!(await response.json()).favorite);
                     } catch (error) {
                         console.error('Failed to toggle favorite:', error);
                     }
