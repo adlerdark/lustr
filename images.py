@@ -395,9 +395,15 @@ def add_covers(conn, out):
     covers, ids = {}, [a['cover_id'] for a in out if a['cover_id']]
     for k in range(0, len(ids), 500):
         chunk = ids[k:k + 500]
-        covers.update(conn.execute(f'SELECT id, mtime FROM images WHERE id IN ({",".join("?" * len(chunk))})', chunk).fetchall())
+        covers.update({r[0]: tuple(r[1:]) for r in conn.execute(f'SELECT id, mtime, width, height, path, archive, member FROM images '
+                                                                 f'WHERE id IN ({",".join("?" * len(chunk))})', chunk)})
+    unsized = [(i, c[3], c[4], c[5]) for i, c in covers.items() if not (c[1] and c[2])]
+    if unsized and _read_sizes(conn, unsized):                             # the list shows each cover's own shape
+        for i, *_rest in unsized:
+            covers[i] = covers[i][:1] + tuple(conn.execute('SELECT width, height FROM images WHERE id = ?', (i,)).fetchone()) + covers[i][3:]
     for a in out:
-        a['cover_v'] = covers.get(a['cover_id'], 0)
+        c = covers.get(a['cover_id']) or (0, None, None)
+        a['cover_v'], a['cover_w'], a['cover_h'] = c[0], c[1], c[2]
 
 
 def album_images(conn, folder):
@@ -618,7 +624,11 @@ def fill_sizes(conn, folder, limit=None):
     `limit` in name order (None: all). -> how many were read. ~3 ms a photo on a network share."""
     rows = conn.execute('SELECT id, path, archive, member, filename FROM images WHERE folder = ? AND deleted_at IS NULL '
                         'AND (width IS NULL OR height IS NULL)', (folder,)).fetchall()
-    rows = [r[:4] for r in sorted(rows, key=lambda r: _natural(r[4]))][:limit]
+    return _read_sizes(conn, [r[:4] for r in sorted(rows, key=lambda r: _natural(r[4]))][:limit])
+
+
+def _read_sizes(conn, rows):
+    """rows: (id, path, archive, member) -> width / height stored; how many could be read."""
     if not rows:
         return 0
     sizes = {}

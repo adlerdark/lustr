@@ -283,6 +283,12 @@ class Images(unittest.TestCase):
         self.assertEqual(images.fill_sizes(self.conn, z), 1)
         self.assertEqual(images.fill_sizes(self.conn, z), 0)                            # once
 
+    def test_album_covers_come_with_their_shape(self):
+        a, = self.add('Set/1.jpg')
+        self.sync([a])
+        al = images.albums(self.conn, ['Lib'])[0]
+        self.assertEqual((al['cover_w'], al['cover_h']), (200, 100))                 # read on the way
+
     def test_a_big_album_reads_the_first_sizes_now_in_name_order(self):
         paths = self.add(*[f'Big/{n}.jpg' for n in (10, 2, 1, 3)])
         self.sync(paths)

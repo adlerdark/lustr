@@ -13812,6 +13812,11 @@ No metadata is changed.`)) return;
                     const r = it.width && it.height ? it.width / it.height : 1, h = window.innerWidth < 640 ? 140 : 220;
                     return `flex: ${r} 1 ${Math.round(r * h)}px; aspect-ratio: ${r}`;
                 },
+                imgCoverRatio(a) { return a.cover_w && a.cover_h ? a.cover_w / a.cover_h : 1; },
+                imgCardStyle(a) {                        // the album list: the same rows, a little taller
+                    const r = this.imgCoverRatio(a), h = window.innerWidth < 640 ? 160 : 240;
+                    return `flex: ${r} 1 ${Math.round(r * h)}px`;
+                },
                 imgTileLoaded(it, el) { if (!it.width && el.naturalWidth) Object.assign(it, { width: el.naturalWidth, height: el.naturalHeight }); },
                 // a big album's sizes further down are read in the background: fetch them before those photos show
                 async imgCatchSizes() {
@@ -15361,13 +15366,15 @@ No metadata is changed.`)) return;
                             <div x-show="img.startPage > 1 && appSettings.imgPagination !== 'pages' && img.albums.length" class="text-center mb-3">
                                 <button @click="imgLoadAlbums(0, 'prepend')" class="px-4 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Load earlier albums</button>
                             </div>
-                            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                            <!-- each cover in its own shape, rows filled edge to edge, the name bar under it -->
+                            <div class="flex flex-wrap items-start gap-3">
                                 <template x-for="(a, idx) in img.albums" :key="a.folder">
-                                    <div :data-aidx="idx" @click="imgCardClick(a, idx, $event)" @contextmenu.prevent.stop="imgMenuOpen($event, a)"
+                                    <div :data-aidx="idx" @click="imgCardClick(a, idx, $event)" @contextmenu.prevent.stop="imgMenuOpen($event, a)" :style="imgCardStyle(a)"
                                          class="bg-gray-800 rounded-lg border overflow-hidden cursor-pointer group relative select-none" :title="a.folder"
                                          :class="img.sel[a.folder] ? 'border-blue-500 ring-2 ring-blue-500' : 'border-gray-700 hover:border-blue-500'">
-                                        <div class="aspect-square bg-gray-900">
-                                            <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover">
+                                        <div class="bg-gray-900" :style="'aspect-ratio: ' + imgCoverRatio(a)">
+                                            <img x-show="a.cover_id" :src="imgThumb(a.cover_id, a.cover_v)" loading="lazy" class="w-full h-full object-cover"
+                                                 @load="if (!a.cover_w && $el.naturalWidth) Object.assign(a, { cover_w: $el.naturalWidth, cover_h: $el.naturalHeight })">
                                         </div>
                                         <button @click.stop="imgToggleSel(a, idx)" class="absolute top-1 left-1 w-5 h-5 rounded border text-xs leading-none"
                                                 :class="img.sel[a.folder] ? 'bg-blue-600 border-blue-400 text-white' : 'bg-black/40 border-white/50 text-transparent opacity-0 group-hover:opacity-100'"
@@ -15382,6 +15389,7 @@ No metadata is changed.`)) return;
                                         </div>
                                     </div>
                                 </template>
+                                <div style="flex-grow: 1000000"></div>
                             </div>
                             <div class="py-4 text-center text-sm text-gray-500">
                                 <button x-show="appSettings.imgPagination === 'button' && (img.startPage - 1) * imgPer() + img.albums.length < img.total && !img.loading"
