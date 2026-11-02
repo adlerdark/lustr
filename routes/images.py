@@ -212,6 +212,17 @@ def videos_suggest(folder: str, request: Request, model=Depends(get_model)):
         return _err(e)
 
 
+@router.get('/videos/search')
+def videos_search(folder: str, q: str, request: Request, model=Depends(get_model)):
+    """Find videos to link: the ones in the album's folder (or below it) first, then next to it, then the rest."""
+    try:
+        conn = _conn()
+        _visible(conn, [folder])
+        return {'success': True, 'videos': _cards(conn, images.search_videos(conn, folder, q), request)}
+    except Exception as e:
+        return _err(e)
+
+
 @router.get('/by-video')
 def by_video(path: str, model=Depends(get_model)):
     """The albums linked to a video (its File Info)."""

@@ -247,29 +247,59 @@ class Images(unittest.TestCase):
     def _videos(self, *paths):
         self.conn.execute('CREATE TABLE IF NOT EXISTS file_versions (path TEXT PRIMARY KEY, video_id TEXT, is_preferred INTEGER, deleted_at TEXT)')
         for i, p in enumerate(paths):
-            self.conn.execute('INSERT INTO file_versions VALUES (?, ?, 1, NULL)', (os.path.join(self.root, p), f'v{i}'))
+            p = p if os.path.isabs(p) else os.path.join(self.root, p)
+            self.conn.execute('INSERT INTO file_versions VALUES (?, ?, 1, NULL)', (p, f'v{i}'))
         self.conn.commit()
+
+    def _names(self, rows):
+        return [os.path.basename(p) for _v, p in rows]
 
     def test_linking_and_suggesting_videos(self):
         a, = self.add('Set Kat/pics/1.jpg')
         self.sync([a])
         album = os.path.dirname(a)
-        self._videos('Set Kat/kat.mp4', 'Set Kat/pics/x.mp4', 'Other/far.mp4', 'loose.mp4', 'Set Kat/vids/v.mp4')
-        sug = [os.path.basename(p) for _v, p in images.suggest_videos(self.conn, album)]
-        self.assertEqual(sug[0], 'x.mp4')                                              # in the album's own folder first
-        self.assertEqual(set(sug), {'x.mp4', 'kat.mp4', 'v.mp4'})                    # a folder next to it too                               # not further up or elsewhere
+        self._videos('Set Kat/kat.mp4', 'Set Kat/pics/x.mp4', 'Other/far.mp4', 'Elsewhere/Kat Doe - Beach.mp4')
+        self.assertEqual(self._names(images.suggest_videos(self.conn, album)), ['kat.mp4', 'Kat Doe - Beach.mp4', 'x.mp4'])   # named like it, then its own folder
         images.link_videos(self.conn, album, ['v0'])
         self.assertEqual(images.linked_videos(self.conn, album), [('v0', os.path.join(self.root, 'Set Kat/kat.mp4'))])
-        self.assertNotIn('kat.mp4', [os.path.basename(p) for _v, p in images.suggest_videos(self.conn, album)])
+        self.assertEqual(self._names(images.suggest_videos(self.conn, album)), ['Kat Doe - Beach.mp4', 'x.mp4'])
         self.assertEqual(images.albums_of_video(self.conn, 'v0'), [{'folder': album, 'name': 'pics'}])
         images.link_videos(self.conn, album, ['v0'], on=False)
         self.assertEqual(images.linked_videos(self.conn, album), [])
 
-    def test_an_album_at_the_library_folder_suggests_only_its_own(self):
-        a, = self.add('1.jpg')
+    def test_its_own_folder_and_the_ones_next_to_it(self):
+        a, = self.add('Misc/pics/1.jpg')
         self.sync([a])
-        self._videos('top.mp4', 'Sub/deep.mp4')
-        self.assertEqual(sorted(os.path.basename(p) for _v, p in images.suggest_videos(self.conn, self.root)), ['deep.mp4', 'top.mp4'])
+        self._videos('Misc/a.mp4', 'Misc/pics/b.mp4', 'Far/away/c.mp4')
+        self.assertEqual(set(self._names(images.suggest_videos(self.conn, os.path.dirname(a)))), {'b.mp4', 'a.mp4'})
+
+    def test_a_zip_named_for_the_performer_finds_their_videos(self):
+        z = self.zip('Photos/jane_roe_2.zip', ['123456_hd/1.jpg'])
+        self.sync([z])
+        album = os.path.join(z, '123456_hd')
+        self._videos('New/Jane Roe - Pool Day_s01_JaneRoe_2160p.mp4', 'Other/jane_roe_2_720p.mp4', 'Jane Doe - Hike.mp4',
+                     'lots_of_others_1080p.mp4', os.path.join(self.dir, 'Out', 'Jane Roe outside.mp4'))
+        got = self._names(images.suggest_videos(self.conn, album))
+        self.assertEqual(set(got[:2]), {'Jane Roe - Pool Day_s01_JaneRoe_2160p.mp4', 'jane_roe_2_720p.mp4'})
+        self.assertNotIn('Jane Doe - Hike.mp4', got)                                  # one name in common isn't enough
+        self.assertNotIn('lots_of_others_1080p.mp4', got)
+        self.assertIn('Jane Roe outside.mp4', got)                                    # found anywhere, ranked after
+        images.set_album_meta(self.conn, [album], add={'cast': ['Ann Lee']})
+        self.conn.execute("INSERT INTO file_versions VALUES (?, 'vw', 1, NULL)", (os.path.join(self.root, 'x/y/whatever.mp4'),))
+        self.conn.execute('CREATE TABLE video_cast (id INTEGER PRIMARY KEY, value TEXT)')
+        self.conn.execute('CREATE TABLE video_cast_junction (video_id TEXT, cast_id INTEGER)')
+        self.conn.execute("INSERT INTO video_cast VALUES (1, 'Ann Lee')")
+        self.conn.execute("INSERT INTO video_cast_junction VALUES ('vw', 1)")
+        self.conn.commit()
+        self.assertIn('whatever.mp4', self._names(images.suggest_videos(self.conn, album)))  # the album's cast
+
+    def test_search_puts_the_videos_near_the_album_first(self):
+        a, = self.add('Set/pics/1.jpg')
+        self.sync([a])
+        self._videos(os.path.join(self.dir, 'Out', 'Kim scene.mp4'), 'Set/pics/Kim one.mp4', 'Set/Kim two.mp4', 'Lib2/x/Kim three.mp4', 'Nope.mp4')
+        got = self._names(images.search_videos(self.conn, os.path.dirname(a), 'kim'))
+        self.assertEqual(got, ['Kim one.mp4', 'Kim two.mp4', 'Kim three.mp4', 'Kim scene.mp4'])
+        self.assertEqual(images.search_videos(self.conn, os.path.dirname(a), '  '), [])
 
     def test_sizes_are_read_from_the_header(self):
         a, = self.add('S/wide.jpg')

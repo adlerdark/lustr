@@ -821,7 +821,7 @@
                        folder: null, name: '', favorite: false, items: [], meta: {}, videos: [], shown: 300, photoPage: 1,
                        backScroll: null, skipText: '', info: null },
                 imgEdit: { open: false, folders: [], data: {}, orig: {}, common: {}, tab: 'General', busy: false, msg: '',
-                           videos: [], sugg: [], q: '', qTimer: null, results: [] },
+                           videos: [], sugg: [], q: '', qTimer: null, results: [], searching: false },
                 castAlbums: [],                  // the cast page's Photo albums row
                 infoAlbums: [], _infoAlbumsFor: null,   // a video's File Info: the albums linked to it
                 iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false, wheelAt: 0 },
@@ -13961,14 +13961,15 @@ No metadata is changed.`)) return;
                 imgEditSearch() {
                     const E = this.imgEdit;
                     clearTimeout(E.qTimer);
+                    E.searching = !!E.q.trim();
                     E.qTimer = setTimeout(async () => {
                         const q = E.q.trim();
-                        if (!q) { E.results = []; return; }
-                        try {
-                            const qs = new URLSearchParams({ query: q, library: 'All Videos', page: 1, limit: 20 });
-                            const d = await (await fetch('/api/videos?' + qs)).json();
-                            if (E.q.trim() === q) E.results = (d.items || []).filter(v => v.type !== 'folder' && v.video_id);
-                        } catch (e) { E.results = []; }
+                        if (!q) { E.results = []; E.searching = false; return; }
+                        try {                            // the ones next to the album first (images.py search_videos)
+                            const qs = new URLSearchParams({ folder: E.folders[0], q });
+                            const d = await (await fetch('/api/images/videos/search?' + qs)).json();
+                            if (E.q.trim() === q) Object.assign(E, { results: d.success ? d.videos : [], searching: false });
+                        } catch (e) { Object.assign(E, { results: [], searching: false }); }
                     }, 300);
                 },
                 imgLinked(v) { return this.imgEdit.videos.some(x => x.video_id === v.video_id); },
@@ -16589,26 +16590,27 @@ No metadata is changed.`)) return;
                                 </div>
                             </template>
                         </div>
-                        <div x-show="imgEdit.sugg.length">
-                            <div class="text-xs uppercase text-gray-400 mb-2">Suggested (next to the album)</div>
-                            <template x-for="v in imgEdit.sugg" :key="'is' + v.video_id">
-                                <div class="flex items-center gap-3 py-1">
-                                    <img :src="getThumb(v)" class="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0">
-                                    <div class="flex-1 min-w-0"><div class="truncate" x-text="v.title || v.filename"></div><div class="truncate text-xs text-gray-500" x-text="v.path"></div></div>
-                                    <button @click="imgLink(v)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">+ Link</button>
-                                </div>
-                            </template>
-                        </div>
                         <div>
-                            <div class="text-xs uppercase text-gray-400 mb-2">Search all videos</div>
-                            <input type="search" x-model="imgEdit.q" @input="imgEditSearch()" placeholder="Title, cast, filename…"
+                            <div class="text-xs uppercase text-gray-400 mb-2">Search videos <span class="normal-case text-gray-500">- the ones near the album first</span></div>
+                            <input type="search" x-model="imgEdit.q" @input="imgEditSearch()" placeholder="Title, cast, filename, folder…"
                                    class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 mb-2">
+                            <div x-show="imgEdit.q.trim() && !imgEdit.results.length" class="text-xs text-gray-500" x-text="imgEdit.searching ? 'Searching…' : 'No videos match.'"></div>
                             <template x-for="v in imgEdit.results" :key="'ir' + v.video_id">
                                 <div class="flex items-center gap-3 py-1">
                                     <img :src="getThumb(v)" class="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0">
                                     <div class="flex-1 min-w-0"><div class="truncate" x-text="v.title || v.filename"></div><div class="truncate text-xs text-gray-500" x-text="v.path"></div></div>
                                     <button x-show="!imgLinked(v)" @click="imgLink(v)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">+ Link</button>
                                     <span x-show="imgLinked(v)" class="text-xs text-gray-500">linked</span>
+                                </div>
+                            </template>
+                        </div>
+                        <div x-show="imgEdit.sugg.length">
+                            <div class="text-xs uppercase text-gray-400 mb-2">Suggested</div>
+                            <template x-for="v in imgEdit.sugg" :key="'is' + v.video_id">
+                                <div class="flex items-center gap-3 py-1">
+                                    <img :src="getThumb(v)" class="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0">
+                                    <div class="flex-1 min-w-0"><div class="truncate" x-text="v.title || v.filename"></div><div class="truncate text-xs text-gray-500" x-text="v.path"></div></div>
+                                    <button @click="imgLink(v)" class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs">+ Link</button>
                                 </div>
                             </template>
                         </div>

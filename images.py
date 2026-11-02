@@ -18,7 +18,6 @@ is first opened (fill_sizes), so its grid can show every photo whole.
 
 No FastAPI imports.
 """
-import difflib
 import io
 import json
 import os
@@ -569,31 +568,132 @@ def albums_of_video(conn, video_id):
     return out
 
 
-def suggest_videos(conn, folder, limit=40):
-    """[(video_id, path)]: videos likely to go with this album, not linked yet - in its folder (or a zip's)
-    or one below, loose in the folder above it, or in a folder next to it - never above its library folder.
-    The ones named most like the album come first."""
+# words that say nothing about who / what is in it
+_STOP = {'hd', 'sd', 'uhd', 'fhd', 'hq', 'lq', 'photos', 'photo', 'pics', 'pic', 'pictures', 'images', 'image', 'img', 'imgs',
+         'set', 'sets', 'gallery', 'galleries', 'new', 'high', 'res', 'web', 'zip', 'jpg', 'jpeg', 'png', 'mp4', 'mkv', 'big',
+         'small', 'large', 'full', 'the', 'and', 'of', 'a', 'an', 'by', 'with', 'in', 'on', 'at', 'to', 'for', 'scene', 'video'}
+_TECH = re.compile(r'^(\d{3,4}p|[hx]26[45]|hevc|av1|s\d{1,2}|e\d{1,2}|\d+k|\d+fps)$')
+
+
+def _words(text):
+    """'JaneRoe_s01_720p' -> ['jane', 'roe', 's01', '720p']"""
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text or '')
+    return [w.lower() for w in re.findall(r'[A-Za-z0-9]+', text)]
+
+
+def _name_words(words):
+    return {w for w in words if not w.isdigit() and len(w) > 1 and w not in _STOP and not _TECH.match(w)}
+
+
+_index_cache = {}
+
+
+def _video_index(conn):
+    """[(video_id, path, title, words, text)] - every video once (its preferred file): the words of its file /
+    folder name, title and cast, and all of that as lowercase text (search). Rebuilt when the videos change."""
+    key = (id(conn),) + tuple(conn.execute('SELECT COUNT(*), MAX(rowid), SUM(is_preferred) FROM file_versions WHERE deleted_at IS NULL').fetchone())
+    if _index_cache.get('key') == key:
+        return _index_cache['rows']
+    try:
+        titles = dict(conn.execute('SELECT video_id, title FROM videos').fetchall())
+    except Exception:
+        titles = {}
+    cast = {}
+    try:
+        for vid, name in conn.execute('SELECT j.video_id, t.value FROM video_cast_junction j JOIN video_cast t ON t.id = j.cast_id'):
+            cast.setdefault(vid, []).append(name)
+    except Exception:
+        pass
+    rows, seen = [], set()
+    for vid, path in conn.execute('SELECT video_id, path FROM file_versions WHERE deleted_at IS NULL ORDER BY is_preferred DESC'):
+        if vid in seen:
+            continue
+        seen.add(vid)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        title, people = titles.get(vid) or '', cast.get(vid, [])
+        words = set(_words(stem)) | _name_words(_words(os.path.basename(os.path.dirname(path)))) | set(_words(title))   # a folder's numbers aren't the video's
+        for c in people:
+            words |= set(_words(c))
+        rows.append((vid, path, title, words, ' '.join([path, title] + people).lower()))
+    _index_cache.update(key=key, rows=rows)
+    return rows
+
+
+def _album_place(conn, folder):
+    """(root, base, names, numbers, cast) of an album: base = the real folder it's in (a zip's folder);
+    names / numbers: what its title, cast, the zip and the folders below the library folder are called."""
     r = conn.execute('SELECT root, archive FROM images WHERE folder = ? AND deleted_at IS NULL LIMIT 1', (folder,)).fetchone()
     if not r:
-        return []
+        return None
     root, archive = r
-    base = os.path.dirname(archive) if archive else folder                  # a real folder, not one inside a zip
+    base = os.path.dirname(archive) if archive else folder
+    meta = album_meta(conn, [folder]).get(folder, {})
+    texts = [album_title(conn, folder)]
+    rel = os.path.relpath(folder, root) if root and folder.startswith(root.rstrip(os.sep) + os.sep) else os.path.basename(folder)
+    texts += [os.path.splitext(p)[0] if is_archive(p) else p for p in rel.split(os.sep) if p not in ('', '.')]
+    cast = {c.lower() for k in CAST_FIELDS for c in meta.get(k, [])}
+    words = [w for t in list(texts) + list(cast) for w in _words(t)]
+    return root, base, _name_words(words), {w for w in words if w.isdigit()}, cast
+
+
+def _nearness(path, base, root):
+    """3: in the album's folder or below it · 2: next to it (its parent folder, anything below that) ·
+    1: in the same library folder · 0: elsewhere."""
+    if path.startswith(base + os.sep):
+        return 3
     parent = os.path.dirname(base)
-    inside_root = root and (parent == root or parent.startswith(root.rstrip(os.sep) + os.sep))
+    inside = not root or parent == root or parent.startswith(root.rstrip(os.sep) + os.sep)       # never above the library folder
+    if parent and inside and path.startswith(parent.rstrip(os.sep) + os.sep):
+        return 2
+    return 1 if root and path.startswith(root.rstrip(os.sep) + os.sep) else 0
+
+
+def _match(v, names, numbers, cast):
+    """How well a video's names fit the album's: the same person / set name (most of its words), its cast,
+    an id number (4+ digits), a small number ('_2')."""
+    words = v[3]
+    hit = len(names & words)
+    score = 10.0 * hit / len(names) if names and hit >= min(2, len(names)) else 0.0
+    if cast and any(c in v[4] for c in cast):
+        score += 8
+    for n in numbers & words:
+        score += 6 if len(n) >= 4 else 1
+    return score
+
+
+def suggest_videos(conn, folder, limit=8):
+    """[(video_id, path)], not linked yet, best first: the videos in the album's own folder, and the ones whose
+    names match the album's (its title, cast, the zip and folders it's in - 'jane_roe_2.zip' says who's in
+    it), nearer ones first; if there are none, the videos next to it."""
+    place = _album_place(conn, folder)
+    if not place:
+        return []
+    root, base, names, numbers, cast = place
     linked = {x[0] for x in conn.execute('SELECT video_id FROM image_album_videos WHERE folder = ?', (folder,))}
-    rows = conn.execute("SELECT video_id, path FROM file_versions WHERE deleted_at IS NULL AND path LIKE ? ESCAPE '\\'",
-                        (_like_prefix(parent if inside_root else base),)).fetchall()
-    seen, out = set(), []
-    for vid, path in rows:
-        d = os.path.dirname(path)
-        near = d == base or os.path.dirname(d) == base or (inside_root and (d == parent or os.path.dirname(d) == parent))
-        if near and vid not in linked and vid not in seen:
-            seen.add(vid)
-            out.append((vid, path))
-    name = album_title(conn, folder).lower()
-    out.sort(key=lambda x: (not x[1].startswith(base + os.sep),
-                            -difflib.SequenceMatcher(None, name, os.path.splitext(os.path.basename(x[1]))[0].lower()).ratio()))
-    return out[:limit]
+    scored, near = [], []
+    for v in _video_index(conn):
+        if v[0] in linked:
+            continue
+        m, n = _match(v, names, numbers, cast), _nearness(v[1], base, root)
+        if m > 0 or n == 3:
+            scored.append((-(m + 2 * n + (4 if n == 3 else 0)), -n, v[1].lower(), v))      # a match next to it beats one far away
+        elif n >= 2:
+            near.append((-n, v[1].lower(), v))
+    pick = [x[-1] for x in sorted(scored)] or [x[-1] for x in sorted(near)]
+    return [(v[0], v[1]) for v in pick[:limit]]
+
+
+def search_videos(conn, folder, q, limit=30):
+    """[(video_id, path)] with every word of q in their path, title or cast - the ones in the album's folder
+    (or below it) first, then next to it, then its library folder, then the rest; better name matches first."""
+    words = re.findall(r'\w+', (q or '').lower())
+    place = _album_place(conn, folder)
+    if not words or not place:
+        return []
+    root, base, names, numbers, cast = place
+    hits = [v for v in _video_index(conn) if all(w in v[4] for w in words)]
+    hits.sort(key=lambda v: (-_nearness(v[1], base, root), -_match(v, names, numbers, cast), (v[2] or os.path.basename(v[1])).lower()))
+    return [(v[0], v[1]) for v in hits[:limit]]
 
 
 # ---------------------------------------------------------------------------
