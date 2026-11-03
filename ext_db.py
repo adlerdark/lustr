@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
 import cast_names
+import library_scope
 from database import gender_from_external      # 'TRANSGENDER_FEMALE' -> 'trans_female', ...
 
 router = APIRouter(prefix="/api/extdb", tags=["extdb"])
@@ -4634,8 +4635,9 @@ def _scene_targets(conn, paths=None, libraries=None):
         libs = list(libraries)
         for i in range(0, len(libs), 400):
             chunk = libs[i:i + 400]
+            sql, p = library_scope.videos_in(chunk)
             rows += _rows(conn, f'SELECT fv.video_id, fv.path, fv.is_preferred FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id '
-                                f'WHERE v.library IN ({",".join("?" * len(chunk))}){dele}', chunk)
+                                f'WHERE {sql}{dele}', p)
     for p in paths or []:
         p = str(p)
         exact = _rows(conn, f'SELECT fv.video_id, fv.path, fv.is_preferred FROM file_versions fv WHERE fv.path = ?{dele}', (p,))
@@ -5123,8 +5125,9 @@ def scene_links(q: str = '', source: str = '', library: str = '', page: int = 1,
             where.append('l.ext_source = ?')
             params.append(source)
         if library:
-            where.append('v.library = ?')
-            params.append(library)
+            sql, p = library_scope.videos_in([library])
+            where.append(sql)
+            params += p
         if q.strip():
             like = f'%{q.strip()}%'
             where.append('(l.ext_title LIKE ? OR l.ext_studio_name LIKE ? OR l.ext_movie_title LIKE ? OR '

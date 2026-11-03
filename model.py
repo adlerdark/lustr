@@ -627,8 +627,8 @@ class LibraryModel:
                                         # Update path and clear deleted_at (Phase 1 may have
                                         # set it on the old path since it was no longer there)
                                         cursor.execute(
-                                            'UPDATE file_versions SET path = ?, filename = ?, deleted_at = NULL WHERE path = ?',
-                                            (full_path, filename, old_path)
+                                            'UPDATE file_versions SET path = ?, filename = ?, deleted_at = NULL, library = ? WHERE path = ?',
+                                            (full_path, filename, self.db._get_library_for_path(full_path), old_path)
                                         )
                                         rows_updated = cursor.rowcount
                                         dm.forget_path(conn, old_path)

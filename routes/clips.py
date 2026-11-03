@@ -148,11 +148,12 @@ def list_clips(video_id: Optional[str] = None, path: Optional[str] = None, cast:
             where.append('c.video_id IN (SELECT j.video_id FROM video_cast_junction j JOIN video_cast vc ON vc.id = j.cast_id '
                          'WHERE vc.value = ?)')
             params.append(cast)
-        if library:
-            libs = (model.get_libraries_in_group(library) if library in (getattr(model, 'library_groups', None) or {})
-                    else [library])
-            where.append(f'c.video_id IN (SELECT video_id FROM videos WHERE library IN ({",".join("?" * len(libs))}))')
-            params += list(libs)
+        import library_scope
+        libs = library_scope.expand(model, library)
+        if libs is not None:
+            sql, p = library_scope.videos_in(libs, col='c.video_id')
+            where.append(sql)
+            params += p
         if format in clips.FORMATS:
             where.append('c.format = ?')
             params.append(format)

@@ -606,13 +606,7 @@ def _get_videos_sql_fast(
     conditions = []
     params = []
     
-    # Library filter
-    allowed_prefixes = _get_library_prefixes(model, library, library_filters)
-    if allowed_prefixes:
-        path_conditions = ' OR '.join(['fv.path LIKE ?' for _ in allowed_prefixes])
-        conditions.append(f"({path_conditions})")
-        params.extend([f"{path}/%" for path in allowed_prefixes])
-    
+    _add_library_condition(conditions, params, model, library, library_filters)
     conditions.append("fv.is_preferred = 1")
     conditions.append("fv.deleted_at IS NULL")
     _add_display_condition(conditions, params, model)
@@ -1047,13 +1041,19 @@ def get_videos(
     if USE_SQLITE:
         conn = model.db.get_connection()
         cursor = conn.cursor()
-        if allowed_prefixes:
-            conditions = ' OR '.join(['path LIKE ?' for _ in allowed_prefixes])
-            query_sql = f'SELECT path FROM file_versions WHERE deleted_at IS NULL AND ({conditions})'
-            params = [f"{path}/%" for path in allowed_prefixes]
-            cursor.execute(query_sql, params)
-        else:
-            cursor.execute('SELECT path FROM file_versions WHERE deleted_at IS NULL')
+        if folder_mode:                              # a folder: the files in it, every copy
+            if allowed_prefixes:
+                conditions = ' OR '.join(['path LIKE ?' for _ in allowed_prefixes])
+                query_sql = f'SELECT path FROM file_versions WHERE deleted_at IS NULL AND ({conditions})'
+                params = [f"{path}/%" for path in allowed_prefixes]
+                cursor.execute(query_sql, params)
+            else:
+                cursor.execute('SELECT path FROM file_versions WHERE deleted_at IS NULL')
+        else:                                        # one card per video (its primary file), in each of its libraries
+            conditions, params = ['fv.deleted_at IS NULL', 'fv.is_preferred = 1'], []
+            _add_library_condition(conditions, params, model, library, library_filters)
+            cursor.execute(f'SELECT fv.path FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id '
+                           f'WHERE {" AND ".join(conditions)}', params)
         paths = [row['path'] for row in cursor.fetchall()]
         import display_filter
         hidden = display_filter.hidden_paths(conn, model)
@@ -1078,7 +1078,7 @@ def get_videos(
         if not data: continue
         
         # Scope Check
-        in_scope = not allowed_prefixes or any(path.startswith(p + '/') for p in allowed_prefixes)
+        in_scope = not folder_mode or not allowed_prefixes or any(path.startswith(p + '/') for p in allowed_prefixes)
         if not in_scope: continue
         
         # Zero-length video filtering
@@ -1301,32 +1301,28 @@ def get_available_filters(
     )
 
 
-def _get_library_prefixes(model, library, library_filters):
-    """Helper to get allowed path prefixes for library filtering."""
-    allowed_prefixes = []
-    
-    if library_filters:
-        if 'all' in [lf.lower() for lf in library_filters]:
-            allowed_prefixes = []
-        else:
-            for lib_filter in library_filters:
-                if lib_filter in model.library_groups:
-                    group_libs = model.get_libraries_in_group(lib_filter, recursive=True)
-                    for lib in group_libs:
-                        if lib in model.libraries:
-                            allowed_prefixes.extend([os.path.normpath(p) for p in model.libraries[lib]])
-                elif lib_filter in model.libraries:
-                    allowed_prefixes.extend([os.path.normpath(p) for p in model.libraries[lib_filter]])
-    elif library != 'All Videos':
-        if library in model.library_groups:
-            group_libs = model.get_libraries_in_group(library, recursive=True)
-            for lib in group_libs:
-                if lib in model.libraries:
-                    allowed_prefixes.extend([os.path.normpath(p) for p in model.libraries[lib]])
-        elif library in model.libraries:
-            allowed_prefixes = [os.path.normpath(p) for p in model.libraries[library]]
-    
-    return allowed_prefixes
+def _get_library_names(model, library, library_filters):
+    """The libraries to list (library:/lib: in the search wins over the selected one); None = everything.
+    A video is in every library that holds one of its files (library_scope.py)."""
+    wanted = library_filters or ([library] if library != 'All Videos' else [])
+    if not wanted or 'all' in [lf.lower() for lf in wanted]:
+        return None
+    names = []
+    for lib in wanted:
+        if lib in model.library_groups:
+            names += [l for l in model.get_libraries_in_group(lib, recursive=True) if l in model.libraries]
+        elif lib in model.libraries:
+            names.append(lib)
+    return names or None                    # an unknown name lists everything, as before
+
+
+def _add_library_condition(conditions, params, model, library, library_filters):
+    import library_scope
+    names = _get_library_names(model, library, library_filters)
+    if names is not None:
+        sql, p = library_scope.videos_in(names)
+        conditions.append(sql)
+        params.extend(p)
 
 
 def _count_tags_sites(cursor, tag_fields, where, params):
@@ -1402,13 +1398,7 @@ def _get_available_filters_uncached(
     base_conditions = []
     base_params = []
     
-    # Library filter
-    allowed_prefixes = _get_library_prefixes(model, library, library_filters)
-    if allowed_prefixes:
-        path_conditions = ' OR '.join(['fv.path LIKE ?' for _ in allowed_prefixes])
-        base_conditions.append(f"({path_conditions})")
-        base_params.extend([f"{path}/%" for path in allowed_prefixes])
-    
+    _add_library_condition(base_conditions, base_params, model, library, library_filters)
     base_conditions.append("fv.deleted_at IS NULL")
     _add_display_condition(base_conditions, base_params, model)
     

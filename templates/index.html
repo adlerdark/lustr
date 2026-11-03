@@ -1785,7 +1785,9 @@
                         return `  • ${filename}${res ? ` (${res}` : ''}${codec ? `, ${codec})` : res ? ')' : ''}`;
                     }).join('\n');
                     
-                    const message = `Merge these ${paths.length} files into a single video?\n\n${fileList}\n\nEnter title (or leave blank to use first filename):`;
+                    const libs = [...new Set(paths.map(p => this._videoByPath(p)?.file_library).filter(Boolean))];
+                    const where = libs.length > 1 ? `\n\nThese files are in ${libs.join(' and ')} - the merged video will show in each of them.` : '';
+                    const message = `Merge these ${paths.length} files into a single video?\n\n${fileList}${where}\n\nEnter title (or leave blank to use first filename):`;
                     const title = prompt(message);
                     
                     if (title === null) return;

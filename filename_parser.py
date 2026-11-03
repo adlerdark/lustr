@@ -808,8 +808,8 @@ def preview(conn, model, paths=None, libraries=None, offset=0, limit=100, extra_
     else:
         where, params = '1=1', []
         if libraries:
-            where = f'v.library IN ({",".join("?" * len(libraries))})'
-            params = list(libraries)
+            import library_scope
+            where, params = library_scope.videos_in(libraries)
         if extra_where:
             where += f' AND {extra_where[0]}'
             params += extra_where[1]

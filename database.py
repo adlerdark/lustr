@@ -347,6 +347,11 @@ class Database:
             if 'added_at' not in cols:
                 cursor.execute('ALTER TABLE file_versions ADD COLUMN added_at TIMESTAMP')
                 conn.commit()
+            if 'library' not in cols:            # the library a file sits in (a merged video can have files in several)
+                cursor.execute('ALTER TABLE file_versions ADD COLUMN library TEXT')
+                conn.commit()
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_file_versions_library ON file_versions(library, video_id)')
+            self.refresh_file_libraries()
             # Collections (roadmap #9) live in playlists too: kind 'collection' (manual) or 'smart'
             pcols = {r[1] for r in cursor.execute('PRAGMA table_info(playlists)').fetchall()}
             for col, typ in (('kind', "TEXT DEFAULT 'playlist'"), ('rules', 'TEXT'), ('sort', 'TEXT'), ('description', 'TEXT'),
@@ -839,7 +844,8 @@ class Database:
         cursor.execute('''
             SELECT fv.path, fv.filename, v.title, v.year, v.rating, v.favorite, fv.resolution, fv.codec,
                    fv.extension, fv.length, fv.total_bitrate, fv.file_size, fv.date_created, fv.date_modified,
-                   v.date_added, v.date_last_edited, fv.cache_id, v.created_at, v.updated_at, v.video_id
+                   v.date_added, v.date_last_edited, fv.cache_id, v.created_at, v.updated_at, v.video_id,
+                   fv.library AS file_library
             FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id
             WHERE fv.path = ? AND fv.deleted_at IS NULL
         ''', (path,))
@@ -899,7 +905,7 @@ class Database:
     # Bulk version of get_file: the same record shape, in ~20 queries for any number of files
     FILE_SCALAR_COLUMNS = '''fv.path, fv.filename, v.title, v.year, v.rating, v.favorite, fv.resolution, fv.codec,
                    fv.extension, fv.length, fv.total_bitrate, fv.file_size, fv.date_created, fv.date_modified,
-                   v.date_added, v.date_last_edited, fv.cache_id, v.created_at, v.updated_at, v.video_id'''
+                   v.date_added, v.date_last_edited, fv.cache_id, v.created_at, v.updated_at, v.video_id, fv.library AS file_library'''
     FILE_LIST_FIELDS = ('cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock', 'outfit',
                         'tags', 'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants')
 
@@ -1412,6 +1418,7 @@ class Database:
             VALUES ('libraries', ?)
         ''', (json.dumps(libraries),))
         conn.commit()
+        self.refresh_file_libraries()
     
     def save_library_order(self, library_order):
         """Save library order to metadata table."""
@@ -1835,6 +1842,10 @@ class Database:
         
         rows_affected = cursor.rowcount
         print(f"Rows updated: {rows_affected}")
+        # the video is labelled with its primary file's library (it is listed under all of them)
+        cursor.execute('UPDATE videos SET library = (SELECT library FROM file_versions WHERE path = ?) '
+                       'WHERE video_id = ? AND (SELECT library FROM file_versions WHERE path = ?) IS NOT NULL',
+                       (path, video_id, path))
         
         conn.commit()
         
@@ -1916,9 +1927,9 @@ class Database:
                 path, video_id, filename,
                 resolution, codec, extension, length, length_seconds, total_bitrate, file_size,
                 date_created, date_modified, cache_id,
-                is_preferred, last_seen, added_at
+                is_preferred, last_seen, added_at, library
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
         ''', (
             path, video_id, filename,
             metadata.get('resolution'),
@@ -1932,7 +1943,8 @@ class Database:
             metadata.get('date_modified'),
             cache_id,
             datetime.now().isoformat(),
-            datetime.now().isoformat()
+            datetime.now().isoformat(),
+            self._get_library_for_path(path)
         ))
         
         conn.commit()
@@ -2088,37 +2100,47 @@ class Database:
         conn.commit()
         return True
 
+    def _library_roots(self):
+        """[(library, root)], the longest root first: a file belongs to the most specific one
+        (StudioRaw before Studio when one sits inside the other)."""
+        row = self.get_connection().execute("SELECT value FROM metadata WHERE key = 'libraries'").fetchone()
+        libraries = json.loads(row[0]) if row else {}
+        roots = [(name, p.replace('\\', '/').rstrip('/')) for name, paths in libraries.items() for p in paths or []]
+        return sorted(roots, key=lambda x: len(x[1]), reverse=True)
+
+    @staticmethod
+    def _library_of(path, roots):
+        path = path.replace('\\', '/')
+        return next((name for name, root in roots if path.startswith(root + '/')), None)
+
     def _get_library_for_path(self, path):
         """Determine which library a path belongs to."""
-        # Get libraries from metadata
+        return self._library_of(path, self._library_roots()) or "Unknown"
+
+    def refresh_file_libraries(self):
+        """Work out every file's library again (at start-up, and when the library folders change), and label
+        each video with its primary file's library. -> how many videos got a new label."""
         conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT value FROM metadata WHERE key = 'libraries'")
-        row = cursor.fetchone()
-        if not row:
-            return "Unknown"
-        
-        libraries = json.loads(row[0])
-        
-        # Normalize path
-        path_normalized = path.replace('\\', '/')
-        
-        # Build a flat list of (lib_name, lib_path) and sort by path length
-        # descending so more specific paths match first (e.g. StudioRaw
-        # before Studio when both share a common prefix).
-        all_candidates = []
-        for lib_name, lib_paths in libraries.items():
-            for lib_path in lib_paths:
-                all_candidates.append((lib_name, lib_path.replace('\\', '/')))
-        all_candidates.sort(key=lambda x: len(x[1]), reverse=True)
-
-        for lib_name, lib_path_normalized in all_candidates:
-            if (path_normalized.startswith(lib_path_normalized + '/') or
-                    path_normalized.startswith(lib_path_normalized + '\\')):
-                return lib_name
-
-        return "Unknown"
+        roots = self._library_roots()
+        if not roots:
+            return 0
+        rows = conn.execute('SELECT path, library FROM file_versions').fetchall()
+        changed = [(lib, p) for p, old in rows for lib in [self._library_of(p, roots)] if lib and lib != old]
+        if changed:
+            conn.executemany('UPDATE file_versions SET library = ? WHERE path = ?', changed)
+        conn.commit()
+        for (vid,) in conn.execute('SELECT video_id FROM file_versions WHERE is_preferred = 1 AND deleted_at IS NULL '
+                                   'GROUP BY video_id HAVING COUNT(*) > 1').fetchall():
+            self.auto_set_preferred(vid)            # two primary files: two cards for one video
+        relabel = conn.execute('SELECT fv.library, v.video_id FROM videos v JOIN file_versions fv ON fv.video_id = v.video_id '
+                               'WHERE fv.is_preferred = 1 AND fv.deleted_at IS NULL AND fv.library IS NOT NULL '
+                               'AND fv.library IS NOT v.library').fetchall()
+        if relabel:
+            conn.executemany('UPDATE videos SET library = ? WHERE video_id = ?', relabel)
+        conn.commit()
+        if changed or relabel:
+            print(f"[libraries] {len(changed)} files' library worked out, {len(relabel)} videos relabelled")
+        return len(relabel)
     
     # ============================================
     # CAST PRIMARY ATTRIBUTES METHODS

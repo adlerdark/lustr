@@ -208,11 +208,12 @@ def sprites_check(path: str = Query(...), model=Depends(get_model)):
 def library_files(model, conn, library=None):
     """[(path, cache_id)] of the preferred files in a library, a group, or everything."""
     where, params = 'fv.is_preferred = 1 AND fv.deleted_at IS NULL', []
-    if library and library not in ('All Videos', 'Home', 'all'):
-        libs = (model.get_libraries_in_group(library) if library in (getattr(model, 'library_groups', None) or {})
-                else [library])
-        where += f' AND v.library IN ({",".join("?" * len(libs))})'
-        params += list(libs)
+    import library_scope
+    libs = library_scope.expand(model, library)
+    if libs is not None:
+        sql, p = library_scope.videos_in(libs)
+        where += f' AND {sql}'
+        params += p
     rows = conn.execute(f'SELECT fv.path, fv.video_id, fv.cache_id FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id '
                         f'WHERE {where} ORDER BY fv.path', params).fetchall()
     return [(r[0], MediaHandler._get_cache_key(r[0], r[1], r[2])) for r in rows]

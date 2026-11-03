@@ -244,9 +244,11 @@ def shown_sql(conn, model, col='v.video_id', lib_col='v.library', selection=None
     if movie_q:
         untagged += f' AND NOT EXISTS ({movie_q}({",".join("?" * len(TAG_TYPE))}))'
         params += list(TAG_TYPE)
-    if hidden_libs:
-        untagged += f' AND COALESCE({lib_col}, \'\') NOT IN ({",".join("?" * len(hidden_libs))})'
-        params += hidden_libs
+    if hidden_libs:              # a merged video with a file in a library that is shown is shown (library_scope.py)
+        marks = ",".join("?" * len(hidden_libs))
+        untagged += (f' AND (COALESCE({lib_col}, \'\') NOT IN ({marks}) OR EXISTS (SELECT 1 FROM file_versions dff '
+                     f'WHERE dff.video_id = {col} AND dff.deleted_at IS NULL AND dff.library NOT IN ({marks})))')
+        params += hidden_libs + hidden_libs
     parts.append(f'({untagged})')
     return '(' + ' OR '.join(parts) + ')', params
 

@@ -186,9 +186,11 @@ def paths_for(conn, libraries=None, paths=None):
                                                 f'AND path IN ({",".join("?" * len(chunk))})', chunk)}
         return sorted(live)
     if libraries:
+        import library_scope
+        sql, p = library_scope.files_in(libraries)
         return [r[0] for r in conn.execute(
             'SELECT fv.path FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id WHERE fv.deleted_at IS NULL '
-            f'AND v.library IN ({",".join("?" * len(libraries))}) ORDER BY fv.path', list(libraries))]
+            f'AND {sql} ORDER BY fv.path', p)]
     return [r[0] for r in conn.execute('SELECT fv.path FROM file_versions fv LEFT JOIN chapter_checks c ON c.path = fv.path '
                                        'WHERE fv.deleted_at IS NULL AND c.path IS NULL ORDER BY fv.path')]
 

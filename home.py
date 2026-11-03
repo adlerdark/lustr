@@ -83,10 +83,10 @@ def scope_sql(model, conn, library):
     import display_filter
     parts, params = ['fv.is_preferred = 1', 'fv.deleted_at IS NULL'], []
     if library not in EVERYTHING:
-        groups = getattr(model, 'library_groups', None) or {}
-        libs = model.get_libraries_in_group(library) if library in groups else [library]
-        parts.append(f'v.library IN ({",".join("?" * len(libs)) or "NULL"})')
-        params += list(libs)
+        import library_scope
+        sql, p = library_scope.videos_in(library_scope.expand(model, library))
+        parts.append(sql)
+        params += p
     sql, p = display_filter.shown_sql(conn, model)
     if sql:
         parts.append(sql)

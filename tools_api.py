@@ -288,8 +288,10 @@ def _selected_deleted(conn, body):
     if body.paths:
         return list(body.paths)
     if body.library:
+        import library_scope
+        sql, p = library_scope.files_in([body.library])
         rows = conn.execute("SELECT fv.path, fv.deleted_at FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id "
-                            "WHERE fv.deleted_at IS NOT NULL AND v.library = ?", (body.library,)).fetchall()
+                            f"WHERE fv.deleted_at IS NOT NULL AND {sql}", p).fetchall()
         if body.expired_only:
             cutoff = (datetime.now() - timedelta(days=dm.get_settings(conn)['retention_days'])).isoformat()
             rows = [r for r in rows if r[1] < cutoff]
