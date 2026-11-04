@@ -14223,9 +14223,9 @@ No metadata is changed.`)) return;
                              search: this._navQuery, tags: { ...this.activeTags }, excludeTags: { ...(this.excludeTags || {}) },
                              sites: { ...this.activeSites }, excludeSites: { ...(this.excludeSites || {}) }, fav: this.favoritesOnly,
                              lengths: [...this.activeLengthFilters], res: this.resFilter, sortField: this.sortField, sortDesc: this.sortDesc, viewMode: this.viewMode,
-                             scroll: el ? el.scrollTop : 0 };
+                             scroll: el ? el.scrollTop : 0, mvPages: [this.mv.startPage, this.mv.page] };
                 },
-                navKey(s) { const { scroll, ...k } = s; return JSON.stringify(k); },
+                navKey(s) { const { scroll, mvPages, ...k } = s; return JSON.stringify(k); },
 
                 // call before a navigation changes anything
                 navPush() {
@@ -14298,7 +14298,12 @@ No metadata is changed.`)) return;
                             await this.fetchVideos('reset');
                             if (s.library !== 'Home' && !s.search) {
                                 if (s.tab === 'collections') await (s.collId ? this.collLoadItems(s.collId, 1) : this.loadCollections());
-                                else if (s.tab === 'movies') await (s.movieId ? this.mvLoad(s.movieId) : this.loadMovies(1));
+                                else if (s.tab === 'movies' && s.movieId) await this.mvLoad(s.movieId);
+                                else if (s.tab === 'movies' && s.mvPages?.[1] > 1) {          // the movie pages you had loaded, so the scroll spot is there
+                                    [this.mv.startPage, this.mv.page] = s.mvPages;
+                                    await this.loadMovies(0, 'keep');
+                                }
+                                else if (s.tab === 'movies') await this.loadMovies(1);
                                 else if (s.tab === 'recommended') { this.homeRows = []; await this.loadHomeData(s.library); }
                                 else if (s.tab === 'images') await (s.imgFolder ? this.imgOpen(s.imgFolder) : this.imgLoadAlbums());
                             }
