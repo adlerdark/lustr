@@ -567,7 +567,7 @@
                 clipMk: { open: false, path: '', video: null, title: '', start: 0, end: 10, dur: 0, format: 'webm', size: 720, fps: 0,
                           shape: 'original', cx: 0.5, cy: 0.5, audio: true, quality: 'standard', busy: false, error: '', thumb: '', w: 0, h: 0 },
                 clipsWin: { open: false, rows: [], total: 0, page: 1, loading: false, status: null, timer: null,
-                            format: '', q: '', cast: '', library: '', video_id: '', label: '', sort: 'newest', hover: null },
+                            format: '', q: '', cast: '', library: '', video_id: '', label: '', sort: 'newest', hover: null, big: null },
                 cc: { loaded: false, settings: null, models: [], whisper: false, status: null, busy: false, msg: '', libsText: '',
                       queue: [], history: [], done: [], doneTotal: 0, showQueue: true, showDone: false, timer: null },
                 photoCrop: { open: false, name: '', src: '', natW: 0, natH: 0, box: { x: 0, y: 0, w: 1, h: 1 }, aspect: 2 / 3,
@@ -817,7 +817,7 @@
                 // Images tab (images.py): albums by folder, an album's images, the viewer (iv)
                 img: { counts: {}, albums: [], sort: 'name', q: '', qTimer: null, loading: false, msg: '', seq: 0,
                        total: 0, letters: [], page: 1, startPage: 1, pageEdit: false, pageInput: 1, sel: {}, selLast: null,
-                       menu: { open: false, x: 0, y: 0, a: null, it: null },
+                       menu: { open: false, x: 0, y: 0, a: null, it: null }, hover: null,
                        folder: null, name: '', favorite: false, items: [], meta: {}, videos: [], shown: 300, photoPage: 1,
                        backScroll: null, skipText: '', info: null },
                 imgEdit: { open: false, folders: [], data: {}, orig: {}, common: {}, tab: 'General', busy: false, msg: '',
@@ -825,7 +825,8 @@
                 castAlbums: [],                  // the cast page's Photo albums row
                 imgLinkedIds: new Set(),         // videos with a photo album (the 📷 on their cards)
                 infoAlbums: [], _infoAlbumsFor: null,   // a video's File Info: the albums linked to it
-                iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false, wheelAt: 0 },
+                iv: { open: false, idx: 0, z: 1, x: 0, y: 0, slide: null, pts: {}, drag: null, pinch: null, moved: false, wheelAt: 0, muted: false, paused: false },
+                imgCast: { open: false, it: null, names: [], q: '' },     // which performer a photo becomes the cast photo of
                 
                 sortField: 'Filename',
                 sortSeed: Math.floor(Math.random() * 1e9),          // Random sort: same order while paging
@@ -2512,6 +2513,8 @@
                 },
 
                 handleEscape() {
+                    if (this.imgCast.open) { this.imgCast.open = false; return; }
+                    if (this.clipsWin.big) { this.clipsWin.big = null; return; }
                     if (this.img.menu.open) { this.img.menu.open = false; return; }
                     if (this.img.info) { this.img.info = null; return; }
                     if (this.imgEdit.open && !this.castPicker.open) { this.imgEditClose(); return; }
@@ -2709,7 +2712,7 @@
                         this.hasMore = true;
                         this.videos = [];
                         await this.fetchVideos('reset');
-                        if (this.currentLibrary !== 'Home') this.setLibraryTab(this.libOpenPrefs(this.currentLibrary).tab, false);   // started in a library
+                        if (this.currentLibrary !== 'Home') this.setLibraryTab(this.libTabFor(this.currentLibrary, this.libOpenPrefs(this.currentLibrary).tab), false);   // started in a library
                         
                         try {
                             const notepadRes = await fetch('/api/config/get?key=notepad_content');
@@ -2980,7 +2983,7 @@
 
                     this.mobileSidebar = false;
                     this.coll.view = null;
-                    const tab = this.libraryTabs[item.name] || prefs.tab;
+                    const tab = this.libTabFor(item.name, this.libraryTabs[item.name] || prefs.tab);
                     // The Library tab (and Home) load now; fetchVideos then gets the sidebar's filter counts.
                     // Recommended / Collections / Movies show first: the grid loads after (gridCatchUp), not alongside
                     this._gridSeq++;
@@ -12492,7 +12495,11 @@ No metadata is changed.`)) return;
                     const busy = W.rows.some(c => c.status === 'queued' || c.status === 'working');
                     if (W.open && busy) W.timer = setTimeout(() => this.clipsLoad(), 3000);
                 },
-                clipsClose() { clearTimeout(this.clipsWin.timer); this.clipsWin.open = false; },
+                clipsClose() { clearTimeout(this.clipsWin.timer); Object.assign(this.clipsWin, { open: false, big: null }); },
+                clipStep(d) {                             // full size: the previous / next finished clip
+                    const done = this.clipsWin.rows.filter(c => c.status === 'done'), i = done.indexOf(this.clipsWin.big);
+                    if (done.length) this.clipsWin.big = done[(i + d + done.length) % done.length];
+                },
                 clipSizeLabel(b) { return !b ? '' : b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; },
                 clipLink(c) { return window.location.origin + c.src.split('?')[0]; },
                 async clipCopy(c) {
@@ -13753,6 +13760,84 @@ No metadata is changed.`)) return;
                 },
                 imgCurrentAlbum() { return { folder: this.img.folder, name: this.img.name, favorite: this.img.favorite, current: true }; },
 
+                // ----- a photo as a performer's cast photo (the album's cast first; then crop it) -----
+                async imgCastPhoto(it) {
+                    const m = this.img.meta || {};
+                    const names = [...new Set([...(m.cast || []), ...(m.male_cast || [])].filter(Boolean))];
+                    if (names.length === 1) return this.imgCastPhotoSet(it, names[0]);
+                    Object.assign(this.imgCast, { open: true, it, names, q: '' });
+                    if (!this.castList.length) {
+                        try { this.castList = (await (await fetch('/api/cast/all')).json()).cast || []; } catch (e) {}
+                    }
+                },
+                imgCastMatches() {
+                    const q = this.imgCast.q.trim().toLowerCase();
+                    return q ? this.castList.map(c => c.name).filter(n => n && n.toLowerCase().includes(q)).slice(0, 12) : [];
+                },
+                async imgCastPhotoSet(it, name) {
+                    name = (name || '').trim();
+                    if (!it || !name) return;
+                    this.imgCast.open = false;
+                    try {
+                        await this.imgPost(`/api/images/${it.id}/cast-photo`, { name });
+                        this.castPhotoTimestamp = Date.now();
+                        this.photoCropOpen(name);
+                    } catch (e) { alert('Could not set the cast photo: ' + e.message); }
+                },
+
+                // ----- video files between Images and the video library (media_kind.py) -----
+                async imgToVideo(it) {
+                    if (!confirm(`Show "${it.filename}" in the video library instead of Images?\n\nIt becomes a video there (new, no details yet). You can move it back from its right-click menu.`)) return;
+                    try {
+                        await this.imgPost('/api/images/kind', { ids: [it.id], kind: 'video' });
+                        this.img.items = this.img.items.filter(x => x !== it);
+                        if (this.iv.open) { if (this.img.items.length) this.ivGo(0); else this.ivClose(); }
+                        this.imgLoadCounts();
+                        this.gridStale = true;
+                    } catch (e) { alert('Could not move it: ' + e.message); }
+                },
+                async videosToImages() {
+                    this.activeMenu = null;
+                    const paths = Array.from(this.selectedPaths);
+                    try {
+                        const d = await this.imgPost('/api/images/kind', { paths, kind: 'image', dry_run: true });
+                        const n = d.count, s = n === 1 ? '' : 's';
+                        if (!n) return;
+                        let msg = `Show ${n} file${s} in Images instead of the video library?\n\nThere ${n === 1 ? 'it plays' : 'they play'} on a loop like a GIF, with sound. ` +
+                                  `${n === 1 ? 'It' : 'They'} can be moved back from the Images right-click menu.`;
+                        if (d.lose) msg += `\n\n${d.lose} of them ha${d.lose === 1 ? 's' : 've'} details (tags, cast, rating, a scene link…) that will be lost.`;
+                        if (!confirm(msg)) return;
+                        await this.imgPost('/api/images/kind', { paths, kind: 'image' });
+                        this.clearAllSelections();
+                        await this.fetchVideos('none');
+                        if (this.mvTabActive() && this.mv.view) this.mvLoad(this.mv.view.id);
+                        this.imgLoadCounts();
+                    } catch (e) { alert('Could not move them: ' + e.message); }
+                },
+                hasMovingSelection() { return Array.from(this.selectedPaths).some(p => /\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg)$/i.test(p)); },
+
+                // ----- what a library holds (Manage Library -> Contains) -----
+                libContent(lib) { const c = (this.librarySettings[lib] || {}).content; return ['images', 'videos'].includes(c) ? c : 'both'; },
+                libTabFor(lib, tab) {
+                    const c = this.libContent(lib);
+                    return c === 'images' ? 'images' : (c === 'videos' && tab === 'images' ? 'library' : tab);
+                },
+                async setLibContent(lib, content) {
+                    try {
+                        const d = await this.imgPost('/api/images/library-content', { library: lib, content, dry_run: true });
+                        let msg = '';
+                        if (content === 'images' && d.videos) msg = `${d.videos} video${d.videos === 1 ? '' : 's'} in "${lib}" will move to its Images tab` +
+                                (d.lose ? ` - ${d.lose} with details (tags, cast, rating…) that will be lost.` : '.');
+                        if (content === 'videos' && d.images) msg = `${d.images} image${d.images === 1 ? '' : 's'} in "${lib}" will leave the Images tab (the files stay).`;
+                        if (msg && !confirm(msg + '\n\nGo ahead?')) { this.libraryDataVersion++; return; }
+                        await this.imgPost('/api/images/library-content', { library: lib, content });
+                        this.librarySettings = { ...this.librarySettings, [lib]: { ...(this.librarySettings[lib] || {}), content } };
+                        this.imgLoadCounts();
+                        if (content !== 'videos') this.scanLib(lib);            // its images (and moved videos) show up
+                        if (this.currentLibrary === lib) this.setLibraryTab(this.libTabFor(lib, this.libraryTab), false);
+                    } catch (e) { alert('Could not change it: ' + e.message); }
+                },
+
                 // ----- an album -----
                 async imgOpen(folder) {
                     const I = this.img, scroller = document.querySelector('.scroller-main');
@@ -14056,11 +14141,11 @@ No metadata is changed.`)) return;
                 },
                 ivPreload() {
                     const n = this.img.items.length;
-                    for (const d of [1, -1, 2]) { const it = this.img.items[(this.iv.idx + d + n) % n]; if (it) new Image().src = this.imgFile(it); }
+                    for (const d of [1, -1, 2]) { const it = this.img.items[(this.iv.idx + d + n) % n]; if (it && it.kind !== 'video') new Image().src = this.imgFile(it); }
                 },
                 ivSlideshow() {
                     if (this.iv.slide) { clearInterval(this.iv.slide); this.iv.slide = null; return; }
-                    this.iv.slide = setInterval(() => this.ivGo(1), 5000);
+                    this.iv.slide = setInterval(() => { if (this.ivCur()?.kind !== 'video') this.ivGo(1); }, 5000);   // a moving one: when it ends
                 },
                 ivFullscreen(el) {
                     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -14779,7 +14864,7 @@ No metadata is changed.`)) return;
                          :style="mainScrollX ? `transform:translateX(${mainScrollX}px)` : ''"
                          x-init="new ResizeObserver(() => { tabsH = $el.offsetHeight; jumpMeasure(); }).observe($el)">
                         <template x-for="tb in libTabNames" :key="tb[0]">
-                            <button x-show="tb[0] !== 'images' || imgCount() > 0 || libraryTab === 'images'"
+                            <button x-show="(tb[0] !== 'images' || imgCount() > 0 || libraryTab === 'images') && (libContent(currentLibrary) === 'both' || (libContent(currentLibrary) === 'images') === (tb[0] === 'images'))"
                                     @click="if (libraryTab !== tb[0]) navPush(); setLibraryTab(tb[0])" class="px-4 py-2 -mb-px border-b-2 font-medium"
                                     :class="libraryTab === tb[0] ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'" x-text="tb[1]"></button>
                         </template>
@@ -15455,8 +15540,13 @@ No metadata is changed.`)) return;
                             <div class="flex flex-wrap items-start gap-1.5">
                                 <template x-for="[it, i] in imgPhotos()" :key="it.id">
                                     <div @click="ivOpen(i)" @contextmenu.prevent.stop="imgMenuOpen($event, imgCurrentAlbum(), it)" :style="imgTileStyle(it)"
+                                         @mouseenter="img.hover = it.id" @mouseleave="img.hover = null"
                                          class="relative bg-gray-900 rounded overflow-hidden cursor-zoom-in group" :title="it.path || it.filename">
                                         <img :src="imgThumb(it.id, it.mtime)" loading="lazy" @load="imgTileLoaded(it, $el)" class="w-full h-full object-cover">
+                                        <template x-if="it.kind === 'video' && img.hover === it.id">
+                                            <video :src="imgFile(it)" autoplay muted loop playsinline class="absolute inset-0 w-full h-full object-cover pointer-events-none"></video>
+                                        </template>
+                                        <span x-show="it.kind === 'video'" class="absolute bottom-0.5 left-0.5 text-[10px] px-1 rounded bg-black/70 text-white pointer-events-none" title="Plays (with sound) in the viewer">▶</span>
                                         <button @click.stop="imgFav(it)" class="absolute top-0.5 right-0.5 text-lg leading-none px-1 rounded bg-black/40"
                                                 :class="it.favorite ? 'text-yellow-400' : 'text-white/70 opacity-0 group-hover:opacity-100'" title="Favorite">&#9733;</button>
                                         <button @click.stop="imgSetCover(it)" class="absolute bottom-0.5 right-0.5 text-[10px] px-1 rounded bg-black/60 text-white opacity-0 group-hover:opacity-100" title="Use as the album's cover">cover</button>
@@ -16324,6 +16414,9 @@ No metadata is changed.`)) return;
                     class="w-full text-left px-4 py-2 hover:bg-blue-600">Choose Main Thumbnail…</button>
             <div class="border-t border-gray-700 my-1"></div>
             <button @click="toggleFavSelection" class="w-full text-left px-4 py-2 hover:bg-blue-600">Toggle Favorite</button>
+            <button x-show="hasMovingSelection()" @click="videosToImages()" class="w-full text-left px-4 py-2 hover:bg-blue-600"
+                    x-text="selectedPaths.size > 1 ? `🖼 Show in Images instead (${selectedPaths.size})` : '🖼 Show in Images instead'"
+                    title="Play it in the Images tab, on a loop like a GIF (with sound)"></button>
             <button @click="applyCastAttrsToSelected" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-cyan-400">
                 <span x-text="selectedPaths.size === 1 ? 'Apply Cast Attributes' : `Apply Cast Attributes (${selectedPaths.size})`"></span>
             </button>
@@ -16457,8 +16550,17 @@ No metadata is changed.`)) return;
                 <div class="absolute inset-0 overflow-hidden touch-none" @wheel.prevent="ivWheel($event)" @contextmenu.prevent="imgShowInfo({ id: ivCur().id })"
                      @pointerdown="ivDown($event)" @pointermove="ivMove($event)" @pointerup="ivUp($event)" @pointercancel="ivUp($event)"
                      @dblclick="ivZoomTo(iv.z > 1 ? 1 : 2.5, $event.clientX, $event.clientY)">
-                    <img :src="imgFile(ivCur())" draggable="false" class="absolute inset-0 w-full h-full object-contain"
-                         :style="`transform: translate(${iv.x}px, ${iv.y}px) scale(${iv.z}); transition: ${iv.drag || iv.pinch ? 'none' : 'transform .15s'}; cursor: ${iv.z > 1 ? 'grab' : 'default'}`">
+                    <template x-if="ivCur().kind !== 'video'">
+                        <img :src="imgFile(ivCur())" draggable="false" class="absolute inset-0 w-full h-full object-contain"
+                             :style="`transform: translate(${iv.x}px, ${iv.y}px) scale(${iv.z}); transition: ${iv.drag || iv.pinch ? 'none' : 'transform .15s'}; cursor: ${iv.z > 1 ? 'grab' : 'default'}`">
+                    </template>
+                    <!-- a moving one (.webm…): plays on a loop with sound, like a GIF; in a slideshow it plays once -->
+                    <template x-if="ivCur().kind === 'video'">
+                        <video :src="imgFile(ivCur())" :key="'iv' + ivCur().id" id="ivVideo" autoplay playsinline :loop="!iv.slide" :muted="iv.muted"
+                               x-init="iv.paused = false; $el.play().catch(() => { iv.muted = true; $el.muted = true; $el.play().catch(() => {}); })"
+                               @ended="if (iv.slide) ivGo(1)" class="absolute inset-0 w-full h-full object-contain"
+                               :style="`transform: translate(${iv.x}px, ${iv.y}px) scale(${iv.z}); transition: ${iv.drag || iv.pinch ? 'none' : 'transform .15s'}`"></video>
+                    </template>
                 </div>
             </template>
             <div class="absolute top-0 inset-x-0 flex items-center gap-3 px-4 py-2 bg-gradient-to-b from-black/70 to-transparent text-sm text-gray-200 pointer-events-none">
@@ -16467,6 +16569,10 @@ No metadata is changed.`)) return;
                 <div class="ml-auto flex items-center gap-1 pointer-events-auto">
                     <button @click="imgFav(ivCur())" class="px-2 py-1 rounded hover:bg-white/10 text-lg leading-none" :class="ivCur()?.favorite ? 'text-yellow-400' : 'text-gray-300'" title="Favorite (S)">&#9733;</button>
                     <button @click="imgSetCover(ivCur())" class="px-2 py-1 rounded hover:bg-white/10" title="Use as the album's cover">Cover</button>
+                    <button x-show="ivCur()?.kind === 'video'" @click="const v = document.getElementById('ivVideo'); if (v) { v.paused ? v.play() : v.pause(); iv.paused = v.paused; }"
+                            class="px-2 py-1 rounded hover:bg-white/10" title="Play / pause" x-text="iv.paused ? '▶' : '❚❚'"></button>
+                    <button x-show="ivCur()?.kind === 'video'" @click="iv.muted = !iv.muted" class="px-2 py-1 rounded hover:bg-white/10" :title="iv.muted ? 'Sound on' : 'Mute'" x-text="iv.muted ? '🔇' : '🔊'"></button>
+                    <button x-show="ivCur() && ivCur().kind !== 'video'" @click="imgCastPhoto(ivCur())" class="px-2 py-1 rounded hover:bg-white/10" title="Use as a performer's cast photo (then crop it)">👤</button>
                     <button @click="ivSlideshow()" class="px-2 py-1 rounded hover:bg-white/10" :title="'Slideshow (Space)'" x-text="iv.slide ? '❚❚' : '▶'"></button>
                     <button @click="ivZoomTo(iv.z > 1 ? 1 : 2.5)" class="px-2 py-1 rounded hover:bg-white/10" title="Zoom (+ / - / 0, Ctrl+wheel, double-click)" x-text="iv.z > 1 ? Math.round(iv.z * 100) + '%' : '1:1'"></button>
                     <button @click="ivFullscreen(document.getElementById('imgViewer'))" class="px-2 py-1 rounded hover:bg-white/10" title="Full screen (F)">⛶</button>
@@ -16506,6 +16612,8 @@ No metadata is changed.`)) return;
                         <div x-show="img.info?.album"><div class="text-gray-400">Images</div><div x-text="img.info?.count"></div></div>
                         <div><div class="text-gray-400">Size</div><div x-text="imgInfoSize(img.info?.size)"></div></div>
                         <div x-show="img.info?.width"><div class="text-gray-400">Dimensions</div><div x-text="img.info?.width + ' × ' + img.info?.height"></div></div>
+                        <div x-show="img.info?.length"><div class="text-gray-400">Length</div><div x-text="img.info?.length"></div></div>
+                        <div x-show="img.info?.codec"><div class="text-gray-400">Codec</div><div x-text="img.info?.codec"></div></div>
                         <div x-show="img.info?.mtime"><div class="text-gray-400">Modified</div><div x-text="img.info?.mtime ? new Date(img.info.mtime * 1000).toLocaleString() : ''"></div></div>
                     </div>
                 </div>
@@ -16522,6 +16630,8 @@ No metadata is changed.`)) return;
                     <button @click="img.menu.open = false; imgShowInfo({ id: img.menu.it.id })" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">File Info</button>
                     <button @click="img.menu.open = false; imgFav(img.menu.it)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600" x-text="img.menu.it.favorite ? '☆ Remove from favorites' : '★ Favorite'"></button>
                     <button @click="img.menu.open = false; imgSetCover(img.menu.it)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Use as the album's cover</button>
+                    <button x-show="img.menu.it.kind !== 'video'" @click="img.menu.open = false; imgCastPhoto(img.menu.it)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">👤 Set as cast photo…</button>
+                    <button x-show="img.menu.it.kind === 'video'" @click="img.menu.open = false; imgToVideo(img.menu.it)" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">🎬 Show in Video library instead</button>
                     <div class="border-t border-gray-700 my-1"></div>
                 </div>
             </template>
@@ -16544,6 +16654,29 @@ No metadata is changed.`)) return;
                     <button x-show="imgMenuFolders().length === 1" @click="img.menu.open = false; imgShowInfo({ folder: img.menu.a.folder })" class="w-full text-left px-3 py-1.5 hover:bg-blue-600">Album File Info</button>
                 </div>
             </template>
+        </div>
+
+        <!-- Images: which performer a photo becomes the cast photo of -->
+        <div x-show="imgCast.open" x-cloak class="fixed inset-0 z-[150] bg-black/70 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-sm p-4 shadow-2xl" @click.outside="imgCast.open = false">
+                <h3 class="font-bold mb-1">Set as cast photo</h3>
+                <p class="text-xs text-gray-400 mb-3" x-text="imgCast.names.length ? 'Whose photo is it? (the album\'s cast)' : 'No cast tagged on this album - type a name.'"></p>
+                <div class="flex flex-col gap-1 mb-3" x-show="imgCast.names.length">
+                    <template x-for="n in imgCast.names" :key="'icn' + n">
+                        <button @click="imgCastPhotoSet(imgCast.it, n)" class="text-left px-3 py-1.5 rounded bg-gray-700 hover:bg-blue-600" x-text="castLabel(n)"></button>
+                    </template>
+                </div>
+                <input type="search" x-model="imgCast.q" @keydown.enter="imgCastPhotoSet(imgCast.it, imgCastMatches()[0] || imgCast.q)"
+                       :placeholder="imgCast.names.length ? 'Someone else…' : 'Performer name'" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <div class="flex flex-col mt-1 max-h-60 overflow-y-auto">
+                    <template x-for="n in imgCastMatches()" :key="'icm' + n">
+                        <button @click="imgCastPhotoSet(imgCast.it, n)" class="text-left px-3 py-1 rounded hover:bg-gray-700 text-sm" x-text="n"></button>
+                    </template>
+                </div>
+                <div class="flex justify-end gap-2 mt-3">
+                    <button @click="imgCast.open = false" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel</button>
+                </div>
+            </div>
         </div>
 
         <!-- Images: Edit Album (one album or several) - the fields scenes have, album-wide -->
@@ -16862,6 +16995,18 @@ No metadata is changed.`)) return;
                         </template>
                         <div x-show="!(allLibraries[manageLibTarget] && allLibraries[manageLibTarget].length)" class="text-gray-500 text-xs italic p-2 text-center">No folders added yet.</div>
                     </div>
+                </div>
+
+                <div class="mb-3 flex items-center justify-between gap-3 bg-gray-900 p-3 rounded border border-gray-700">
+                    <div>
+                        <span class="block text-sm font-bold text-gray-300">Contains</span>
+                        <span class="block text-xs text-gray-500">Images only: no video library here, its video files (and .webm) play in the Images tab. Videos only: no Images tab.</span>
+                    </div>
+                    <select class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm" :key="'lc' + libraryDataVersion" @change="setLibContent(manageLibTarget, $event.target.value)">
+                        <option value="both" :selected="libContent(manageLibTarget) === 'both'">Videos and images</option>
+                        <option value="images" :selected="libContent(manageLibTarget) === 'images'">Images only</option>
+                        <option value="videos" :selected="libContent(manageLibTarget) === 'videos'">Videos only</option>
+                    </select>
                 </div>
 
                 <div class="mb-6 flex items-center justify-between gap-3 bg-gray-900 p-3 rounded border border-gray-700">
@@ -19570,7 +19715,7 @@ No metadata is changed.`)) return;
 
         <!-- Clips window (sidebar 🎞 Clips) -->
         <div x-show="clipsWin.open" x-cloak class="fixed inset-0 z-[95] bg-black/80 flex items-center justify-center p-2 sm:p-4">
-            <div class="bg-gray-800 rounded-lg w-full max-w-6xl h-[92vh] p-4 shadow-2xl flex flex-col" @click.outside="clipsClose()">
+            <div class="relative bg-gray-800 rounded-lg w-full max-w-6xl h-[92vh] p-4 shadow-2xl flex flex-col" @click.outside="if (!clipsWin.big) clipsClose()">
                 <div class="flex flex-wrap items-center gap-2 mb-3 text-sm">
                     <h2 class="font-bold text-lg mr-2">🎞 Clips</h2>
                     <span x-show="clipsWin.label" class="px-2 py-0.5 rounded bg-blue-900 text-blue-100 text-xs flex items-center gap-1">
@@ -19596,7 +19741,8 @@ No metadata is changed.`)) return;
                     <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                         <template x-for="c in clipsWin.rows" :key="c.id">
                             <div class="bg-gray-900 rounded overflow-hidden border border-gray-700 flex flex-col">
-                                <div class="relative aspect-video bg-black" @mouseenter="clipsWin.hover = c.id" @mouseleave="clipsWin.hover = null">
+                                <div class="relative aspect-video bg-black" :class="c.status === 'done' ? 'cursor-zoom-in' : ''" @mouseenter="clipsWin.hover = c.id" @mouseleave="clipsWin.hover = null"
+                                     @click="if (c.status === 'done') clipsWin.big = c" title="Play full size">
                                     <template x-if="c.status === 'done' && clipsWin.hover === c.id && c.format !== 'gif'">
                                         <video :src="c.src" autoplay muted loop playsinline class="absolute inset-0 w-full h-full object-contain"></video>
                                     </template>
@@ -19617,6 +19763,7 @@ No metadata is changed.`)) return;
                                     <div class="flex flex-wrap gap-1 mt-auto pt-1">
                                         <a x-show="c.status === 'done'" :href="'/api/clips/' + c.id + '/download'" class="px-1.5 py-0.5 rounded bg-blue-700 hover:bg-blue-600 text-white" title="Download">⬇</a>
                                         <button x-show="c.status === 'done'" @click="clipCopy(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600" title="Copy link">🔗</button>
+                                        <a x-show="c.status === 'done'" :href="c.src" target="_blank" rel="noopener" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600" title="Open in a new tab">↗</a>
                                         <button @click="clipSource(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600" title="Play the video from here">▶ source</button>
                                         <button @click="clipRename(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600" title="Rename">✎</button>
                                         <button @click="clipDelete(c)" class="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-red-700 ml-auto" title="Delete">🗑</button>
@@ -19633,6 +19780,31 @@ No metadata is changed.`)) return;
                     <span class="self-center text-gray-400" x-text="`Page ${clipsWin.page} of ${Math.ceil(clipsWin.total / 60)}`"></span>
                     <button @click="clipsWin.page++; clipsLoad()" :disabled="clipsWin.page * 60 >= clipsWin.total" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-40">▶</button>
                 </div>
+                <!-- a clip full size (click a clip's picture): with sound and controls; ← → the others -->
+                <template x-if="clipsWin.big">
+                    <div class="absolute inset-0 z-10 bg-black/95 rounded-lg flex flex-col p-3" @click.self="clipsWin.big = null"
+                         @keydown.arrow-right.window="clipStep(1)" @keydown.arrow-left.window="clipStep(-1)">
+                        <div class="flex items-center gap-2 text-sm text-gray-200 mb-2">
+                            <span class="font-medium truncate" x-text="clipsWin.big.title"></span>
+                            <span class="text-gray-400 whitespace-nowrap" x-text="clipsWin.big.format.toUpperCase() + ' · ' + clipsWin.big.duration + 's' + (clipsWin.big.size_bytes ? ' · ' + clipSizeLabel(clipsWin.big.size_bytes) : '')"></span>
+                            <div class="ml-auto flex items-center gap-1">
+                                <button @click="clipStep(-1)" class="px-2 py-1 rounded hover:bg-white/10" title="Previous (←)">‹</button>
+                                <button @click="clipStep(1)" class="px-2 py-1 rounded hover:bg-white/10" title="Next (→)">›</button>
+                                <a :href="clipsWin.big.src" target="_blank" rel="noopener" class="px-2 py-1 rounded hover:bg-white/10" title="Open in a new tab">↗</a>
+                                <a :href="'/api/clips/' + clipsWin.big.id + '/download'" class="px-2 py-1 rounded hover:bg-white/10" title="Download">⬇</a>
+                                <button @click="clipsWin.big = null" class="px-2 py-1 rounded hover:bg-white/10 text-xl leading-none" title="Close (Esc)">&times;</button>
+                            </div>
+                        </div>
+                        <div class="flex-1 min-h-0 flex items-center justify-center" @click.self="clipsWin.big = null">
+                            <template x-if="clipsWin.big.format === 'gif'">
+                                <img :src="clipsWin.big.src" class="max-w-full max-h-full object-contain">
+                            </template>
+                            <template x-if="clipsWin.big.format !== 'gif'">
+                                <video :src="clipsWin.big.src" :key="'cb' + clipsWin.big.id" controls autoplay loop playsinline class="max-w-full max-h-full"></video>
+                            </template>
+                        </div>
+                    </div>
+                </template>
             </div>
         </div>
 

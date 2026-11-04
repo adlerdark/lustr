@@ -292,6 +292,100 @@ def file(image_id: int, model=Depends(get_model)):
     return FileResponse(g[0], media_type=kind, headers=KEEP)
 
 
+class CastPhotoBody(BaseModel):
+    name: str
+
+
+@router.post('/{image_id}/cast-photo')
+def cast_photo(image_id: int, body: CastPhotoBody, model=Depends(get_model)):
+    """Use this photo as a performer's cast photo (crop it after, in the cast photo cropper)."""
+    try:
+        conn = _conn()
+        name = body.name.strip()
+        if not name or not _may_see(conn, image_id=image_id):
+            return _err('Not found')
+        data = images.cast_photo_bytes(conn, image_id)
+        if not data:
+            return _err('This picture can\'t be read')
+        if not _model.db.save_cast_photo(name, data, 'image/jpeg', 'image'):
+            return _err('Could not save the photo')
+        return {'success': True}
+    except Exception as e:
+        return _err(e)
+
+
+class KindBody(BaseModel):
+    paths: List[str] = []
+    ids: List[int] = []                 # image ids (Images -> video library)
+    kind: str                           # 'image' | 'video'
+    dry_run: bool = False
+
+
+@router.post('/kind')
+def set_kind(body: KindBody, model=Depends(get_model)):
+    """Show video files in Images instead (paths, from the video library) or back in the video library
+    (ids, from Images). dry_run: what it would do -> {count, lose}."""
+    import media_kind
+    try:
+        conn = _conn()
+        if body.kind == 'image':
+            paths = [p for p in body.paths if media_kind.is_moving(p) and
+                     conn.execute('SELECT 1 FROM file_versions WHERE path = ? AND deleted_at IS NULL', (p,)).fetchone()]
+            if body.dry_run:
+                return {'success': True, 'count': len(paths), 'lose': media_kind.would_lose(conn, paths)}
+            media_kind.set_kind(conn, paths, 'image')
+            return {'success': True, 'count': media_kind.to_images(_model, paths)}
+        if body.kind == 'video':
+            rows = [conn.execute("SELECT path, library FROM images WHERE id = ? AND kind = 'video' AND deleted_at IS NULL", (i,)).fetchone()
+                    for i in body.ids if _may_see(conn, image_id=i)]
+            rows = [r for r in rows if r]
+            if any(media_kind.content_of(_model, lib) == 'images' for _p, lib in rows):
+                return _err('That library holds images only (Manage Library -> Contains)')
+            paths = [p for p, _lib in rows]
+            if body.dry_run:
+                return {'success': True, 'count': len(paths), 'lose': 0}
+            media_kind.set_kind(conn, paths, 'video')
+            return {'success': True, 'count': media_kind.to_videos(_model, paths)}
+        return _err('kind is image or video')
+    except Exception as e:
+        return _err(e)
+
+
+class ContentBody(BaseModel):
+    library: str
+    content: str                        # 'both' | 'images' | 'videos'
+    dry_run: bool = False
+
+
+@router.post('/library-content')
+def library_content(body: ContentBody, model=Depends(get_model)):
+    """What a library holds. Images only: its videos move to Images (dry_run -> {videos, lose} first);
+    videos only: its images leave the Images tab. A scan of the library afterwards fills in the rest."""
+    import media_kind
+    try:
+        if body.library not in (_model.libraries or {}) or body.content not in media_kind.CONTENTS:
+            return _err('Unknown library or content')
+        conn = _conn()
+        import library_scope
+        sql, params = library_scope.files_in([body.library])
+        videos = [r[0] for r in conn.execute(f'SELECT fv.path FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id '
+                                             f'WHERE fv.deleted_at IS NULL AND {sql}', params)] if body.content == 'images' else []
+        if body.dry_run:
+            return {'success': True, 'videos': len(videos), 'lose': media_kind.would_lose(conn, videos),
+                    'images': conn.execute('SELECT COUNT(*) FROM images WHERE library = ? AND deleted_at IS NULL',
+                                           (body.library,)).fetchone()[0] if body.content == 'videos' else 0}
+        _model.set_library_setting(body.library, 'content', body.content)
+        if videos:
+            media_kind.to_images(_model, videos)
+        if body.content == 'videos':
+            conn.execute('UPDATE images SET deleted_at = ? WHERE library = ? AND deleted_at IS NULL',
+                         (__import__('datetime').datetime.now().isoformat(), body.library))
+            conn.commit()
+        return {'success': True, 'moved': len(videos)}
+    except Exception as e:
+        return _err(e)
+
+
 class FavoriteBody(BaseModel):
     ids: Optional[List[int]] = None
     folder: Optional[str] = None

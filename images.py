@@ -11,6 +11,9 @@ A .zip counts as a folder: its images are rows like any other, path <zip>/<name 
 skipped folders and favorites just work. Nothing is unpacked: `archive` + `member` say where to read
 one from. What's in a zip is kept in image_archives and only read again when the zip changes.
 
+A video file can be an image too (media_kind.py: a .webm, one you moved here, anything in an images-only
+library): kind 'video', played looping with sound in the viewer, its thumbnail one frame (ffmpeg). Not in zips.
+
 An album (a folder) has what a scene has, album-wide: a title of your own, cast, site, tags and the other
 list fields (image_album_meta, one row per value), and the videos it goes with (image_album_videos, by
 video_id). Photos themselves have no tags. Width / height are read from the file's header when an album
@@ -33,7 +36,8 @@ SKIP_KEY = 'image_skip_folders'
 DEFAULT_SKIP = ['screens', 'screen', 'thumbnails', 'thumbs', 'screenshots']
 THUMB_SIZE = 480
 TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
-         '.gif': 'image/gif', '.bmp': 'image/bmp', '.avif': 'image/avif'}
+         '.gif': 'image/gif', '.bmp': 'image/bmp', '.avif': 'image/avif',
+         '.webm': 'video/webm', '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/mp4', '.mkv': 'video/webm'}
 
 ARCHIVE_EXTENSIONS = {'.zip'}
 ZIP_METHODS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA}     # what Python can read
@@ -57,7 +61,7 @@ def ensure_schema(conn):
         added_at TEXT,
         deleted_at TEXT)''')
     have = {r[1] for r in conn.execute('PRAGMA table_info(images)')}
-    for col in ('archive', 'member'):                                       # in a zip: which one, and its name there
+    for col in ('archive', 'member', 'kind'):           # in a zip: which one, and its name there; kind 'video': a moving one
         if col not in have:
             conn.execute(f'ALTER TABLE images ADD COLUMN {col} TEXT')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_images_lib_folder ON images(library, folder)')
@@ -85,6 +89,11 @@ def ensure_schema(conn):
 
 def is_image(name):
     return os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS
+
+
+def is_video(name):
+    import media_kind
+    return media_kind.is_moving(name)
 
 
 def is_archive(name):
@@ -118,10 +127,7 @@ def sync(conn, library, roots, paths):
                 except OSError:
                     continue
                 size, mtime = st.st_size, int(st.st_mtime)
-            root = max((r for r in roots if p.startswith(r + os.sep)), key=len, default=None)
-            conn.execute('INSERT OR IGNORE INTO images (path, library, root, folder, filename, size, mtime, added_at, archive, member) '
-                         'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                         (p, library, root, os.path.dirname(p), os.path.basename(p), size, mtime, now, archive, member))
+            _insert(conn, p, library, roots, size, mtime, now, archive, member)
             added += 1
         elif known[p] is not None:
             conn.execute('UPDATE images SET deleted_at = NULL, library = ? WHERE path = ?', (library, p))
@@ -140,6 +146,43 @@ def sync(conn, library, roots, paths):
                                 [now] + chunk).rowcount
     conn.commit()
     return {'added': added, 'removed': removed, 'restored': restored}
+
+
+def _insert(conn, p, library, roots, size, mtime, now, archive=None, member=None):
+    root = max((r for r in roots if p.startswith(r + os.sep)), key=len, default=None)
+    kind = 'video' if not archive and is_video(p) else None
+    conn.execute('INSERT OR IGNORE INTO images (path, library, root, folder, filename, size, mtime, added_at, archive, member, kind) '
+                 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                 (p, library, root, os.path.dirname(p), os.path.basename(p), size, mtime, now, archive, member, kind))
+
+
+def add_files(conn, library, roots, paths):
+    """Plain files that just became images (a video moved to Images): added now, not at the next scan.
+    -> how many are there now."""
+    ensure_schema(conn)
+    roots = [os.path.normpath(r) for r in roots]
+    now, n = datetime.now().isoformat(), 0
+    for p in (os.path.normpath(x) for x in paths):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        if conn.execute('UPDATE images SET deleted_at = NULL, library = ? WHERE path = ?', (library, p)).rowcount:
+            n += 1
+            continue
+        _insert(conn, p, library, roots, st.st_size, int(st.st_mtime), now)
+        n += 1
+    conn.commit()
+    return n
+
+
+def remove_files(conn, paths):
+    """These are videos now (moved to the video library): gone from Images."""
+    now = datetime.now().isoformat()
+    n = sum(conn.execute('UPDATE images SET deleted_at = ? WHERE path = ? AND deleted_at IS NULL', (now, os.path.normpath(p))).rowcount
+            for p in paths)
+    conn.commit()
+    return n
 
 
 def _read_zip(path):
@@ -406,21 +449,29 @@ def add_covers(conn, out):
 
 
 def album_images(conn, folder):
-    rows = conn.execute('SELECT id, filename, width, height, mtime, favorite, size, path FROM images '
+    rows = conn.execute('SELECT id, filename, width, height, mtime, favorite, size, path, kind FROM images '
                         'WHERE deleted_at IS NULL AND folder = ?', (folder,)).fetchall()
     items = [{'id': r[0], 'filename': r[1], 'width': r[2], 'height': r[3], 'mtime': r[4] or 0,
-              'favorite': bool(r[5]), 'size': r[6], 'path': r[7]} for r in rows]
+              'favorite': bool(r[5]), 'size': r[6], 'path': r[7], 'kind': r[8] or 'image'} for r in rows]
     items.sort(key=lambda i: _natural(i['filename']))
     return items
 
 
 def image_info(conn, image_id):
     """What the right-click File Info shows for an image; None if it's gone."""
-    r = conn.execute('SELECT path, library, folder, size, width, height, mtime, added_at, archive, member FROM images '
+    r = conn.execute('SELECT path, library, folder, size, width, height, mtime, added_at, archive, member, kind FROM images '
                      'WHERE id = ? AND deleted_at IS NULL', (image_id,)).fetchone()
     if not r:
         return None
-    return dict(zip(('path', 'library', 'folder', 'size', 'width', 'height', 'mtime', 'added_at', 'archive', 'member'), r))
+    info = dict(zip(('path', 'library', 'folder', 'size', 'width', 'height', 'mtime', 'added_at', 'archive', 'member', 'kind'), r))
+    if info['kind'] == 'video':                                            # its length and codec too
+        try:
+            from media_handler import MediaHandler
+            v = MediaHandler.get_file_info(info['path'])
+            info.update({k: v.get(k) for k in ('length', 'codec', 'total_bitrate')})
+        except Exception:
+            pass
+    return info
 
 
 def album_info(conn, folder):
@@ -718,7 +769,26 @@ def _upright(im):
     return w, h
 
 
+def _video_size(path):
+    """(width, height) as shown (a rotation tag of 90 / 270 swaps them), by ffprobe."""
+    import subprocess
+    try:
+        out = subprocess.run(['ffprobe', '-v', 'quiet', '-select_streams', 'v:0', '-show_entries',
+                              'stream=width,height:stream_tags=rotate:stream_side_data=rotation', '-of', 'json', path],
+                             capture_output=True, text=True, timeout=30).stdout
+        s = (json.loads(out or '{}').get('streams') or [{}])[0]
+        w, h = int(s.get('width') or 0), int(s.get('height') or 0)
+        rot = s.get('tags', {}).get('rotate') or next((d.get('rotation') for d in s.get('side_data_list') or [] if 'rotation' in d), 0)
+        if abs(int(float(rot or 0))) % 180 == 90:
+            w, h = h, w
+        return (w, h) if w and h else None
+    except Exception:
+        return None
+
+
 def _size_of(path):
+    if is_video(path):
+        return _video_size(path)
     from PIL import Image
     try:
         with Image.open(path) as im:                                       # reads the header only
@@ -802,6 +872,21 @@ def sizes(conn, folder):
 # ---------------------------------------------------------------------------
 # thumbnails
 # ---------------------------------------------------------------------------
+def _video_frame(path):
+    """One frame (PNG bytes), a second in (or the first, for a shorter one)."""
+    import subprocess
+    for at in ('1', '0'):
+        try:
+            r = subprocess.run(['ffmpeg', '-v', 'quiet', '-ss', at, '-i', path, '-frames:v', '1',
+                                '-vf', f'scale={THUMB_SIZE * 2}:-2', '-f', 'image2pipe', '-vcodec', 'png', '-'],
+                               capture_output=True, timeout=60)
+            if r.stdout:
+                return r.stdout
+        except Exception:
+            pass
+    return None
+
+
 def thumb(conn, image_id, cache_dir):
     """A WebP thumbnail's file path (made on first use), or None (gone / not an image Pillow can read)."""
     g = get(conn, image_id)
@@ -818,8 +903,13 @@ def thumb(conn, image_id, cache_dir):
         try:
             from PIL import Image, ImageOps
             data = archived(conn, image_id)
+            moving = data is None and is_video(path)
+            if moving:                                                     # a moving one: a frame from it
+                data = _video_frame(path)
+                if data is None:
+                    raise ValueError('no frame')
             with Image.open(path if data is None else io.BytesIO(data)) as im:
-                w, h = _upright(im)
+                w, h = (_video_size(path) or im.size) if moving else _upright(im)
                 if im.format == 'JPEG':
                     im.draft('RGB', (THUMB_SIZE * 2, THUMB_SIZE * 2))              # decode at a fraction of the size: much faster
                 im = ImageOps.exif_transpose(im)
@@ -836,3 +926,31 @@ def thumb(conn, image_id, cache_dir):
     conn.execute('UPDATE images SET width = ?, height = ? WHERE id = ?', (w, h, image_id))
     conn.commit()
     return out
+
+
+# ---------------------------------------------------------------------------
+# a photo as a performer's cast photo
+# ---------------------------------------------------------------------------
+CAST_PHOTO_MAX = 2000           # px on the long side: big enough to crop from, small enough to keep in the database
+
+
+def cast_photo_bytes(conn, image_id):
+    """The photo, upright, as JPEG (scaled down past CAST_PHOTO_MAX) -> bytes; None if it can't be read
+    (gone, a moving one)."""
+    from PIL import Image, ImageOps
+    r = conn.execute('SELECT path, kind FROM images WHERE id = ? AND deleted_at IS NULL', (image_id,)).fetchone()
+    if not r or r[1] == 'video':
+        return None
+    data = archived(conn, image_id)
+    try:
+        with Image.open(r[0] if data is None else io.BytesIO(data)) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode != 'RGB':
+                im = im.convert('RGB')
+            im.thumbnail((CAST_PHOTO_MAX, CAST_PHOTO_MAX))
+            out = io.BytesIO()
+            im.save(out, 'JPEG', quality=90)
+            return out.getvalue()
+    except Exception as e:
+        print(f'[images] cast photo from {r[0]}: {e}')
+        return None

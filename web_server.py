@@ -353,6 +353,11 @@ def inject_dependencies():
         automation.start_scheduler(model)
         import display_filter
         display_filter.seed_library_types(model)
+        try:                        # .webm and images-only libraries: in Images, not the video library
+            import media_kind
+            media_kind.migrate(model)
+        except Exception as e:
+            print(f"[media kind] start-up check failed: {e}")
     # Database maintenance (Settings -> Tools): purge expired deleted files, flags, orphans.
     # Runs shortly after start-up and then daily (can be switched off in Settings).
     import tools_api

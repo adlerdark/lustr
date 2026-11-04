@@ -529,12 +529,20 @@ class LibraryModel:
             print(f"Marked {len(marked_paths)} missing files for deletion in current library")
         
         # PHASE 2: Scan for files and recover moved ones
+        import media_kind
+        chosen = media_kind.overrides(self.db.get_connection()) if self.use_sqlite else {}
+        owner = self._root_owners()
         for lib_path in all_paths:
             if not os.path.exists(lib_path): continue
+            content = media_kind.content_of(self, owner.get(lib_path))
+            if content == 'images':                     # an images-only library: its videos are in Images
+                continue
             for root, dirs, filenames in walked.get(lib_path, []):
                 for filename in filenames:
                     if os.path.splitext(filename)[1].lower() in VIDEO_EXTENSIONS:
                         full_path = os.path.normpath(os.path.join(root, filename))
+                        if media_kind.kind_of(full_path, chosen, content) == 'image':     # a .webm, or one you moved to Images
+                            continue
                         found_files.add(full_path)
                         
                         # Check if file exists in database (including deleted entries)
@@ -778,6 +786,14 @@ class LibraryModel:
             trees = pool.map(lambda r: list(os.walk(r, followlinks=True)), roots)
             return dict(zip(roots, trees))
 
+    def _root_owners(self):
+        """{root: library}; a folder in several libraries belongs to the first that lists it."""
+        owner = {}
+        for lib, roots in self.libraries.items():
+            for r in roots or []:
+                owner.setdefault(r, lib)
+        return owner
+
     def _sync_images(self, walked):
         """The image files in the folders just walked -> images.py (the Images tab). A folder in
         several libraries belongs to the first that lists it."""
@@ -785,18 +801,20 @@ class LibraryModel:
             return
         try:
             import images
-            owner = {}
-            for lib, roots in self.libraries.items():
-                for r in roots or []:
-                    owner.setdefault(r, lib)
+            import media_kind
+            conn = self.db.get_connection()
+            owner, chosen = self._root_owners(), media_kind.overrides(conn)
             per_lib = {}
             for r, tree in walked.items():
-                if r in owner:
+                content = media_kind.content_of(self, owner.get(r))
+                if r in owner and content != 'videos':
                     roots, paths = per_lib.setdefault(owner[r], ([], []))
                     roots.append(r)
-                    paths.extend(os.path.join(d, f) for d, _dirs, files in tree for f in files
-                                 if images.is_image(f) or images.is_archive(f))
-            conn = self.db.get_connection()
+                    for d, _dirs, files in tree:
+                        for f in files:
+                            p = os.path.join(d, f)
+                            if images.is_image(f) or images.is_archive(f) or media_kind.kind_of(os.path.normpath(p), chosen, content) == 'image':
+                                paths.append(p)
             for lib, (roots, paths) in per_lib.items():
                 n = images.sync(conn, lib, roots, paths)
                 if n['added'] or n['removed'] or n['restored']:
