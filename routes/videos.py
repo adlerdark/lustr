@@ -2335,6 +2335,10 @@ def get_file_changes(library: str = None, model = Depends(get_model)):
     """Get file changes for review."""
     if not USE_SQLITE:
         return {"changes": []}
+    try:                    # pair up moves again (a deleted file with a new one of the same name and length)
+        model.check_cross_library_replacements()
+    except Exception as e:
+        print(f"[file changes] move check failed: {e}")
     
     # Get changes for the specified library
     changes = model.db.get_file_changes(
@@ -2443,7 +2447,8 @@ def get_file_changes(library: str = None, model = Depends(get_model)):
         elif t == 'deleted':
             _enrich(g.get('file'))
 
-    return {"changes": grouped}
+    import db_maintenance
+    return {"changes": grouped, "retention_days": db_maintenance.get_settings(conn).get('retention_days')}
 
 
 @router.post("/file-changes/merge")
@@ -2586,13 +2591,18 @@ async def ignore_file_change(request: Request, model = Depends(get_model)):
         return {"success": False}
     
     conn = model.db.get_connection()
+    import db_maintenance
+    db_maintenance.ensure_schema(conn)          # the reason column
     cursor = conn.cursor()
     
     for change_id in change_ids:
-        # Clear related_id to unlink them
+        # Clear related_id to unlink them; 'separate' stops the next scan pairing them up again
         cursor.execute('''
             UPDATE file_changes 
-            SET related_id = NULL, flag_type = 
+            SET related_id = NULL,
+                reason = CASE WHEN flag_type IN ('possibly_replaced', 'possible_replacement', 'possible_duplicate')
+                              THEN 'separate' ELSE reason END,
+                flag_type = 
                 CASE 
                     WHEN flag_type = 'possibly_replaced' THEN 'deleted'
                     WHEN flag_type = 'possible_replacement' THEN 'new'

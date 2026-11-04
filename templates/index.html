@@ -967,6 +967,10 @@
                 libraryAlerts: {}, // {library: count}
                 fileChangesModal: false,
                 fileChangesData: [],
+                fileChangesSel: {},          // fcKey -> picked
+                fileChangesBusy: '',         // '3 / 28' while a batch runs
+                fileChangesRetention: null,
+                fileChangesLibrary: null,
                 libraryManagementTab: 'libraries', // 'libraries', 'groups', or 'settings'
                 settingsTab: 'general', // 'general', 'thumbnails', 'vlc', 'tools', 'extdb', 'appearance'
                 // Settings as a full page with a sidebar ('page'), or the older popup with tabs ('popup'); per browser
@@ -8237,6 +8241,9 @@ No metadata is changed.`)) return;
                         if (!res.ok) throw new Error(`Server error ${res.status}`);
                         const data = await res.json();
                         this.fileChangesData = data.changes || [];
+                        this.fileChangesRetention = data.retention_days;
+                        this.fileChangesLibrary = library;
+                        this.fileChangesSel = {};
                         this.fileChangesModal = true;
                         await this.updateLibraryAlertCounts();
                     } catch (e) {
@@ -8245,78 +8252,58 @@ No metadata is changed.`)) return;
                     }
                 },
                 
-                async mergeFileChange(original_id, replacement_id) {
-                    try {
-                        const res = await fetch('/api/file-changes/merge', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({original_id, replacement_id})
-                        });
-                        
-                        const data = await res.json();
-                        
-                        if (data.success) {
-                            // Remove from list
-                            this.fileChangesData = this.fileChangesData.filter(
-                                c => !(c.original?.id === original_id || c.replacement?.id === replacement_id)
-                            );
-                            
-                            // Update alert count
-                            await this.updateLibraryAlertCounts();
-                            
-                            // Refresh videos
-                            await this.fetchVideos('none');
-                        } else {
-                            alert('Failed to merge: ' + (data.error || 'Unknown error'));
-                        }
-                    } catch (e) {
-                        console.error('Merge failed:', e);
-                        alert('Failed to merge files');
-                    }
+                // ----- File Changes Review: moved / duplicate / deleted files, one row each, acted on in bulk -----
+                fcKey(c) { return c.original?.id || c.file1?.id || c.file?.id; },
+                fcRows(type) { return this.fileChangesData.filter(c => c.type === type); },
+                fcPicked(type) { return this.fcRows(type).filter(c => this.fileChangesSel[this.fcKey(c)]); },
+                fcTargets(type) { const p = this.fcPicked(type); return p.length ? p : this.fcRows(type); },
+                fcAllPicked(type) { const r = this.fcRows(type); return !!r.length && r.every(c => this.fileChangesSel[this.fcKey(c)]); },
+                fcPickAll(type, on) { for (const c of this.fcRows(type)) this.fileChangesSel[this.fcKey(c)] = on; },
+                fcLabel(type, verb) {
+                    const n = this.fcPicked(type).length;
+                    return n ? `${verb} selected (${n})` : `${verb} all (${this.fcRows(type).length})`;
                 },
-                
-                async ignoreFileChange(change_ids) {
-                    try {
-                        const res = await fetch('/api/file-changes/ignore', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({change_ids})
-                        });
-                        
-                        if (res.ok) {
-                            // Remove from list
-                            this.fileChangesData = this.fileChangesData.filter(
-                                c => !change_ids.includes(c.original?.id) && !change_ids.includes(c.replacement?.id) && !change_ids.includes(c.file?.id)
-                            );
-                            
-                            await this.updateLibraryAlertCounts();
-                        }
-                    } catch (e) {
-                        console.error('Ignore failed:', e);
-                    }
+                fcLen(s) { s = Math.round(s || 0); return s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : ''; },
+                fcSize(b) { return b ? (b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : Math.round(b / 1048576) + ' MB') : ''; },
+                fcInfo(f) { return [this.fcLen(f?.file_length), this.fcSize(f?.file_size), f?.resolution, f?.codec].filter(Boolean).join(' · '); },
+
+                async _fcPost(url, body) {
+                    const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || data.success === false) throw new Error(data.error || `Server error ${res.status}`);
                 },
-                
-                async deleteOldFile(change_id) {
-                    if (!confirm('Permanently delete this file\'s metadata?')) return;
-                    
-                    try {
-                        const res = await fetch('/api/file-changes/delete', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({change_id})
-                        });
-                        
-                        if (res.ok) {
-                            // Remove from list
-                            this.fileChangesData = this.fileChangesData.filter(
-                                c => c.file?.id !== change_id && c.original?.id !== change_id
-                            );
-                            
-                            await this.updateLibraryAlertCounts();
-                        }
-                    } catch (e) {
-                        console.error('Delete failed:', e);
+
+                // action: 'merge' | 'separate' | 'delete' on one row (rows = [c]) or on the selected / all rows of a section
+                async fcRun(type, action, rows = null) {
+                    rows = rows || this.fcTargets(type);
+                    if (!rows.length || this.fileChangesBusy) return;
+                    const n = rows.length, s = n === 1 ? '' : 's';
+                    const ask = {
+                        merge: `Merge ${n} moved file${s}?\n\nEach new file takes over its old entry's metadata (tags, cast, rating, play history). The old entry goes away.`,
+                        separate: type === 'deleted' ? null : `Keep ${n} pair${s} as separate videos?\n\nThe new file${s} stay${n === 1 ? 's' : ''} as new video${s} with no metadata. ` +
+                                  (type === 'replacement_pair' ? 'The old entries move to Deleted files.' : '') + ' They won\'t be paired again.',
+                        delete: type === 'replacement_pair' ? `Delete the old entry's metadata for ${n} file${s}?\n\nThe new file${s} stay${n === 1 ? 's' : ''} without metadata. This can't be undone.`
+                              : type === 'duplicate_pair' ? `Delete the first copy's video and metadata for ${n} duplicate${s}? This can't be undone.`
+                              : `Delete the metadata of ${n} deleted file${s} now? This can't be undone.`,
+                    }[action];
+                    if (ask && (n > 1 || action === 'delete') && !confirm(ask)) return;
+                    this.fileChangesBusy = `0 / ${n}`;
+                    const failed = [];
+                    for (const [i, c] of rows.entries()) {
+                        try {
+                            if (action === 'merge') await this._fcPost('/api/file-changes/merge', { original_id: c.original.id, replacement_id: c.replacement.id });
+                            else if (action === 'separate') await this._fcPost('/api/file-changes/ignore', { change_ids: [c.original?.id, c.replacement?.id, c.file1?.id, c.file2?.id, c.file?.id].filter(Boolean) });
+                            else await this._fcPost('/api/file-changes/delete', { change_id: (c.original || c.file1 || c.file).id });
+                            this.fileChangesData = this.fileChangesData.filter(x => x !== c);
+                            delete this.fileChangesSel[this.fcKey(c)];
+                        } catch (e) { failed.push(`${(c.original || c.file1 || c.file)?.filename}: ${e.message}`); }
+                        this.fileChangesBusy = `${i + 1} / ${n}`;
                     }
+                    this.fileChangesBusy = '';
+                    if (failed.length) alert(`${failed.length} of ${n} failed:\n\n` + failed.slice(0, 15).join('\n'));
+                    await this.updateLibraryAlertCounts();
+                    if (action !== 'separate') await this.fetchVideos('none');
+                    if (action === 'separate' && type === 'replacement_pair') await this.loadFileChanges(this.fileChangesLibrary);   // the old entries now show under Deleted files
                 },
                 
                 async updateLibraryAlertCounts() {
@@ -21341,250 +21328,109 @@ No metadata is changed.`)) return;
 
     <!-- FILE CHANGES MODAL -->
     <div x-show="fileChangesModal" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4">
-        <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-6xl max-h-[90vh] flex flex-col shadow-2xl" @click.outside="fileChangesModal = false">
+        <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-6xl max-h-[90vh] flex flex-col shadow-2xl" @click.outside="if (!fileChangesBusy) fileChangesModal = false">
             <!-- Header -->
-            <div class="p-4 border-b border-gray-700 flex justify-between items-center shrink-0" data-drag-handle style="cursor: move">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center gap-4 shrink-0" data-drag-handle style="cursor: move">
                 <div>
-                    <h2 class="text-2xl font-bold">📋 File Changes Review</h2>
-                    <p class="text-sm text-gray-400 mt-1">Review potential file moves and deletions</p>
+                    <h2 class="text-xl font-bold">📋 File Changes Review</h2>
+                    <p class="text-sm text-gray-400 mt-1">Files that moved, were copied, or went missing. Tick rows to act on several at once; with none ticked, the buttons above a list act on the whole list.</p>
                 </div>
-                <button @click="fileChangesModal = false" class="text-gray-400 hover:text-white text-2xl font-bold">&times;</button>
+                <div class="flex items-center gap-3 shrink-0">
+                    <span x-show="fileChangesBusy" class="text-sm text-blue-300" x-text="'Working… ' + fileChangesBusy"></span>
+                    <button @click="fileChangesModal = false" :disabled="!!fileChangesBusy" class="text-gray-400 hover:text-white text-2xl font-bold disabled:opacity-40">&times;</button>
+                </div>
             </div>
             
             <!-- Content -->
-            <div class="flex-1 overflow-y-auto p-6 scroller">
+            <div class="flex-1 overflow-y-auto p-4 scroller">
                 <div x-show="fileChangesData.length === 0" class="text-center py-12 text-gray-400">
                     <p>No file changes requiring review</p>
                 </div>
-                
-                <div class="space-y-6">
-                    <template x-for="change in fileChangesData" :key="change.original?.id || change.file?.id">
-                        <!-- Replacement Pair -->
-                        <div x-show="change.type === 'replacement_pair'" class="bg-gray-900 rounded-lg p-3 border border-gray-700">
-                            <div class="flex items-center gap-2 mb-3">
-                                <span class="text-orange-400">⚠️</span>
-                                <h3 class="font-semibold">File Move Detected</h3>
-                            </div>
-                            
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <!-- Original File (Deleted) -->
-                                <div class="bg-gray-800 rounded border border-red-900/50 overflow-hidden">
-                                    <!-- Thumbnail -->
-                                    <div class="relative aspect-video bg-gray-950"
-                                         x-data="{ frame: 0, interval: null }"
-                                         x-init="interval = setInterval(() => { frame = (frame + 1) % 8 }, 600)"
-                                         x-cleanup="clearInterval(interval)">
-                                        <template x-if="change.original?.video_id">
-                                            <img 
-                                                :src="`/cache/${change.original.video_id.replace(/\//g, '_')}/thumb_${frame}.webp`"
-                                                class="w-full h-full object-cover"
-                                                @error="$el.src='/static/placeholder.png'"
-                                            />
-                                        </template>
-                                        <div class="absolute top-1 right-1 bg-red-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                            DELETED
-                                        </div>
-                                        <!-- Metadata badge -->
-                                        <template x-if="change.original?.video_id">
-                                            <div class="absolute bottom-1 left-1 bg-green-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                                ✓ Has Metadata
-                                            </div>
-                                        </template>
-                                    </div>
-                                    
-                                    <!-- Info -->
-                                    <div class="p-2 space-y-1 text-xs">
-                                        <div class="font-semibold truncate" x-text="change.original?.filename"></div>
-                                        <div class="text-gray-400 truncate" x-text="change.original?.library"></div>
-                                        <div class="flex gap-2 text-gray-400">
-                                            <span x-text="Math.floor(change.original?.file_length / 60) + 'm'"></span>
-                                            <span x-text="(change.original?.file_size / 1024 / 1024).toFixed(0) + ' MB'"></span>
-                                            <span x-text="change.original?.resolution"></span>
-                                            <span x-text="change.original?.codec"></span>
-                                        </div>
-                                    </div>
+
+                <section x-show="fcRows('replacement_pair').length" class="mb-6">
+                    <div class="flex flex-wrap items-center gap-2 mb-1">
+                        <label class="flex items-center gap-2 font-semibold text-orange-300">
+                            <input type="checkbox" class="rounded" :checked="fcAllPicked('replacement_pair')" @change="fcPickAll('replacement_pair', $event.target.checked)" title="Select all">
+                            <span x-text="'Moved files (' + fcRows('replacement_pair').length + ')'"></span>
+                        </label>
+                        <div class="flex-1"></div>
+                        <button @click="fcRun('replacement_pair', 'merge')" :disabled="!!fileChangesBusy" class="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 bg-blue-600 hover:bg-blue-500 text-white" x-text="fcLabel('replacement_pair', 'Merge')"></button>
+                        <button @click="fcRun('replacement_pair', 'separate')" :disabled="!!fileChangesBusy" class="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 bg-gray-600 hover:bg-gray-500" x-text="fcLabel('replacement_pair', 'Separate')"></button>
+                        <button @click="fcRun('replacement_pair', 'delete')" :disabled="!!fileChangesBusy" class="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 bg-red-700 hover:bg-red-600 text-white" x-text="fcLabel('replacement_pair', 'Delete old')"></button>
+                    </div>
+                    <p class="text-xs text-gray-400 mb-2">A file went missing and a file with the same name and length turned up (often in another library). <b class="text-gray-200">Merge</b> = the same video: the new file takes over the old metadata (tags, cast, rating, play history). <b class="text-gray-200">Separate</b> = different videos: the new file stays a new video without metadata, the old entry moves to Deleted files, and the two are never paired again. <b class="text-gray-200">Delete old</b> = throw away the old metadata; the new file stays without it.</p>
+                    <div class="border border-gray-700 rounded divide-y divide-gray-700/70 text-xs">
+                        <template x-for="c in fcRows('replacement_pair')" :key="fcKey(c)">
+                            <div class="flex items-center gap-3 px-2 py-1.5 hover:bg-gray-700/40" :class="fileChangesSel[fcKey(c)] ? 'bg-blue-900/30' : ''">
+                                <input type="checkbox" class="rounded shrink-0" :checked="!!fileChangesSel[fcKey(c)]" @change="fileChangesSel[fcKey(c)] = $event.target.checked">
+                                <div class="flex-1 min-w-0 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                                    <div class="min-w-0" :title="c.original?.filepath"><div class="truncate text-gray-300" x-text="c.original?.filename"></div><div class="truncate text-gray-500" x-text="[c.original?.library, fcInfo(c.original)].filter(Boolean).join(' · ')"></div></div>
+                                    <span class="text-gray-500">→</span>
+                                    <div class="min-w-0" :title="c.replacement?.filepath"><div class="truncate text-gray-100" x-text="c.replacement?.filename"></div><div class="truncate text-gray-500" x-text="[c.replacement?.library, fcInfo(c.replacement)].filter(Boolean).join(' · ')"></div></div>
                                 </div>
-                                
-                                <!-- Replacement File (New) -->
-                                <div class="bg-gray-800 rounded border border-green-900/50 overflow-hidden">
-                                    <!-- Thumbnail -->
-                                    <div class="relative aspect-video bg-gray-950"
-                                         x-data="{ frame: 0, interval: null }"
-                                         x-init="interval = setInterval(() => { frame = (frame + 1) % 8 }, 600)"
-                                         x-cleanup="clearInterval(interval)">
-                                        <template x-if="change.replacement?.video_id">
-                                            <img 
-                                                :src="`/cache/${change.replacement.video_id.replace(/\//g, '_')}/thumb_${frame}.webp`"
-                                                class="w-full h-full object-cover"
-                                                @error="$el.src='/static/placeholder.png'"
-                                            />
-                                        </template>
-                                        <div class="absolute top-1 right-1 bg-green-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                            NEW
-                                        </div>
-                                        <!-- Metadata badge -->
-                                        <template x-if="!change.replacement?.video_id">
-                                            <div class="absolute bottom-1 left-1 bg-orange-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                                ⚠ No Metadata
-                                            </div>
-                                        </template>
-                                        <template x-if="change.replacement?.video_id">
-                                            <div class="absolute bottom-1 left-1 bg-green-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                                ✓ Has Metadata
-                                            </div>
-                                        </template>
-                                    </div>
-                                    
-                                    <!-- Info -->
-                                    <div class="p-2 space-y-1 text-xs">
-                                        <div class="font-semibold truncate" x-text="change.replacement?.filename"></div>
-                                        <div class="text-gray-400 truncate" x-text="change.replacement?.library"></div>
-                                        <div class="flex gap-2 text-gray-400">
-                                            <span x-text="Math.floor(change.replacement?.file_length / 60) + 'm'"></span>
-                                            <span x-text="(change.replacement?.file_size / 1024 / 1024).toFixed(0) + ' MB'"></span>
-                                            <span x-text="change.replacement?.resolution"></span>
-                                            <span x-text="change.replacement?.codec"></span>
-                                        </div>
-                                    </div>
+                                <div class="flex gap-1 shrink-0">
+                                    <button @click="fcRun('replacement_pair', 'merge', [c])" :disabled="!!fileChangesBusy" class="px-2 py-0.5 rounded disabled:opacity-50 bg-blue-600 hover:bg-blue-500 text-white" title="Same video: the new file takes over the old metadata">Merge</button>
+                                    <button @click="fcRun('replacement_pair', 'separate', [c])" :disabled="!!fileChangesBusy" class="px-2 py-0.5 rounded disabled:opacity-50 bg-gray-600 hover:bg-gray-500" title="Different videos: keep both, never pair them again">Separate</button>
+                                    <button @click="fcRun('replacement_pair', 'delete', [c])" :disabled="!!fileChangesBusy" class="px-2 py-0.5 rounded disabled:opacity-50 bg-red-700 hover:bg-red-600 text-white" title="Throw away the old metadata">Delete old</button>
                                 </div>
                             </div>
-                            
-                            <!-- Actions -->
-                            <div class="grid grid-cols-3 gap-2 mt-3">
-                                <button @click="mergeFileChange(change.original.id, change.replacement.id)" 
-                                        class="bg-blue-600 hover:bg-blue-500 px-3 py-2 rounded text-sm font-medium">
-                                    🔗 Merge
-                                </button>
-                                <button @click="ignoreFileChange([change.original.id, change.replacement.id])" 
-                                        class="bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded text-sm font-medium">
-                                    ⏭️ Keep Both
-                                </button>
-                                <button @click="deleteOldFile(change.original.id)" 
-                                        class="bg-red-600 hover:bg-red-500 px-3 py-2 rounded text-sm font-medium">
-                                    🗑️ Delete Old
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <!-- Duplicate Pair (Copy detected) -->
-                        <div x-show="change.type === 'duplicate_pair'" class="bg-gray-900 rounded-lg p-3 border border-yellow-700">
-                            <div class="flex items-center gap-2 mb-3">
-                                <span class="text-yellow-400">⚠️</span>
-                                <h3 class="font-semibold">Duplicate File Detected</h3>
-                            </div>
-                            
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <!-- File 1 -->
-                                <div class="bg-gray-800 rounded border border-yellow-900/50 overflow-hidden">
-                                    <div class="relative aspect-video bg-gray-950"
-                                         x-data="{ frame: 0, interval: null }"
-                                         x-init="interval = setInterval(() => { frame = (frame + 1) % 8 }, 600)"
-                                         x-cleanup="clearInterval(interval)">
-                                        <template x-if="change.file1?.video_id">
-                                            <img 
-                                                :src="`/cache/${change.file1.video_id.replace(/\//g, '_')}/thumb_${frame}.webp`"
-                                                class="w-full h-full object-cover"
-                                                @error="$el.src='/static/placeholder.png'"
-                                            />
-                                        </template>
-                                        <template x-if="change.file1?.video_id">
-                                            <div class="absolute bottom-1 left-1 bg-green-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                                ✓ Has Metadata
-                                            </div>
-                                        </template>
-                                        <template x-if="!change.file1?.video_id">
-                                            <div class="absolute bottom-1 left-1 bg-orange-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                                ⚠ No Metadata
-                                            </div>
-                                        </template>
-                                    </div>
-                                    <div class="p-2 space-y-1 text-xs">
-                                        <div class="font-semibold truncate" x-text="change.file1?.filename"></div>
-                                        <div class="text-gray-400 truncate" x-text="change.file1?.library"></div>
-                                        <div class="flex gap-2 text-gray-400">
-                                            <span x-text="Math.floor(change.file1?.file_length / 60) + 'm'"></span>
-                                            <span x-text="(change.file1?.file_size / 1024 / 1024).toFixed(0) + ' MB'"></span>
-                                            <span x-text="change.file1?.resolution"></span>
-                                        </div>
-                                    </div>
+                        </template>
+                    </div>
+                </section>
+
+                <section x-show="fcRows('duplicate_pair').length" class="mb-6">
+                    <div class="flex flex-wrap items-center gap-2 mb-1">
+                        <label class="flex items-center gap-2 font-semibold text-yellow-300">
+                            <input type="checkbox" class="rounded" :checked="fcAllPicked('duplicate_pair')" @change="fcPickAll('duplicate_pair', $event.target.checked)" title="Select all">
+                            <span x-text="'Duplicate files (' + fcRows('duplicate_pair').length + ')'"></span>
+                        </label>
+                        <div class="flex-1"></div>
+                        <button @click="fcRun('duplicate_pair', 'separate')" :disabled="!!fileChangesBusy" class="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 bg-gray-600 hover:bg-gray-500" x-text="fcLabel('duplicate_pair', 'Keep both')"></button>
+                        <button @click="fcRun('duplicate_pair', 'delete')" :disabled="!!fileChangesBusy" class="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 bg-red-700 hover:bg-red-600 text-white" x-text="fcLabel('duplicate_pair', 'Delete first')"></button>
+                    </div>
+                    <p class="text-xs text-gray-400 mb-2">Two files with the same name in different folders. <b class="text-gray-200">Keep both</b> = leave them as they are. <b class="text-gray-200">Delete first</b> = remove the first copy (left) and its metadata from lustr; the file on disk is not touched.</p>
+                    <div class="border border-gray-700 rounded divide-y divide-gray-700/70 text-xs">
+                        <template x-for="c in fcRows('duplicate_pair')" :key="fcKey(c)">
+                            <div class="flex items-center gap-3 px-2 py-1.5 hover:bg-gray-700/40" :class="fileChangesSel[fcKey(c)] ? 'bg-blue-900/30' : ''">
+                                <input type="checkbox" class="rounded shrink-0" :checked="!!fileChangesSel[fcKey(c)]" @change="fileChangesSel[fcKey(c)] = $event.target.checked">
+                                <div class="flex-1 min-w-0 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                                    <div class="min-w-0" :title="c.file1?.filepath"><div class="truncate text-gray-100" x-text="c.file1?.filename"></div><div class="truncate text-gray-500" x-text="[c.file1?.library, fcInfo(c.file1)].filter(Boolean).join(' · ')"></div></div>
+                                    <span class="text-gray-500">=</span>
+                                    <div class="min-w-0" :title="c.file2?.filepath"><div class="truncate text-gray-100" x-text="c.file2?.filename"></div><div class="truncate text-gray-500" x-text="[c.file2?.library, fcInfo(c.file2)].filter(Boolean).join(' · ')"></div></div>
                                 </div>
-                                
-                                <!-- File 2 -->
-                                <div class="bg-gray-800 rounded border border-yellow-900/50 overflow-hidden">
-                                    <div class="relative aspect-video bg-gray-950"
-                                         x-data="{ frame: 0, interval: null }"
-                                         x-init="interval = setInterval(() => { frame = (frame + 1) % 8 }, 600)"
-                                         x-cleanup="clearInterval(interval)">
-                                        <template x-if="change.file2?.video_id">
-                                            <img 
-                                                :src="`/cache/${change.file2.video_id.replace(/\//g, '_')}/thumb_${frame}.webp`"
-                                                class="w-full h-full object-cover"
-                                                @error="$el.src='/static/placeholder.png'"
-                                            />
-                                        </template>
-                                        <template x-if="change.file2?.video_id">
-                                            <div class="absolute bottom-1 left-1 bg-green-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                                ✓ Has Metadata
-                                            </div>
-                                        </template>
-                                        <template x-if="!change.file2?.video_id">
-                                            <div class="absolute bottom-1 left-1 bg-orange-600 text-white text-xs px-2 py-0.5 rounded font-semibold">
-                                                ⚠ No Metadata
-                                            </div>
-                                        </template>
-                                    </div>
-                                    <div class="p-2 space-y-1 text-xs">
-                                        <div class="font-semibold truncate" x-text="change.file2?.filename"></div>
-                                        <div class="text-gray-400 truncate" x-text="change.file2?.library"></div>
-                                        <div class="flex gap-2 text-gray-400">
-                                            <span x-text="Math.floor(change.file2?.file_length / 60) + 'm'"></span>
-                                            <span x-text="(change.file2?.file_size / 1024 / 1024).toFixed(0) + ' MB'"></span>
-                                            <span x-text="change.file2?.resolution"></span>
-                                        </div>
-                                    </div>
+                                <div class="flex gap-1 shrink-0">
+                                    <button @click="fcRun('duplicate_pair', 'separate', [c])" :disabled="!!fileChangesBusy" class="px-2 py-0.5 rounded disabled:opacity-50 bg-gray-600 hover:bg-gray-500" title="Leave both as they are">Keep both</button>
+                                    <button @click="fcRun('duplicate_pair', 'delete', [c])" :disabled="!!fileChangesBusy" class="px-2 py-0.5 rounded disabled:opacity-50 bg-red-700 hover:bg-red-600 text-white" title="Remove the first copy from lustr">Delete first</button>
                                 </div>
                             </div>
-                            
-                            <div class="grid grid-cols-2 gap-2 mt-3">
-                                <button @click="ignoreFileChange([change.file1.id, change.file2.id])" 
-                                        class="bg-blue-600 hover:bg-blue-500 px-3 py-2 rounded text-sm font-medium">
-                                    ✓ Keep Both
-                                </button>
-                                <button @click="deleteOldFile(change.file1.id)" 
-                                        class="bg-red-600 hover:bg-red-500 px-3 py-2 rounded text-sm font-medium">
-                                    🗑️ Delete Duplicate
-                                </button>
+                        </template>
+                    </div>
+                </section>
+
+                <section x-show="fcRows('deleted').length" class="mb-6">
+                    <div class="flex flex-wrap items-center gap-2 mb-1">
+                        <label class="flex items-center gap-2 font-semibold text-red-300">
+                            <input type="checkbox" class="rounded" :checked="fcAllPicked('deleted')" @change="fcPickAll('deleted', $event.target.checked)" title="Select all">
+                            <span x-text="'Deleted files (' + fcRows('deleted').length + ')'"></span>
+                        </label>
+                        <div class="flex-1"></div>
+                        <button @click="fcRun('deleted', 'separate')" :disabled="!!fileChangesBusy" class="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 bg-gray-600 hover:bg-gray-500" x-text="fcLabel('deleted', 'Keep for now')"></button>
+                        <button @click="fcRun('deleted', 'delete')" :disabled="!!fileChangesBusy" class="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 bg-red-700 hover:bg-red-600 text-white" x-text="fcLabel('deleted', 'Delete now')"></button>
+                    </div>
+                    <p class="text-xs text-gray-400 mb-2">Files that are gone, with nothing found to replace them. Their metadata is kept for now and removed automatically <span x-text="fileChangesRetention ? fileChangesRetention + ' days' : 'some time'"></span> after they went missing. <b class="text-gray-200">Delete now</b> = remove it today. <b class="text-gray-200">Keep for now</b> = hide it from this list until the next scan.</p>
+                    <div class="border border-gray-700 rounded divide-y divide-gray-700/70 text-xs">
+                        <template x-for="c in fcRows('deleted')" :key="fcKey(c)">
+                            <div class="flex items-center gap-3 px-2 py-1.5 hover:bg-gray-700/40" :class="fileChangesSel[fcKey(c)] ? 'bg-blue-900/30' : ''">
+                                <input type="checkbox" class="rounded shrink-0" :checked="!!fileChangesSel[fcKey(c)]" @change="fileChangesSel[fcKey(c)] = $event.target.checked">
+                                <div class="flex-1 min-w-0"><div class="min-w-0" :title="c.file?.filepath"><div class="truncate text-gray-100" x-text="c.file?.filename"></div><div class="truncate text-gray-500" x-text="[c.file?.library, fcInfo(c.file)].filter(Boolean).join(' · ')"></div></div></div>
+                                <div class="flex gap-1 shrink-0">
+                                    <button @click="fcRun('deleted', 'separate', [c])" :disabled="!!fileChangesBusy" class="px-2 py-0.5 rounded disabled:opacity-50 bg-gray-600 hover:bg-gray-500" title="Hide until the next scan">Keep for now</button>
+                                    <button @click="fcRun('deleted', 'delete', [c])" :disabled="!!fileChangesBusy" class="px-2 py-0.5 rounded disabled:opacity-50 bg-red-700 hover:bg-red-600 text-white" title="Remove its metadata now">Delete now</button>
+                                </div>
                             </div>
-                        </div>
-                        
-                        <!-- Deleted File (No Replacement) -->
-                        <div x-show="change.type === 'deleted'" class="bg-gray-900 rounded-lg p-4 border border-red-900/50">
-                            <div class="flex items-center gap-2 mb-4">
-                                <span class="text-red-400 text-xl">❌</span>
-                                <h3 class="font-bold text-lg">Deleted File</h3>
-                            </div>
-                            
-                            <div class="space-y-1 text-sm mb-4">
-                                <div><span class="text-gray-400">Filename:</span> <span x-text="change.file?.filename"></span></div>
-                                <div><span class="text-gray-400">Path:</span> <span class="text-xs break-all" x-text="change.file?.filepath"></span></div>
-                                <div><span class="text-gray-400">Library:</span> <span x-text="change.file?.library"></span></div>
-                                <div><span class="text-gray-400">Duration:</span> <span x-text="Math.floor(change.file?.file_length / 60) + 'm ' + (change.file?.file_length % 60) + 's'"></span></div>
-                                <div><span class="text-gray-400">Size:</span> <span x-text="(change.file?.file_size / 1024 / 1024).toFixed(2) + ' MB'"></span></div>
-                            </div>
-                            
-                            <div class="flex gap-2">
-                                <button @click="deleteOldFile(change.file.id)" 
-                                        class="bg-red-600 hover:bg-red-500 px-4 py-2 rounded flex-1">
-                                    🗑️ Delete Metadata Now
-                                </button>
-                                <button @click="ignoreFileChange([change.file.id])" 
-                                        class="bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded flex-1">
-                                    ⏭️ Keep for Now
-                                </button>
-                            </div>
-                        </div>
-                    </template>
-                </div>
+                        </template>
+                    </div>
+                </section>
             </div>
         </div>
     </div>

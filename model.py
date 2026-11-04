@@ -1513,6 +1513,8 @@ class LibraryModel:
         deleted_flags = self.db.get_file_changes(flag_types=['deleted'])
         
         for deleted in deleted_flags:
+            if deleted.get('reason') == 'separate':      # you said these are different videos
+                continue
             # Look for new files with the same name and length - in another library, or in the
             # same one when the new copy was found before the original went missing (a scan in
             # the same run would already have re-linked it in _track_file_changes)
