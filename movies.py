@@ -108,6 +108,14 @@ def _fold(s):
     return ''.join(c for c in s if not unicodedata.combining(c))
 
 
+_ARTICLE = re.compile(r'(?i)^\s*(?:the|an?)\s+(?=\S)')
+
+
+def sort_key(title):
+    """For sorting by title: 'The Night Shift' sorts as 'night shift' (a leading The / A / An is skipped)."""
+    return _ARTICLE.sub('', _fold(title)).strip().lower()
+
+
 def title_key(title):
     """'Night Shift 02' and 'night-shift-2' -> 'nightshift2'."""
     t = re.sub(r'(?<!\d)0+(?=\d)', '', _fold(title).lower())
@@ -820,7 +828,7 @@ def listing(model, conn, library=None, q='', sort='title', page=1, limit=120, st
     ensure_schema(conn)
     out, _t, _s = _filtered(model, conn, library, q, status, tags, tags_exclude, sites, sites_exclude, favorites)
     s = (sort or 'title').lower()
-    out.sort(key=lambda m: _fold(m['display']).lower())
+    out.sort(key=lambda m: sort_key(m['display']))
     if s == 'year':
         out.sort(key=lambda m: m['year'] or '0000', reverse=True)
     elif s == 'count':
@@ -861,7 +869,7 @@ def _letter_index(movies):
     """[{letter, index}]: where each letter starts in the title-sorted movies ('#' for anything not A-Z)."""
     out, seen = [], set()
     for i, m in enumerate(movies):
-        ch = _fold(m['display']).strip()[:1].upper()
+        ch = sort_key(m['display'])[:1].upper()
         L = ch if 'A' <= ch <= 'Z' else '#'
         if L not in seen:
             seen.add(L)
@@ -1390,7 +1398,7 @@ def bulk_targets(model, conn, library=None, skip_checked=True, movie_ids=None):
     if skip_checked:
         done = {r[0] for r in conn.execute("SELECT movie_id FROM movie_ext_check WHERE outcome != 'error'")}
         rows = {k: v for k, v in rows.items() if k not in done}
-    return [k for k, _v in sorted(rows.items(), key=lambda kv: _fold(kv[1]).lower())]
+    return [k for k, _v in sorted(rows.items(), key=lambda kv: sort_key(kv[1]))]
 
 
 def bulk_status():
@@ -1695,7 +1703,7 @@ def find(model, conn, library=None, whole=False):
         g['videos'].sort(key=lambda x: _order(x['scene'], x['part'], x['whole'], x['title']))
         out.append({'key': k, 'name': ex[1] if ex else name, 'existing_id': ex[0] if ex else None,
                     'sure': any(x['sure'] for x in g['videos']), 'ext_id': g['ext_id'], 'videos': g['videos']})
-    out.sort(key=lambda g: _fold(g['name']).lower())
+    out.sort(key=lambda g: sort_key(g['name']))
     return out
 
 

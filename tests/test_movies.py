@@ -281,6 +281,16 @@ class MovieTests(MovieBase):
         self.assertEqual(d['letters'], [{'letter': '#', 'index': 0}, {'letter': 'A', 'index': 1}, {'letter': 'E', 'index': 2}])
         self.assertEqual(movies.listing(self.model, self.c, 'Lib', sort='year')['letters'], [])
 
+    def test_title_sort_skips_a_leading_article(self):
+        for vid, name in (('v1', 'The Zebra'), ('v2', 'A Bear'), ('v3', 'Cat')):
+            movies.set_video_movie(self.c, vid, name, scene=1)
+        self.model.db.get_file = self.db.get_file
+        d = movies.listing(self.model, self.c, 'Lib')
+        self.assertEqual([m['title'] for m in d['movies']], ['A Bear', 'Cat', 'The Zebra'])
+        self.assertEqual([x['letter'] for x in d['letters']], ['B', 'C', 'Z'])
+        self.assertEqual(movies.sort_key('The'), 'the')                               # a bare article stays
+        self.assertEqual(movies.sort_key('Theory of Love'), 'theory of love')
+
     def test_orientation_filter(self):
         import display_filter as df
         self.model.db.get_file = self.db.get_file
