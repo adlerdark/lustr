@@ -16508,15 +16508,18 @@ No metadata is changed.`)) return;
                     class="w-full text-left px-4 py-2 hover:bg-blue-600">Choose Main Thumbnail…</button>
             <div class="border-t border-gray-700 my-1"></div>
             <button @click="toggleFavSelection" class="w-full text-left px-4 py-2 hover:bg-blue-600">Toggle Favorite</button>
-            <button @click="markCorrupt()" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400"
-                    title="Tag it corrupt.file and hide it from your libraries (Settings > Maintenance > Corrupt files lists them)"
-                    x-text="selectedPaths.size > 1 ? `⚠ Mark as corrupt (${selectedPaths.size})` : '⚠ Mark as corrupt'"></button>
-            <button x-show="hasMovingSelection()" @click="videosToImages()" class="w-full text-left px-4 py-2 hover:bg-blue-600"
-                    x-text="selectedPaths.size > 1 ? `🖼 Show in Images instead (${selectedPaths.size})` : '🖼 Show in Images instead'"
-                    title="Play it in the Images tab, on a loop like a GIF (with sound)"></button>
             <button @click="applyCastAttrsToSelected" class="w-full text-left px-4 py-2 hover:bg-blue-600 text-cyan-400">
                 <span x-text="selectedPaths.size === 1 ? 'Apply Cast Attributes' : `Apply Cast Attributes (${selectedPaths.size})`"></span>
             </button>
+
+            <!-- where the file goes: the Images tab, or hidden as corrupt -->
+            <div class="border-t border-gray-700 my-1"></div>
+            <button x-show="hasMovingSelection()" @click="videosToImages()" class="w-full text-left px-4 py-2 hover:bg-blue-600"
+                    x-text="selectedPaths.size > 1 ? `🖼 Show in Images instead (${selectedPaths.size})` : '🖼 Show in Images instead'"
+                    title="Play it in the Images tab, on a loop like a GIF (with sound)"></button>
+            <button @click="markCorrupt()" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400"
+                    title="Tag it corrupt.file and hide it from your libraries (Settings > Maintenance > Corrupt files lists them)"
+                    x-text="selectedPaths.size > 1 ? `⚠ Mark as corrupt (${selectedPaths.size})` : '⚠ Mark as corrupt'"></button>
 
             <div class="border-t border-gray-700 my-1"></div>
             
