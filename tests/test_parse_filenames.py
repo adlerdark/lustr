@@ -62,6 +62,19 @@ class DirInTitle(unittest.TestCase):
         r = self.parse('%S.%F.%L.%T', {'clean_dots': True}, path='/media/x/site.jane.doe.the.title.mp4')
         self.assertEqual(r['data'], {'site': 'site', 'cast': ['jane doe'], 'title': 'the title'})
 
+    def test_male_cast(self):
+        r = self.parse('* %C and %MC - %T', {}, path='/media/x/12345 Jane Doe and Bob Roe, Tom Coe - The Title.mp4')
+        self.assertEqual(r['data'], {'cast': ['Jane Doe'], 'male_cast': ['Bob Roe', 'Tom Coe'], 'title': 'The Title'})
+        r = self.parse('%C with %MC - %T', {}, path='/media/x/Ann Lee, Jane Doe & Kim Poe with Bob Roe and Tom Coe - Title.mp4')
+        self.assertEqual((r['data']['cast'], r['data']['male_cast']), (['Ann Lee', 'Jane Doe', 'Kim Poe'], ['Bob Roe', 'Tom Coe']))
+        r = self.parse('%S.%C.and.%MC.%T', {}, path='/media/x/site.jane.and.bob.roe.and.tom.coe.the.title.mp4')
+        self.assertEqual((r['data']['cast'], r['data']['male_cast'], r['data']['title']), (['jane'], ['bob roe', 'tom coe'], 'the.title'))
+
+    def test_male_cast_proposals(self):
+        ctx = fp.ParseContext()
+        p = fp._parsed_from_values(ctx, {'cast': ['Jane Doe'], 'male_cast': ['Bob Roe']})
+        self.assertEqual([(n['name'], n.get('male', False)) for n in p['names']], [('Jane Doe', False), ('Bob Roe', True)])
+
 
 
 class NewSites(unittest.TestCase):

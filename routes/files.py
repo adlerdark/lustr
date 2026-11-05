@@ -163,6 +163,7 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
           %M   -- middle name (one word)
           %L   -- last name  (one word)
           %C   -- cast (greedy multi-name, smart-split in Python)
+          %MC  -- male cast (the same as %C; the names go to Male Cast)
           %T   -- title (greedy to end)
           %Y   -- 4-digit year
           %R   -- resolution (e.g. 1080p)
@@ -197,6 +198,7 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
             '%L':   r'(?P<lastname>[^./\s]+)',
             '%D':   r'(?P<directory>[^/]+)',   # immediate parent directory name
             '%T':   r'(?P<title>.+)',   # greedy; trimmed below when %R present
+            '%MC':  r'(?P<male_cast>.+?)',
             '%C':   r'(?P<cast>.+?)',
         }
 
@@ -328,8 +330,10 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
             # length (parts before "and") — preferring a matching length for
             # the second performer, then 1, then 3, leaving the rest for the
             # title when possible.
-            if raw.get('cast') and raw.get('title'):
-                combined = raw['cast'] + '.' + raw['title']
+            # With %MC too, the male cast is the list that runs into the title.
+            last = 'male_cast' if raw.get('male_cast') else 'cast'
+            if raw.get(last) and raw.get('title'):
+                combined = raw[last] + '.' + raw['title']
                 all_parts = combined.split('.')
 
                 and_idx = None
@@ -362,7 +366,7 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
 
                         if best is not None:
                             second_name_parts, remaining_title_parts = best
-                            raw['cast'] = '.'.join(first_name_parts + ['and'] + second_name_parts)
+                            raw[last] = '.'.join(first_name_parts + ['and'] + second_name_parts)
                             raw['title'] = '.'.join(remaining_title_parts)
 
             clean = {}
@@ -371,12 +375,13 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
                 if value is None:
                     continue
 
-                if key == 'cast':
-                    # Literal comma = user manually wrote comma-separated names
-                    if ', ' in value:
-                        clean['cast'] = [clean_text(n.strip(), req.options) for n in value.split(',') if n.strip()]
+                if key in ('cast', 'male_cast'):
+                    # Names written with spaces: 'A B, C D and E F' / 'A B & C D' -> split on the commas and the and / &
+                    if re.search(r',\s|\s(?:and|&)\s', value, re.IGNORECASE):
+                        clean[key] = [clean_text(n.strip(), req.options)
+                                      for n in re.split(r',\s*|\s+(?:and|&)\s+', value, flags=re.IGNORECASE) if n.strip()]
                     else:
-                        clean['cast'] = parse_cast_string(value, req.options)
+                        clean[key] = parse_cast_string(value, req.options)
 
                 elif key == 'site':
                     # %S is always lowercased regardless of title_case option

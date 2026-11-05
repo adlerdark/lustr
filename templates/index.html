@@ -1082,7 +1082,7 @@
                           loading: false, applying: false, msg: '', learned: null, showLearned: false },
                 parserOptions: { clean_underscores: false, clean_dashes: false, clean_dots: true, title_case: false, dir_in_title: false },
                 // Parse Filenames -> Pattern: what the chips under the box add (token, label, tooltip)
-                parserTokens: [['%S', 'Site'], ['%C', 'Cast', 'One or more performers'], ['%F', 'First name'], ['%M', 'Middle name'], ['%L', 'Last name'],
+                parserTokens: [['%S', 'Site'], ['%C', 'Cast', 'One or more performers'], ['%MC', 'Male Cast', 'One or more performers, added as Male Cast'], ['%F', 'First name'], ['%M', 'Middle name'], ['%L', 'Last name'],
                                ['%T', 'Title', 'Everything up to the next part of the pattern'], ['%Y', 'Year', '4 digits'], ['%YY', 'Year (yy)'], ['%MM', 'Month'],
                                ['%DD', 'Day'], ['%R', 'Resolution', 'e.g. 1080p'], ['*', 'Skip', 'Anything here is ignored']],
                 
@@ -20448,7 +20448,7 @@ No metadata is changed.`)) return;
                                     </button>
                                 </template>
                             </div>
-                            <p class="text-xs text-gray-500 mt-1"><strong>Examples:</strong> %S.%YY.%MM.%DD.%C.%T | %S.%F.%M.%L.%T | %C - %T</p></div>
+                            <p class="text-xs text-gray-500 mt-1"><strong>Examples:</strong> %S.%YY.%MM.%DD.%C.%T | %S.%F.%M.%L.%T | %C - %T | * %C and %MC - %T</p></div>
                     <div class="flex gap-4 text-sm flex-wrap"><label><input type="checkbox" x-model="parserOptions.clean_underscores"> No Underscores</label><label><input type="checkbox" x-model="parserOptions.clean_dashes"> No Dashes</label><label><input type="checkbox" x-model="parserOptions.clean_dots"> No Dots</label><label><input type="checkbox" x-model="parserOptions.title_case"> Title Case</label><label title="e.g. a file in “Season 2” with the title “Episode 4” gets “Season 2 Episode 4”"><input type="checkbox" x-model="parserOptions.dir_in_title" @change="previewParse()"> Put the folder name at the start of the title</label></div>
                         <div class="bg-gray-900 p-2 rounded text-xs font-mono h-20 overflow-y-auto whitespace-pre" x-text="parserPreview"></div>
                         <button @click="applyParse" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm" x-text="parser.scope === 'selected' ? 'Parse the selected files' : 'Parse ' + parser.library"></button>

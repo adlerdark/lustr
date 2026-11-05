@@ -769,11 +769,13 @@ def proposals_for(conn, ctx, row, parsed=None, model=None):
         if len(choices) > 1:
             if any(norm_name(c) in have for c in choices):
                 continue                                # the video already has one of them
-            out.append({'field': 'cast', 'value': primary, 'known': True, 'ticked': False, 'source': 'same name',
+            out.append({'field': 'male_cast' if n.get('male') else 'cast', 'value': primary, 'known': True, 'ticked': False, 'source': 'same name',
                         'choices': choices})
             continue
         field = 'cast'
-        if ctx.genders.get(primary) == 'male':
+        if n.get('male'):                               # the pattern's %MC
+            field = 'male_cast'
+        elif ctx.genders.get(primary) == 'male':
             if straight is None:
                 straight = _straightish(conn, model, vid, library)
             field = 'male_cast' if straight else 'cast'
@@ -831,12 +833,13 @@ def _parsed_from_values(ctx, d):
     """/api/parse_filename's values -> the smart parser's shape."""
     d = d or {}
     site_key = ctx.site_of(d.get('site')) if d.get('site') else None
-    cast = d.get('cast') or []
-    cast = [cast] if isinstance(cast, str) else cast
     names = []
-    for c in cast:
-        k = ctx.known_name(c)
-        names.append({'name': k or _name_display(c), 'known': bool(k)})
+    for field in ('cast', 'male_cast'):
+        cast = d.get(field) or []
+        cast = [cast] if isinstance(cast, str) else cast
+        for c in cast:
+            k = ctx.known_name(c)
+            names.append({'name': k or _name_display(c), 'known': bool(k), **({'male': True} if field == 'male_cast' else {})})
     year = str(d.get('year') or '')[:4] or (str(d.get('date_created') or '')[:4] or None)
     return {'site': ctx.site_display.get(site_key, d.get('site')) if d.get('site') else None,
             'names': names, 'year': year if year and year.isdigit() else None,
