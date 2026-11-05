@@ -899,6 +899,7 @@
                 contextMenuX: 0,
                 contextMenuY: 0,
                 menuVideo: null,                   // the video right-clicked (Go to Movie)
+                menuList: null,                    // the menu's own videos (Play History, the player), else the page's lists
                 
                 // Hover previews
                 hoverAnimationFrame: null,
@@ -993,11 +994,11 @@
                       subs: [['overview', 'Overview'], ['tagmap', 'Tag mappings'], ['sites', 'Site Linking'], ['links', 'Linked videos']] },
                     { id: 'maintenance', label: 'Maintenance', group: 'Data', icon: '🧹', wide: true,
                       subs: [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'],
-                             ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['backups', 'Backups']] },
+                             ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['corrupt', 'Corrupt files'], ['backups', 'Backups']] },
                     { id: 'importexport', label: 'Import / Export', group: 'Data', icon: '📁' },
                 ],
                 // Settings -> General -> Play History (library_stats.py: play_log, watch_stats)
-                ph: { tab: 'log', q: '', from: '', to: '', countedOnly: false, showDeleted: true, loading: false, error: '', seq: 0,
+                ph: { tab: 'log', under: false, q: '', from: '', to: '', countedOnly: false, showDeleted: true, loading: false, error: '', seq: 0,
                       minSeconds: 15, colMenu: null, selected: [],
                       log: { items: [], total: 0, summary: {}, sort: 'watched_at', desc: true, hidden: [] },
                       stats: { items: [], total: 0, summary: {}, sort: 'plays', desc: true, hidden: [] } },
@@ -1034,6 +1035,7 @@
                          settings: { retention_days: 7, daily: true, auto_backups_keep: 5 },
                          deleted: { rows: [], total: 0, page: 1, per_page: 200, library: '', reason: '', q: '', libraries: {}, selected: {}, loading: false },
                          cast: { rows: [], selected: {}, loading: false },
+                         corrupt: { rows: [], selected: {}, loading: false, loaded: false },   // videos tagged corrupt.file (corrupt.py)
                          spell: { groups: [], keep: {}, loading: false },      // same performer, different spelling
                          gender: { rows: [], ignored: [], counts: {}, kind: '', selected: {}, open: {}, showIgnored: false, loading: false },   // gender_check.py
                          backups: { rows: [], bytes: 0, selected: {}, keep: 3, loading: false },
@@ -1983,7 +1985,7 @@
                     
                     // Keyboard shortcuts
                     window.addEventListener('keydown', (e) => {
-                        if (this.np.open) { this.npKey(e); return; }          // the new player has its own keys
+                        if (this.np.open && !this.modals.metadata) { this.npKey(e); return; }   // the new player has its own keys (not while editing)
                         if (e.key === 'Escape') this.handleEscape();
                         if (e.key === 'Enter' && e.ctrlKey && this.modals.metadata) this.saveMetadata();
                         if (e.key === 'Enter' && e.ctrlKey && this.imgEdit.open) this.imgEditSave();
@@ -7218,13 +7220,14 @@ No metadata is changed.`)) return;
 
                 // video records shown anywhere (grid, movie page, collections, Home) - merge / split look them up here
                 _videoByPath(path) {
-                    return [...(this.videos || []), ...(this.mv.items || []), ...(this.coll.items || []), ...(this.continueWatching || []),
+                    return [...(this.menuList || []), ...(this.videos || []), ...(this.mv.items || []), ...(this.coll.items || []), ...(this.continueWatching || []),
                             ...(this.filteredCastBioVideos || [])].find(v => v && v.path === path);
                 },
 
                 // a video's favorite changed: every loaded copy of it (grid, movie page, …) shows the star
                 _markFavorite(path, fav) {
-                    for (const list of [this.videos, this.mv.items, this.coll.items, this.continueWatching, this.castBioData?.exact_matches])
+                    for (const list of [this.videos, this.mv.items, this.coll.items, this.continueWatching, this.castBioData?.exact_matches, this.menuList,
+                                        [...this.ph.log.items, ...this.ph.stats.items].map(r => r.video)])
                         for (const v of list || []) if (v && v.path === path) v.favorite = fav;
                     if (this.activeVideo?.path === path) this.activeVideo.favorite = fav;
                 },
@@ -7641,12 +7644,26 @@ No metadata is changed.`)) return;
                         }
                     } catch (e) { /* defaults */ }
                     this.ph.colMenu = null;
+                    this.ph.under = false;
                     this.modals.playHistory = true;
                     this.phLoad();
                     this.phLoadMin();
                 },
 
-                phClose() { this.ph.colMenu = null; this.modals.playHistory = false; },
+                phClose() { this.ph.colMenu = null; this.ph.under = false; this.modals.playHistory = false; },
+
+                // the video right-click menu on a row (ticked Watch Log rows go together); Play History steps
+                // behind the windows it opens until you click in it again
+                phRowMenu(e, r) {
+                    if (!r.video) return;
+                    const ph = this.ph;
+                    const rows = ph.tab === 'log' && ph.selected.includes(r.id) ? ph.log.items.filter(x => ph.selected.includes(x.id) && x.video) : [r];
+                    const videos = [...new Map(rows.map(x => [x.video.path, x.video])).values()];
+                    this.selectedPaths = new Set(videos.map(v => v.path));
+                    this.lastSelectedPath = r.video.path;
+                    ph.under = true;
+                    this.handleRightClick(e, r.video, videos);
+                },
 
                 phSavePrefs() {
                     const pick = s => ({ sort: s.sort, desc: s.desc, hidden: s.hidden });
@@ -9338,9 +9355,11 @@ No metadata is changed.`)) return;
                 get mvSelCount() { return (this.mv.items || []).filter(v => this.selectedPaths.has(v.path)).length; },
                 mvClearSel() { this.selectedPaths = new Set(); this.lastSelectedPath = null; },   // a movie's scene selection ends with the movie
                 
-                async handleRightClick(event, video) {
+                // list: the videos the menu was opened on when they aren't in a page list (Play History, the player)
+                async handleRightClick(event, video, list = null) {
                     this.activeMenu = null; // Reset first
                     this.menuVideo = video;
+                    this.menuList = list;
 
                     const path = video.path;
                     if (!this.selectedPaths.has(path)) {
@@ -9564,7 +9583,10 @@ No metadata is changed.`)) return;
                         // IMPORTANT: check currentView === 'playlists' BEFORE currentLibrary === 'Home'
                         // because playlists can be open while currentLibrary is still 'Home'.
                         let checkVideoList;
-                        if (this.castBioMode) {
+                        const own = this.menuList;                 // Play History / the player: its own videos
+                        if (own) {
+                            checkVideoList = own;
+                        } else if (this.castBioMode) {
                             checkVideoList = this.filteredCastBioVideos || [];
                         } else if (this.currentView === 'playlists') {
                             // Unwrap Alpine proxies to plain objects so path comparison works reliably
@@ -9586,7 +9608,7 @@ No metadata is changed.`)) return;
                             // For library view, check if it's a file (not folder)
                             // For other views (playlists/home/cast), all videos are files
                             if (!video) return true; // Include if not found (might be on another page)
-                            if (this.currentView === 'library' && this.currentLibrary !== 'Home' && !this.castBioMode) {
+                            if (!own && this.currentView === 'library' && this.currentLibrary !== 'Home' && !this.castBioMode) {
                                 return video.type === 'file';
                             }
                             return true;
@@ -9604,7 +9626,7 @@ No metadata is changed.`)) return;
                         const visibleSelectedVideos = videoList.filter(v => {
                             if (!this.selectedPaths.has(v.path)) return false;
                             // For library view, exclude folders
-                            if (this.currentView === 'library' && this.currentLibrary !== 'Home') {
+                            if (!own && this.currentView === 'library' && this.currentLibrary !== 'Home') {
                                 return v.type !== 'folder';
                             }
                             return true;
@@ -9617,7 +9639,7 @@ No metadata is changed.`)) return;
                         
                         // Warn if some selected files aren't visible (on different page/filtered out)
                         // Only relevant in library view with pagination
-                        const inPagedView = this.currentView === 'library' && this.currentLibrary !== 'Home' && !this.castBioMode;
+                        const inPagedView = !own && this.currentView === 'library' && this.currentLibrary !== 'Home' && !this.castBioMode;
                         if (inPagedView && visibleSelectedVideos.length < this.editPaths.length) {
                             if (!window.confirm(`You have ${this.editPaths.length} files selected, but only ${visibleSelectedVideos.length} are visible on this page.\n\nCommon values will be calculated from the ${visibleSelectedVideos.length} visible files, but changes will be applied to ALL ${this.editPaths.length} selected files.\n\nContinue?`)) {
                                 return;
@@ -9851,6 +9873,11 @@ No metadata is changed.`)) return;
                         
                         // Close modal first (so user sees feedback)
                         this.modals.metadata = false;
+                        if (this.modals.playHistory) this.phLoad();
+                        if (this.np.open && this.np.video && plainPaths.includes(this.np.video.path)) {   // the player's title / cast
+                            fetch(`/api/video?path=${encodeURIComponent(this.np.video.path)}`).then(r => r.ok ? r.json() : null)
+                                .then(d => { if (d && this.np.video) Object.assign(this.np.video, d); }).catch(() => {});
+                        }
                         
                         // Reload appropriate view (fire and forget if it times out)
                         try {
@@ -10126,6 +10153,7 @@ No metadata is changed.`)) return;
                     if (view === 'gender') await this.maintLoadGender();
                     if (view === 'backups') await this.maintLoadBackups();
                     if (view === 'tags') await this.maintLoadTags();
+                    if (view === 'corrupt') await this.corruptLoad();
                 },
 
                 // ----- Tag cleanup (§2.5) -----
@@ -10467,6 +10495,51 @@ No metadata is changed.`)) return;
                     }
                 },
                 
+                // the corrupt.file tag (corrupt.py): hidden from every library view, listed in Settings > Maintenance
+                async _corruptTag(paths, on) {
+                    const tag = { tags: ['corrupt.file'] };
+                    const r = await fetch('/api/metadata/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ paths, updates: {}, add_to_lists: on ? tag : {}, remove_from_lists: on ? {} : tag }) });
+                    if (!r.ok) throw new Error(`Server returned ${r.status}`);
+                },
+
+                async markCorrupt() {
+                    this.activeMenu = null;
+                    const paths = Array.from(this.selectedPaths), n = paths.length;
+                    if (!n || !confirm(`Mark ${n === 1 ? 'this video' : n + ' videos'} as corrupt?\n\n${n === 1 ? 'It' : 'They'} get the tag corrupt.file and are hidden from your libraries. `
+                                       + 'Settings > Maintenance > Corrupt files lists them, where you can unmark one.')) return;
+                    try { await this._corruptTag(paths, true); }
+                    catch (e) { alert('Could not mark: ' + e.message); return; }
+                    this.selectedPaths = new Set();
+                    if (this.modals.playHistory) this.phLoad();
+                    if (this.castBioMode && this.currentCastMember) await this.loadCastBio(this.currentCastMember);
+                    else this.fetchVideos('none');
+                    if (this.mvTabActive()) this.mvRefresh();
+                },
+
+                async corruptLoad() {
+                    const C = this.maint.corrupt;
+                    C.loading = true;
+                    try {
+                        const d = await (await fetch('/api/corrupt')).json();
+                        Object.assign(C, { rows: d.items || [], selected: {}, loaded: true });
+                    } catch (e) { this.maint.error = 'Could not load the corrupt files: ' + e.message; }
+                    C.loading = false;
+                },
+
+                async corruptUnmark(rows) {
+                    const paths = rows.map(r => r.paths[0]?.path).filter(Boolean);
+                    if (!paths.length) return;
+                    this.maint.busy = 'corrupt';
+                    try {
+                        await this._corruptTag(paths, false);
+                        this.maint.message = `${paths.length} video${paths.length === 1 ? '' : 's'} unmarked - back in your libraries.`;
+                        this.fetchVideos('none');
+                    } catch (e) { this.maint.error = 'Could not unmark: ' + e.message; }
+                    this.maint.busy = '';
+                    await this.corruptLoad();
+                },
+
                 async toggleFavSelection() {
                     this.activeMenu = null;
                     for (const path of this.selectedPaths) {
@@ -12358,6 +12431,22 @@ No metadata is changed.`)) return;
                     np.stripReady = false;
                     np.open = false;
                     TimerManager.videoPlaying(false);
+                },
+
+                // Edit Metadata on the playing video, above the player
+                async npEditMetadata() {
+                    const v = this.np.video;
+                    if (!v) return;
+                    try { this.npPlayer()?.pause(); } catch (e) { /* not ready */ }
+                    let card = v;
+                    try {
+                        const r = await fetch(`/api/video?path=${encodeURIComponent(v.path)}`);
+                        if (r.ok) card = await r.json();
+                    } catch (e) { /* the copy we have */ }
+                    this.selectedPaths = new Set([v.path]);
+                    this.lastSelectedPath = v.path;
+                    this.menuList = [card];
+                    this.openMetadataEditor();
                 },
 
                 npClose() {
@@ -16419,6 +16508,9 @@ No metadata is changed.`)) return;
                     class="w-full text-left px-4 py-2 hover:bg-blue-600">Choose Main Thumbnail…</button>
             <div class="border-t border-gray-700 my-1"></div>
             <button @click="toggleFavSelection" class="w-full text-left px-4 py-2 hover:bg-blue-600">Toggle Favorite</button>
+            <button @click="markCorrupt()" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400"
+                    title="Tag it corrupt.file and hide it from your libraries (Settings > Maintenance > Corrupt files lists them)"
+                    x-text="selectedPaths.size > 1 ? `⚠ Mark as corrupt (${selectedPaths.size})` : '⚠ Mark as corrupt'"></button>
             <button x-show="hasMovingSelection()" @click="videosToImages()" class="w-full text-left px-4 py-2 hover:bg-blue-600"
                     x-text="selectedPaths.size > 1 ? `🖼 Show in Images instead (${selectedPaths.size})` : '🖼 Show in Images instead'"
                     title="Play it in the Images tab, on a loop like a GIF (with sound)"></button>
@@ -16463,23 +16555,23 @@ No metadata is changed.`)) return;
             <button @click="mvPickOpen(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2">
                 <span>🎞</span><span>Add to movie...</span>
             </button>
-            <button x-show="libraryTab === 'collections' && coll.view && coll.view.kind === 'collection' && currentLibrary !== 'Home'"
+            <button x-show="!menuList && libraryTab === 'collections' && coll.view && coll.view.kind === 'collection' && currentLibrary !== 'Home'"
                     @click="collRemoveSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400 flex items-center gap-2">
                 <span>➖</span><span x-text="'Remove from ' + (coll.view?.name || 'collection')"></span>
             </button>
-            <button x-show="libraryTab === 'collections' && coll.view && currentLibrary !== 'Home'"
+            <button x-show="!menuList && libraryTab === 'collections' && coll.view && currentLibrary !== 'Home'"
                     @click="collSetCover(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2">
                 <span>🖼</span><span>Use as collection cover</span>
             </button>
-            <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
+            <button x-show="!menuList && libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
                     @click="mvCoverFromSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2">
                 <span>🖼</span><span>Use as movie cover</span>
             </button>
-            <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
+            <button x-show="!menuList && libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
                     @click="mvRemoveSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400 flex items-center gap-2">
                 <span>➖</span><span x-text="'Remove from ' + (mv.view?.display || 'movie')"></span>
             </button>
-            <button x-show="libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
+            <button x-show="!menuList && libraryTab === 'movies' && mv.view && currentLibrary !== 'Home'"
                     @click="mvSplitSelected(); activeMenu = null" class="w-full text-left px-4 py-2 hover:bg-blue-600 flex items-center gap-2"
                     title="For a different movie that has the same name: these videos go to a second movie told apart by a label">
                 <span>⑂</span><span>Split into a new movie…</span>
@@ -16487,7 +16579,7 @@ No metadata is changed.`)) return;
 
             <!-- Remove from Playlist (only show when in playlist view) -->
             <button 
-                x-show="currentView === 'playlists' && currentPlaylist"
+                x-show="!menuList && currentView === 'playlists' && currentPlaylist"
                 @click="removeFromPlaylist(currentPlaylist.id, Array.from(selectedPaths).map(p => playlistVideos.find(v => v.path === p)?.video_id).filter(Boolean)); activeMenu = null"
                 class="w-full text-left px-4 py-2 hover:bg-red-600 text-red-400 flex items-center gap-2">
                 <span>➖</span>
@@ -18611,7 +18703,7 @@ No metadata is changed.`)) return;
                         <!-- Database Maintenance (db_maintenance.py) -->
                         <div x-show="toolsActiveTab === 'cleanup'" class="space-y-3 text-sm">
                             <div class="flex flex-wrap gap-2 items-center">
-                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['backups', 'Backups']]" :key="k">
+                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['corrupt', 'Corrupt files'], ['backups', 'Backups']]" :key="k">
                                     <button x-show="settingsLayout !== 'page'" @click="maintShow(k)" class="px-3 py-1 rounded text-xs"
                                             :class="maint.view === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="label"></button>
                                 </template>
@@ -18960,6 +19052,44 @@ No metadata is changed.`)) return;
                                     <button @click="maintLoadTags()" :disabled="maint.tags.loading || !!maint.busy" class="px-3 py-1.5 rounded text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40">Refresh</button>
                                     <button @click="maintApplyTags()" :disabled="!maintTagCount() || !!maint.busy" class="px-3 py-1.5 rounded text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40"
                                             x-text="maint.busy === 'tags' ? 'Applying…' : 'Apply selected (' + maintTagCount() + ')'"></button>
+                                </div>
+                            </div>
+
+                            <!-- Corrupt files (corrupt.py) -->
+                            <div x-show="maint.view === 'corrupt'" class="space-y-2">
+                                <p class="text-xs text-gray-400">Videos tagged <span class="font-mono">corrupt.file</span> (right-click a video &gt; ⚠ Mark as corrupt). They are hidden from every library, search and Home row. Unmark one to bring it back.</p>
+                                <div class="bg-gray-900 rounded overflow-auto max-h-[55vh] border border-gray-700">
+                                    <table class="w-full text-xs">
+                                        <thead class="sticky top-0 z-10 bg-gray-900"><tr class="text-left text-gray-400 border-b border-gray-700">
+                                            <th class="p-2 w-6"><input type="checkbox" class="rounded" @change="maintToggleAll('corrupt', maint.corrupt.rows, 'video_id')"
+                                                :checked="!!(maint.corrupt.rows.length && maint.corrupt.rows.every(r => maint.corrupt.selected[r.video_id]))"></th>
+                                            <th class="p-2 font-medium">Video</th><th class="p-2 font-medium">Library</th><th class="p-2 font-medium">Files</th><th class="p-2"></th></tr></thead>
+                                        <tbody>
+                                            <template x-for="r in maint.corrupt.rows" :key="r.video_id">
+                                                <tr class="border-b border-gray-800 align-top">
+                                                    <td class="p-2"><input type="checkbox" class="rounded" :checked="!!maint.corrupt.selected[r.video_id]"
+                                                        @change="maint.corrupt.selected = { ...maint.corrupt.selected, [r.video_id]: $event.target.checked }"></td>
+                                                    <td class="p-2 text-gray-200" x-text="r.title || r.video_id"></td>
+                                                    <td class="p-2 text-gray-400 whitespace-nowrap" x-text="r.library || ''"></td>
+                                                    <td class="p-2 font-mono text-gray-400 break-all">
+                                                        <template x-for="f in r.paths" :key="f.path"><div x-text="f.path + (f.size ? '  (' + maintFmtBytes(Number(f.size)) + ')' : '')"></div></template>
+                                                        <div x-show="!r.paths.length" class="text-gray-600">no file on disk</div>
+                                                    </td>
+                                                    <td class="p-2 text-right"><button @click="corruptUnmark([r])" :disabled="!!maint.busy || !r.paths.length"
+                                                        class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-40">Unmark</button></td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <p x-show="maint.corrupt.loaded && !maint.corrupt.loading && !maint.corrupt.rows.length" class="text-center text-gray-500 py-4">No videos are marked as corrupt.</p>
+                                <div class="flex flex-wrap items-center gap-2 text-xs">
+                                    <button @click="corruptLoad()" :disabled="maint.corrupt.loading || !!maint.busy" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-40">Refresh</button>
+                                    <button @click="corruptUnmark(maint.corrupt.rows.filter(r => maint.corrupt.selected[r.video_id]))"
+                                            :disabled="!!maint.busy || !maint.corrupt.rows.some(r => maint.corrupt.selected[r.video_id])"
+                                            class="px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-40"
+                                            x-text="maint.busy === 'corrupt' ? 'Unmarking…' : 'Unmark selected (' + maint.corrupt.rows.filter(r => maint.corrupt.selected[r.video_id]).length + ')'"></button>
+                                    <span class="text-gray-500" x-text="maint.corrupt.rows.length + ' marked'"></span>
                                 </div>
                             </div>
 
@@ -20688,7 +20818,8 @@ No metadata is changed.`)) return;
         
         <!-- DUPLICATES SCANNER MODAL -->
         <!-- Play History (Settings -> General): every play, and plays / time per video (library_stats.py) -->
-        <div x-show="modals.playHistory" x-cloak class="fixed inset-0 z-[80] bg-gray-900 flex flex-col text-sm" @click="ph.colMenu = null">
+        <div x-show="modals.playHistory" x-cloak class="fixed inset-0 bg-gray-900 flex flex-col text-sm" :class="ph.under ? 'z-[45]' : 'z-[80]'"
+             @click="ph.colMenu = null" @mousedown="ph.under = false">
             <div class="px-4 py-3 border-b border-gray-700 bg-gray-800 flex flex-wrap items-center gap-3 shrink-0">
                 <h3 class="font-bold text-xl">Play History</h3>
                 <div class="flex bg-gray-900 rounded p-1 gap-1">
@@ -20738,7 +20869,7 @@ No metadata is changed.`)) return;
                     </thead>
                     <tbody class="divide-y divide-gray-800">
                         <template x-for="r in ph[ph.tab].items" :key="ph.tab + (r.id || r.video_id)">
-                            <tr class="hover:bg-gray-800" :class="r.missing ? 'opacity-50' : 'cursor-pointer'" @dblclick="phPlay(r, false)"
+                            <tr class="hover:bg-gray-800" :class="r.missing ? 'opacity-50' : 'cursor-pointer'" @dblclick="phPlay(r, false)" @contextmenu.prevent="phRowMenu($event, r)"
                                 :title="r.deleted ? 'Deleted from the library - its plays are kept' : (r.missing ? 'This file is no longer in the library' : '')">
                                 <td x-show="ph.tab === 'log'" class="p-2"><input type="checkbox" :checked="ph.selected.includes(r.id)" @click.stop="phSelect(r.id)"></td>
                                 <template x-for="[k] in phVisible()" :key="k">
@@ -20909,7 +21040,7 @@ No metadata is changed.`)) return;
 
 
     <!-- NEW PLAYER (np) - roadmap #8. video.js; separate from the classic VIDEO PLAYER below. -->
-    <div x-show="np.open" x-cloak class="fixed inset-0 z-[100] bg-black flex flex-col">
+    <div x-show="np.open" x-cloak class="fixed inset-0 bg-black flex flex-col" :class="modals.metadata ? 'z-[78]' : 'z-[100]'">
         <div class="flex flex-wrap items-center gap-2 gap-y-1 px-3 sm:px-4 py-2 bg-gray-900 text-sm border-b border-gray-800">
             <span class="flex-1 min-w-[50%] sm:min-w-0 truncate" :title="np.video?.path + (orderedCast(np.video).length ? '\n' + orderedCast(np.video).join(', ') : '')">
                 <span class="font-semibold text-gray-100" x-text="npTitle()"></span>
@@ -20938,6 +21069,7 @@ No metadata is changed.`)) return;
                 </div>
             </template>
             <button @click="npMarkerNew()" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200" title="Add a marker at the current time">+ Marker</button>
+            <button @click="npEditMetadata()" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200" title="Edit this video's metadata (pauses it)">✎<span class="hidden sm:inline"> Edit</span></button>
             <button @click="thumbFromPlayer('np')" :disabled="thumbAt.busy" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-60"
                     title="Make this frame the main thumbnail (T)">🖼<span class="hidden sm:inline"> Thumbnail</span></button>
             <button @click="np.panel = !np.panel" class="px-2 py-1 rounded text-xs" :class="np.panel ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'"

@@ -190,8 +190,9 @@ def set_selection(conn, user, types):
 
 
 def cache_key(conn):
-    """Part of any cache key for filtered results."""
-    return ','.join(get_selection(conn))
+    """Part of any cache key for filtered results (the selection, and how many videos are marked corrupt)."""
+    import corrupt
+    return ','.join(get_selection(conn)) + f'|c{corrupt.count(conn)}'
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +221,19 @@ def movie_shown(conn, movie_tags, selection=None):
 
 
 def shown_sql(conn, model, col='v.video_id', lib_col='v.library', selection=None):
-    """The rule itself as SQL on `col` / `lib_col` (correlated subqueries), or ('', []) when nothing is filtered."""
+    """The rule itself as SQL on `col` / `lib_col` (correlated subqueries), or ('', []) when nothing is filtered.
+    Videos marked corrupt (corrupt.py) are left out for everyone."""
+    import corrupt
+    sql, params = _orientation_sql(conn, model, col, lib_col, selection)
+    bad, bad_params = corrupt.hidden_sql(conn, col)
+    if not bad:
+        return sql, params
+    if not sql:
+        return bad, bad_params
+    return f'({sql} AND {bad})', params + bad_params
+
+
+def _orientation_sql(conn, model, col, lib_col, selection):
     sel = _selected(conn, selection)
     if len(sel) == len(TYPES):
         return '', []

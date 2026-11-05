@@ -877,6 +877,13 @@ def get_video(request: Request, path: str, model = Depends(get_model)):
         item['versions'] = versions
     return item
 
+@router.get("/corrupt")
+def list_corrupt(request: Request, model = Depends(get_model)):
+    """Settings -> Maintenance -> Corrupt files: every video tagged corrupt.file, with its files."""
+    check_auth(request)
+    import corrupt
+    return {'items': corrupt.listing(model.db.get_connection()), 'tag': corrupt.TAG}
+
 @router.get("/videos")
 def get_videos(
     request: Request,
