@@ -548,6 +548,10 @@
         // Sidebar Tags / Sites lists, kept between renders (outside Alpine: writing reactive state from a getter re-renders forever)
         const _sbMemo = {};
 
+        // Cast Browser: the filtered, sorted list and each performer's search text, kept outside Alpine's
+        // reactivity - sortedCastList is read in several places and used to redo the whole search for each
+        const castBrowserCache = { src: null, counts: null, key: '', list: [], text: new Map() };
+
         function libraryApp() {
             const app = {
                 isLoggedIn: false,
@@ -707,6 +711,9 @@
                 castBrowserCategoryFilter: ['pro'],   // default: Pro only (Amateur/Celeb unchecked)
                 castBrowserCategoryDropdownOpen: false,
                 castBrowserViewMode: 'list',     // NEW - 'list' or 'grid'
+                castBrowserLimit: 200,           // how many are drawn (more as you scroll)
+                castBrowserLoading: false,
+                castBrowserError: '',
                 castPhotoMode: 'upload',         // NEW - 'upload' or 'url'
                 castPhotoUrl: '',                // NEW - URL for photo
                 castPhotoTimestamp: 1,  // Static value for caching, only updates when photos change
@@ -1532,39 +1539,38 @@
                 get seekMax() {
                     return this.playerDuration;
                 },
+                // everything the Cast Browser list depends on (the cache key; also resets the shown count)
+                castBrowserKey() {
+                    return JSON.stringify([(this.castList || []).length, this.castSearchQuery, this.castBrowserShowFavoritesOnly, this.castBrowserGenderFilter,
+                                           this.castBrowserMaleScope, this.castBrowserCategoryFilter, this.castBrowserLinkFilter, this.castBrowserAttrFilter,
+                                           this.castBrowserPhotoFilter, this.castBrowserSortBy, this.castBrowserSortDesc]);
+                },
+
+                // name, aliases and attribute values, lower-case, one per line (a search term never spans two)
+                _castText(c) {
+                    const T = castBrowserCache.text;
+                    let t = T.get(c.name);
+                    if (t === undefined) {
+                        const parts = [c.name, ...(c.aliases || [])];
+                        for (const values of Object.values(c.attributes || {})) if (Array.isArray(values)) parts.push(...values);
+                        t = parts.join('\n').toLowerCase();
+                        T.set(c.name, t);
+                    }
+                    return t;
+                },
+
                 get sortedCastList() {
                     if (!this.castList || this.castList.length === 0) return [];
-                    
+                    const C = castBrowserCache, src = this.castList, counts = this.maleCast.counts, key = this.castBrowserKey();
+                    if (C.src === src && C.counts === counts && C.key === key) return C.list;
+                    if (C.src !== src) C.text = new Map();
+
                     // Advanced search with boolean operators
-                    let filtered = this.castList.filter(c => {
-                        if (!this.castSearchQuery) return true;
-                        
-                        const query = this.castSearchQuery.toLowerCase().trim();
-                        
-                        // Check if it's a boolean search (contains AND/OR)
-                        if (query.includes(' and ') || query.includes(' or ')) {
-                            return this.evaluateBooleanCastSearch(c, query);
-                        }
-                        
-                        // Simple search - check name, aliases, and all attributes
-                        if (c.name.toLowerCase().includes(query)) return true;
-                        if (c.aliases && c.aliases.some(a => a.toLowerCase().includes(query))) return true;
-                        
-                        // Search through appearance attributes
-                        if (c.attributes) {
-                            for (const field in c.attributes) {
-                                const values = c.attributes[field];
-                                if (Array.isArray(values)) {
-                                    for (const value of values) {
-                                        if (value.toLowerCase().includes(query)) return true;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        return false;
-                    });
-                    
+                    const query = (this.castSearchQuery || '').toLowerCase().trim();
+                    const boolean = query.includes(' and ') || query.includes(' or ');
+                    let filtered = !query ? src.slice() : src.filter(c => boolean ? this.evaluateBooleanCastSearch(c, query)
+                                                                         : this._castText(c).includes(query));   // name, aliases, attributes
+
                     // Filter by favorites if enabled
                     if (this.castBrowserShowFavoritesOnly) {
                         filtered = filtered.filter(c => c.is_favorite);
@@ -1615,7 +1621,8 @@
                             return this.castBrowserSortDesc ? -compare : compare;
                         }
                     });
-                    
+
+                    Object.assign(C, { src, counts, key, list: sorted });
                     return sorted;
                 },
                 get seekValue() {
@@ -6063,21 +6070,22 @@ No metadata is changed.`)) return;
                     this.castBioSource = null;
                 },
                 
+                // opens at once: the list we have (refreshed behind it), or "Loading cast…" the first time
                 async openCastBrowser() {
+                    castBrowserCache.src = null;                   // favorites / photos may have changed since
+                    Object.assign(this, { showCastBrowserModal: true, castSearchQuery: '', castBrowserError: '',
+                                          castBrowserLoading: !(this.castList && this.castList.length) });
+                    // Bulk linker: pick up a run that is still going on the server
+                    this.extBulkRefreshStatus().then(st => { if (st?.running) this.extBulkStartPolling(); });
                     try {
-                        // Load all cast members
                         const res = await fetch('/api/cast/all');
-                        const data = await res.json();
-                        this.castList = data.cast || [];
-                        
-                        // Open the cast browser modal
-                        this.showCastBrowserModal = true;
-                        this.castSearchQuery = ''; // Reset search
-                        // Bulk linker: pick up a run that is still going on the server
-                        this.extBulkRefreshStatus().then(st => { if (st?.running) this.extBulkStartPolling(); });
+                        if (!res.ok) throw new Error(`server returned ${res.status}`);
+                        this.castList = (await res.json()).cast || [];
                     } catch (e) {
                         console.error('Failed to load cast members:', e);
+                        if (!this.castList?.length) this.castBrowserError = 'Could not load the cast: ' + e.message;
                     }
+                    this.castBrowserLoading = false;
                 },
 
                 async openCastBio(castName, source = 'library') {
@@ -21411,7 +21419,7 @@ No metadata is changed.`)) return;
                 <div>
                     <input 
                         type="text" 
-                        x-model="castSearchQuery"
+                        x-model.debounce.200ms="castSearchQuery"
                         placeholder="Search cast..."
                         class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm focus:border-blue-500 outline-none">
                     <div class="text-xs text-gray-400 mt-1 hidden sm:block">
@@ -21559,11 +21567,18 @@ No metadata is changed.`)) return;
                 </div>
             </div>
 
-            <!-- Cast List -->
-            <div class="flex-1 overflow-y-auto p-4">
+            <!-- Cast List (the first castBrowserLimit drawn; more as you scroll; back to the top when the list changes) -->
+            <div class="flex-1 overflow-y-auto p-4" x-effect="castBrowserKey(); castBrowserViewMode; castBrowserLimit = 200; $el.scrollTop = 0"
+                 @scroll="if (castBrowserLimit < sortedCastList.length && $el.scrollTop + $el.clientHeight > $el.scrollHeight - 800) castBrowserLimit += 200">
+                <div x-show="castBrowserLoading" class="flex items-center justify-center gap-3 py-12 text-gray-400">
+                    <svg class="animate-spin h-6 w-6 text-blue-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <span>Loading cast…</span>
+                </div>
+                <p x-show="castBrowserError" class="text-center py-12 text-red-400" x-text="castBrowserError"></p>
                 <!-- List View -->
-                <div x-show="castBrowserViewMode === 'list'" class="grid grid-cols-1 md:grid-cols-2 gap-2" :class="castBrowserSelectMode ? 'select-none' : ''">
-                    <template x-for="cast in sortedCastList" :key="cast.name">
+                <template x-if="castBrowserViewMode === 'list'">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2" :class="castBrowserSelectMode ? 'select-none' : ''">
+                    <template x-for="cast in sortedCastList.slice(0, castBrowserLimit)" :key="cast.name">
                         <div 
                             @click="castBrowserSelectMode ? castSelClick(cast.name, $event) : openCastBio(cast.name, 'browser')"
                             :class="castBrowserSelectMode && castSel.has(cast.name) ? 'ring-2 ring-blue-500' : ''"
@@ -21583,10 +21598,12 @@ No metadata is changed.`)) return;
                         </div>
                     </template>
                 </div>
-                
+                </template>
+
                 <!-- Grid View with Photos -->
-                <div x-show="castBrowserViewMode === 'grid'" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4" :class="castBrowserSelectMode ? 'select-none' : ''">
-                    <template x-for="cast in sortedCastList" :key="cast.name">
+                <template x-if="castBrowserViewMode === 'grid'">
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4" :class="castBrowserSelectMode ? 'select-none' : ''">
+                    <template x-for="cast in sortedCastList.slice(0, castBrowserLimit)" :key="cast.name">
                         <div 
                             @click="castBrowserSelectMode ? castSelClick(cast.name, $event) : openCastBio(cast.name, 'browser')"
                             :class="castBrowserSelectMode && castSel.has(cast.name) ? 'ring-4 ring-blue-500' : ''"
@@ -21620,7 +21637,12 @@ No metadata is changed.`)) return;
                         </div>
                     </template>
                 </div>
-                <div x-show="sortedCastList.length === 0" class="text-center py-12 text-gray-400">
+                </template>
+                <div x-show="castBrowserLimit < sortedCastList.length" class="text-center text-xs text-gray-400 pt-4">
+                    <span x-text="'Showing ' + castBrowserLimit.toLocaleString() + ' of ' + sortedCastList.length.toLocaleString()"></span>
+                    · <button @click="castBrowserLimit = sortedCastList.length" class="text-blue-300 hover:underline">Show all</button>
+                </div>
+                <div x-show="!castBrowserLoading && !castBrowserError && sortedCastList.length === 0" class="text-center py-12 text-gray-400">
                     <p>No cast members found</p>
                 </div>
             </div>
