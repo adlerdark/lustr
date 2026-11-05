@@ -10506,8 +10506,8 @@ No metadata is changed.`)) return;
                 async markCorrupt() {
                     this.activeMenu = null;
                     const paths = Array.from(this.selectedPaths), n = paths.length;
-                    if (!n || !confirm(`Mark ${n === 1 ? 'this video' : n + ' videos'} as corrupt?\n\n${n === 1 ? 'It' : 'They'} get the tag corrupt.file and are hidden from your libraries. `
-                                       + 'Settings > Maintenance > Corrupt files lists them, where you can unmark one.')) return;
+                    if (!n || !confirm(`Mark ${n === 1 ? 'this video' : 'these ' + n + ' videos'} as corrupt?\n\n`
+                                       + 'Corrupt files are hidden from the library.  Files marked corrupt can be reviewed in the Settings.')) return;
                     try { await this._corruptTag(paths, true); }
                     catch (e) { alert('Could not mark: ' + e.message); return; }
                     this.selectedPaths = new Set();
