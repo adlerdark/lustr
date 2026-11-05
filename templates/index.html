@@ -7650,6 +7650,9 @@ No metadata is changed.`)) return;
                     this.phLoadMin();
                 },
 
+                // Play History stepped behind a window its right-click menu opened: the pages under it (Settings, a cast page) step back further
+                phUnder() { return !!(this.modals.playHistory && this.ph.under); },
+
                 phClose() { this.ph.colMenu = null; this.ph.under = false; this.modals.playHistory = false; },
 
                 // the video right-click menu on a row (ticked Watch Log rows go together); Play History steps
@@ -16060,7 +16063,7 @@ No metadata is changed.`)) return;
 
                 <!-- Cast Bio Page - Now a fixed overlay -->
                 <div x-show="castBioMode" 
-                     class="fixed inset-0 z-50 bg-gray-900 overflow-y-auto"
+                     class="fixed inset-0 bg-gray-900 overflow-y-auto" :class="phUnder() ? 'z-[40]' : 'z-50'"
                      x-cloak
                      @click.self="closeCastBio()">
                     <div class="p-3 sm:p-6 w-full min-h-full">
@@ -17753,7 +17756,7 @@ No metadata is changed.`)) return;
         <!-- Settings: a full page with a sidebar (settingsLayout 'page'), or the older popup with tabs ('popup').
              One copy of the content: sPage(id) / sShow(tab, pages) pick what each layout shows. -->
         <div x-show="modals.settings" x-cloak class="fixed inset-0"
-             :class="settingsLayout === 'page' ? 'z-[70] bg-gray-900 flex' : 'z-[80] bg-black/80 flex items-center justify-center p-4'">
+             :class="settingsLayout === 'page' ? (phUnder() ? 'z-[40]' : 'z-[70]') + ' bg-gray-900 flex' : 'z-[80] bg-black/80 flex items-center justify-center p-4'">
             <div x-ref="settingsPanel" x-init="$nextTick(() => makeDraggable($el))" class="flex overflow-hidden"
                  :style="settingsLayout === 'page' ? '' : 'max-height: 80vh;'"
                  @click.outside="if (settingsLayout !== 'page') modals.settings = false"
@@ -20821,7 +20824,7 @@ No metadata is changed.`)) return;
         
         <!-- DUPLICATES SCANNER MODAL -->
         <!-- Play History (Settings -> General): every play, and plays / time per video (library_stats.py) -->
-        <div x-show="modals.playHistory" x-cloak class="fixed inset-0 bg-gray-900 flex flex-col text-sm" :class="ph.under ? 'z-[45]' : 'z-[80]'"
+        <div x-show="modals.playHistory" x-cloak class="fixed inset-0 bg-gray-900 flex flex-col text-sm" :class="phUnder() ? 'z-[45]' : 'z-[80]'"
              @click="ph.colMenu = null" @mousedown="ph.under = false">
             <div class="px-4 py-3 border-b border-gray-700 bg-gray-800 flex flex-wrap items-center gap-3 shrink-0">
                 <h3 class="font-bold text-xl">Play History</h3>
