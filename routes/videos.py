@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Tuple, Any
 from functools import lru_cache
 from helpers import check_auth, get_file_data, get_thumbnail_path
 from media_handler import MediaHandler
+import video_parts
 from search_parser import SearchParser
 from config import USE_SQLITE, LIST_FIELDS, HIDE_ZERO_LENGTH_DEFAULT
 
@@ -842,8 +843,8 @@ def _get_videos_sql_fast(
         if video_id:
             try:
                 versions = model.db.get_file_versions(video_id)
-                if versions and len(versions) > 1:
-                    item['versions'] = versions
+                video_parts.annotate(item, versions)               # 2+ versions, or a multi-part video's parts
+                if item.get('versions'):
                     item['all_codecs'] = model.db.get_all_codecs_for_video(video_id)
             except:
                 pass
@@ -873,8 +874,7 @@ def get_video(request: Request, path: str, model = Depends(get_model)):
     versions = model.db.get_file_versions(item['video_id']) if item.get('video_id') else []
     for v in versions or []:
         v['cache_id'] = MediaHandler._get_cache_key(v['path'], cache_id=v.get('cache_id'))   # NULL = legacy filename key
-    if versions and len(versions) > 1:
-        item['versions'] = versions
+    video_parts.annotate(item, versions)
     return item
 
 @router.get("/corrupt")
@@ -1270,9 +1270,8 @@ def get_videos(
                 # Get all versions for this video
                 try:
                     versions = model.db.get_file_versions(video_id)
-                    if versions and len(versions) > 1:
-                        item['versions'] = versions
-                        # Get all codecs for display
+                    video_parts.annotate(item, versions)           # 2+ versions, or a multi-part video's parts
+                    if item.get('versions'):
                         item['all_codecs'] = model.db.get_all_codecs_for_video(video_id)
                 except Exception as e:
                     # If version methods not available yet, silently skip
@@ -1865,9 +1864,17 @@ async def merge_videos(request: Request, model = Depends(get_model)):
         primary_path = data.get('primary_path')
         video_title = data.get('title')
         link_from = data.get('link_from')          # which video's scene link to keep when they differ ('' = none)
+        as_parts = bool(data.get('as_parts'))      # Join as parts: the files are cd1, cd2 ... of one video, in this order
         
         if len(paths) < 2:
             return JSONResponse({'error': 'Need at least 2 files to merge'}, status_code=400)
+        if len(set(paths)) != len(paths):
+            return JSONResponse({'error': 'A file is listed twice'}, status_code=400)
+        pconn = model.db.get_connection()
+        if any(video_parts.is_multipart(pconn, video_parts.video_of(pconn, p)) for p in paths):
+            if not as_parts:
+                return JSONResponse({'error': "One of these files is part of a multi-part video. Unjoin its parts first - "
+                                              "parts and alternate versions can't be mixed."}, status_code=400)
         
         # Get first file to determine library
         first_path = paths[0]
@@ -1877,6 +1884,8 @@ async def merge_videos(request: Request, model = Depends(get_model)):
         # Empty string should default to first filename
         if video_title and video_title.strip():
             filename_base = video_title.strip()
+        elif as_parts:
+            filename_base = video_parts.title_from(first_path)      # 'Movie cd1' -> 'Movie'
         else:
             filename_base = os.path.splitext(os.path.basename(first_path))[0]
         
@@ -1967,6 +1976,8 @@ async def merge_videos(request: Request, model = Depends(get_model)):
                 conn.execute('UPDATE videos SET favorite = 1 WHERE video_id = ?', (video_id,))
                 conn.commit()
         
+        if as_parts:                               # markers on cd2's own video: to their place on the joined timeline
+            video_parts.shift_markers_for_join(model.db.get_connection(), video_id, paths)
         _merge_move_rows(model.db.get_connection(), video_id, old_ids)
         
         # Add all paths as versions (this will remove them from old videos)
@@ -2052,8 +2063,10 @@ async def merge_videos(request: Request, model = Depends(get_model)):
             
             conn.commit()
         
-        # Set primary version
-        if primary_path:
+        # Set primary version (parts: part 1)
+        if as_parts:
+            video_parts.set_order(model.db.get_connection(), video_id, paths)
+        elif primary_path:
             model.db.set_preferred_version(video_id, primary_path)
         else:
             model.db.auto_set_preferred(video_id)
@@ -2071,6 +2084,25 @@ async def merge_videos(request: Request, model = Depends(get_model)):
         import traceback
         traceback.print_exc()
         return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@router.post("/videos/parts/order")
+async def order_parts(request: Request, model = Depends(get_model)):
+    """A multi-part video's parts in a new order: {video_id, paths} (every part, first = part 1)."""
+    from fastapi.responses import JSONResponse
+    check_auth(request)
+    data = await request.json()
+    conn = model.db.get_connection()
+    video_id, paths = data.get('video_id'), data.get('paths') or []
+    if not video_parts.is_multipart(conn, video_id):
+        return JSONResponse({'error': 'Not a multi-part video'}, status_code=400)
+    if set(paths) != {p['path'] for p in video_parts.parts(conn, video_id)}:
+        return JSONResponse({'error': 'List every part once'}, status_code=400)
+    try:
+        video_parts.set_order(conn, video_id, paths)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    return JSONResponse({'success': True})
 
 
 @router.post("/videos/split")
@@ -2095,6 +2127,11 @@ async def split_video(request: Request, model = Depends(get_model)):
             return JSONResponse({'error': 'Video only has one version, cannot split'}, status_code=400)
         
         versions = video['versions'].copy()
+        only = data.get('paths')                   # split just these files out (a part of a multi-part video); the rest stay
+        if only:
+            versions = [v for v in versions if v['path'] in set(only)]
+            if not versions or len(versions) >= len(video['versions']):
+                return JSONResponse({'error': 'Pick some, but not all, of the files to split out'}, status_code=400)
         
         # CRITICAL: Get metadata from the original video BEFORE deleting it
         original_metadata = {}
@@ -2224,6 +2261,8 @@ async def split_video(request: Request, model = Depends(get_model)):
                         )
                 
                 conn.commit()
+        if only:                                   # what's left: parts 1..n again (one file left -> a normal video)
+            video_parts.renumber(model.db.get_connection(), video_id)
         _relink_plays(model)
         
         return JSONResponse({
@@ -2623,6 +2662,21 @@ async def ignore_file_change(request: Request, model = Depends(get_model)):
     return {"success": True}
 
 
+@router.post("/file-changes/backup")
+async def file_changes_backup(request: Request, model = Depends(get_model)):
+    """File Changes Review, before acting on many rows at once: copy the database first.
+    {count, action} -> {success, backup}; on failure the page doesn't go on."""
+    from fastapi.responses import JSONResponse
+    check_auth(request)
+    data = await request.json()
+    import db_maintenance as dm
+    try:
+        name = dm.safety_backup(model.db.get_connection(), f"file-changes {data.get('action') or ''} {int(data.get('count') or 0)}")
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': f'Could not back up the database: {e}'}, status_code=500)
+    return {'success': True, 'backup': name}
+
+
 @router.post("/file-changes/delete")
 async def delete_old_file(request: Request, model = Depends(get_model)):
     """Permanently delete metadata for a deleted file."""
@@ -2642,9 +2696,27 @@ async def delete_old_file(request: Request, model = Depends(get_model)):
     if change:
         change_dict = dict(change)
         video_id = change_dict['video_id']
+        path = change_dict.get('filepath')
+        
+        if video_id and path:
+            # Only the missing file goes. The video's other files (e.g. the hevc copy that replaced it) stay,
+            # and so does the video - unless this was its last file.
+            cursor.execute('DELETE FROM file_versions WHERE path = ? AND video_id = ?', (path, video_id))
+            conn.commit()
+            others = cursor.execute('SELECT COUNT(*) FROM file_versions WHERE video_id = ? AND deleted_at IS NULL',
+                                    (video_id,)).fetchone()[0]
+            if others:
+                model.db.auto_set_preferred(video_id)
+                video_parts.renumber(conn, video_id)          # a part that left: parts 1..n again
+                video_id = None                               # keep the video
+            elif cursor.execute('SELECT COUNT(*) FROM file_versions WHERE video_id = ?', (video_id,)).fetchone()[0]:
+                video_id = None                               # its other files are only missing for now: keep it
+        elif video_id and cursor.execute('SELECT COUNT(*) FROM file_versions WHERE video_id = ? AND deleted_at IS NULL',
+                                         (video_id,)).fetchone()[0]:
+            video_id = None                                   # no file named, and the video still has files: keep it
         
         if video_id:
-            # Delete the video and all its data
+            # The video's last file is gone: delete the video and all its data
             _snapshot_deleted(conn, video_id)
             cursor.execute('DELETE FROM videos WHERE video_id = ?', (video_id,))
             cursor.execute('DELETE FROM file_versions WHERE video_id = ?', (video_id,))

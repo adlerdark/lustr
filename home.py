@@ -113,6 +113,8 @@ def card(model, path, username=None, watch_history=None, extra=None):
             item['watch_duration'] = pr.get('duration', 0)
     if extra:
         item.update(extra)
+    import video_parts
+    video_parts.annotate_from_db(model.db.get_connection(), item)     # a multi-part video: its parts, total length
     return item
 
 

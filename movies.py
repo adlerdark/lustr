@@ -1600,9 +1600,8 @@ def detail(model, conn, mid, username=None, watch_history=None):
     d['libraries'] = sorted({r[7] for r in rows if r[7]})
     for i in items:                                    # the '2×' versions badge, as in the Library grid
         try:
-            vs = model.db.get_file_versions(i['video_id'])
-            if vs and len(vs) > 1:
-                i['versions'] = vs
+            import video_parts
+            video_parts.annotate(i, model.db.get_file_versions(i['video_id']))
         except Exception:
             pass
     d['tags'] = movie_tags(conn, mid)

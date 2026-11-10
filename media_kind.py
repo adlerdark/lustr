@@ -86,6 +86,9 @@ def to_images(model, paths):
     import images
     conn = model.db.get_connection()
     images.ensure_schema(conn)
+    import db_maintenance as dm
+    if sum(1 for p in paths if conn.execute('SELECT 1 FROM file_versions WHERE path = ?', (p,)).fetchone()) >= dm.BULK:
+        dm.safety_backup(conn, 'moving videos to images')       # their video metadata is removed below
     by_lib = {}
     for p in paths:
         lib = model.db._get_library_for_path(p)

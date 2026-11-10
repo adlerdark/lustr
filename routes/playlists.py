@@ -369,6 +369,8 @@ def get_playlist_items(
                 'is_preferred': bool(v[6])
             })
         video_data['versions'] = versions
+        import video_parts
+        video_parts.annotate_from_db(conn, video_data)      # a multi-part video: its parts, total length
         
         items.append(video_data)
     

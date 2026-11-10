@@ -109,10 +109,11 @@
         #npStripView .np-strip-mk { position: absolute; top: 2px; height: 18px; max-width: 160px; padding: 0 6px; border-radius: 3px;
                                     font: 600 11px/18px sans-serif; color: #111; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
         #npStripView .np-playhead { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; background: #ef4444; pointer-events: none; z-index: 2; }
-        #npStage .np-thumb { position: absolute; bottom: 2.6em; display: none; pointer-events: none; z-index: 5;
+        /* 25: above the markers panel (z-20), below the marker form (z-30) */
+        #npStage .np-thumb { position: absolute; bottom: 2.6em; display: none; pointer-events: none; z-index: 25;
                              background-repeat: no-repeat; border: 1px solid rgba(255,255,255,.35); border-radius: 3px;
                              box-shadow: 0 2px 10px rgba(0,0,0,.7); }
-        #npStage .np-thumb-note { position: absolute; bottom: 2.6em; display: none; pointer-events: none; z-index: 5; white-space: nowrap;
+        #npStage .np-thumb-note { position: absolute; bottom: 2.6em; display: none; pointer-events: none; z-index: 25; white-space: nowrap;
                                   font-size: 11px; background: rgba(17,24,39,.9); color: #d1d5db; padding: 2px 6px; border-radius: 3px; }
         #npStage .vjs-np-fit .vjs-icon-placeholder { font-size: 0.85em; font-weight: 600; line-height: 3em; }
 
@@ -579,6 +580,7 @@
                 castSplit: { open: false, picked: {}, move: {}, busy: false, error: '' },
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
+                joinParts: { open: false, paths: [], title: '', busy: false, error: '' },  // Join as parts (cd1, cd2 ...)
                 mainScrollX: 0,           // the main scroll area's sideways scroll (list view): the tab bar moves with it
                 jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1, tabsH: 0,   // tabsH: the sticky library tab bar's height   // # A-Z jump bar (Title / Cast / Filename sorts)
                 castPeek: { name: '', primary: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
@@ -1848,6 +1850,68 @@
                     this.activeMenu = null;
                 },
 
+                // ----- multi-part videos: Join as parts -----
+                openJoinParts() {
+                    if (this.selectedPaths.size < 2) return;
+                    const name = p => p.split('/').pop();
+                    const paths = Array.from(this.selectedPaths).sort((a, b) => name(a).localeCompare(name(b), undefined, { numeric: true, sensitivity: 'base' }));
+                    const stem = name(paths[0]).replace(/\.[^.]+$/, '');
+                    const title = stem.replace(/[\s._\-\[(]*(?:cd|disc|disk|part|pt)[\s._\-]*\d{1,2}[\])]?\s*$/i, '').replace(/^[\s._-]+|[\s._-]+$/g, '') || stem;
+                    Object.assign(this.joinParts, { open: true, paths, title, busy: false, error: '' });
+                    this.activeMenu = null;
+                },
+                joinPartsMove(i, d) {
+                    const a = this.joinParts.paths, j = i + d;
+                    if (j < 0 || j >= a.length) return;
+                    [a[i], a[j]] = [a[j], a[i]];
+                    this.joinParts.paths = [...a];
+                },
+                async joinPartsGo() {
+                    const J = this.joinParts;
+                    J.busy = true; J.error = '';
+                    try {
+                        const send = (extra = {}) => fetch('/api/videos/merge', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ paths: J.paths, title: J.title.trim() || null, as_parts: true, ...extra }) });
+                        let r = await send();
+                        if (r.status === 409) {                 // linked to different scenes: pick the link the joined video keeps
+                            const d = await r.json();
+                            const pick = await new Promise(resolve => Object.assign(this.mergeLinkPick, { open: true, links: d.links || [], resolve }));
+                            if (pick === null) { J.busy = false; return; }
+                            r = await send({ link_from: pick });
+                        }
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(d.error || 'Could not join the files');
+                        J.open = false;
+                        this.selectedPaths.clear();
+                        await this.loadMaleCast();
+                        await this.fetchVideos('none');
+                    } catch (e) { J.error = e.message; } finally { J.busy = false; }
+                },
+                async partsOrder(video, paths) {        // File Info: a new part order
+                    const r = await fetch('/api/videos/parts/order', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                       body: JSON.stringify({ video_id: video.video_id, paths }) });
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok) { alert(d.error || 'Could not reorder the parts'); return; }
+                    await this.partsRefresh(video, paths[0]);
+                },
+                async partsSplitOut(video, path) {       // File Info: this part becomes its own video again
+                    if (!confirm(`Split "${path.split('/').pop()}" out of this video? It becomes a video of its own.`)) return;
+                    const r = await fetch('/api/videos/split', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                 body: JSON.stringify({ video_id: video.video_id, paths: [path] }) });
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok) { alert(d.error || 'Could not split it out'); return; }
+                    await this.partsRefresh(video, video.parts.find(x => x.path !== path)?.path);
+                },
+                async partsRefresh(video, path) {
+                    await this.fetchVideos('none');
+                    if (this.infoVideo && this.infoVideo.video_id === video.video_id && path) {
+                        try {
+                            const r = await fetch('/api/video?path=' + encodeURIComponent(path));
+                            if (r.ok) this.infoVideo = Object.assign({}, this.infoVideo, await r.json());
+                        } catch (e) { /* keep what's shown */ }
+                    }
+                },
+
                 async splitVideo() {
                     if (this.selectedPaths.size !== 1) return;
                     
@@ -1855,6 +1919,17 @@
                     const video = this._videoByPath(path);
                     
                     if (!video || !video.video_id) return;
+                    if (video.parts && video.parts.length > 1) {           // multi-part video: unjoin into separate videos
+                        if (!confirm(`Unjoin these ${video.parts.length} parts into separate videos? Each keeps the tags and cast.`)) return;
+                        const r = await fetch('/api/videos/split', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                     body: JSON.stringify({ video_id: video.video_id }) });
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok) { alert('Failed to unjoin: ' + (d.error || 'unknown error')); return; }
+                        this.selectedPaths.clear();
+                        this.activeMenu = null;
+                        await this.fetchVideos('none');
+                        return;
+                    }
                     
                     const versionCount = video.versions ? video.versions.length : 1;
                     
@@ -3433,7 +3508,7 @@
                         const p = this.npPlayer();
                         if (!p || !this.np.video) return;
                         p.pause();
-                        path = this.np.video.path; at = p.currentTime() || 0;
+                        ({ path, at } = this.npToPart(p.currentTime() || 0));       // multi-part: the part on screen
                         this.np.error = ''; this.np.msg = 'Making the thumbnail…';
                     } else {
                         if (!this.activeVideo || !this.$refs.player) return;
@@ -7615,15 +7690,25 @@ No metadata is changed.`)) return;
 
                 // ----- Play History (Settings -> General; library_stats.py) -----
                 // classic player: resume point + this play's log entry (final = closing / switching videos)
+                classicPart(k) {                    // multi-part video: play part k from its start
+                    const P = this.activeVideo && this.activeVideo._part;
+                    if (P) this.playVideo(P.whole, P.offs[k] + 0.001);
+                },
                 classicSaveProgress(final = false) {
-                    const v = this.activeVideo;
+                    let v = this.activeVideo;
                     if (!v) return;
-                    const at = this.isHlsMode ? (this.hlsOffset + this.playerCurrentTime) : this.playerCurrentTime;
+                    let at = this.isHlsMode ? (this.hlsOffset + this.playerCurrentTime) : this.playerCurrentTime;
+                    let duration = this.playerDuration;
+                    if (v._part) {                     // multi-part: saved on part 1, as whole-video time
+                        at = (at || 0) + v._part.offs[v._part.k];
+                        duration = v._part.total || duration;
+                        v = v._part.whole;
+                    }
                     const log = PlayTracks.classic.fields();
                     const early = final && !(at >= 5);                 // closing right away: don't wipe the resume point
                     if (early && !log.played) return;
                     fetch('/api/watch/progress', { method: 'POST', keepalive: final, headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: v.path, current_time: at || 0, duration: this.playerDuration, ...log, log_only: early }) }).catch(() => {});
+                        body: JSON.stringify({ path: v.path, current_time: at || 0, duration, ...log, log_only: early }) }).catch(() => {});
                 },
 
                 fmtWatched(secs) {
@@ -7983,6 +8068,7 @@ No metadata is changed.`)) return;
                     
                     // Versions column
                     if (col === 'Versions') {
+                        if (video.parts && video.parts.length > 1) return video.parts.length + ' parts';
                         if (video.versions && video.versions.length > 1) {
                             return video.versions.length + '×';
                         }
@@ -8317,7 +8403,23 @@ No metadata is changed.`)) return;
                               : type === 'duplicate_pair' ? `Delete the first copy's video and metadata for ${n} duplicate${s}? This can't be undone.`
                               : `Delete the metadata of ${n} deleted file${s} now? This can't be undone.`,
                     }[action];
-                    if (ask && (n > 1 || action === 'delete') && !confirm(ask)) return;
+                    const bulk = n >= 10 && (action === 'delete' || action === 'merge');
+                    if (ask && (n > 1 || action === 'delete') && !confirm(ask + (bulk ? '\n\nThe database is backed up first.' : ''))) return;
+                    let backup = '';
+                    if (bulk) {                                       // many at once: copy the database first
+                        this.fileChangesBusy = 'Backing up the database…';
+                        try {
+                            const r = await fetch('/api/file-changes/backup', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                                body: JSON.stringify({ action, count: n }) });
+                            const d = await r.json().catch(() => ({}));
+                            if (!r.ok || !d.success) throw new Error(d.error || `Server error ${r.status}`);
+                            backup = d.backup;
+                        } catch (e) {
+                            this.fileChangesBusy = '';
+                            alert(`Nothing was changed: the database backup failed first.\n\n${e.message}`);
+                            return;
+                        }
+                    }
                     this.fileChangesBusy = `0 / ${n}`;
                     const failed = [];
                     for (const [i, c] of rows.entries()) {
@@ -8331,7 +8433,9 @@ No metadata is changed.`)) return;
                         this.fileChangesBusy = `${i + 1} / ${n}`;
                     }
                     this.fileChangesBusy = '';
-                    if (failed.length) alert(`${failed.length} of ${n} failed:\n\n` + failed.slice(0, 15).join('\n'));
+                    if (failed.length) alert(`${failed.length} of ${n} failed:\n\n` + failed.slice(0, 15).join('\n') +
+                                             (backup ? `\n\nThe database was backed up first: data/${backup}` : ''));
+
                     await this.updateLibraryAlertCounts();
                     if (action !== 'separate') await this.fetchVideos('none');
                     if (action === 'separate' && type === 'replacement_pair') await this.loadFileChanges(this.fileChangesLibrary);   // the old entries now show under Deleted files
@@ -11663,7 +11767,8 @@ No metadata is changed.`)) return;
                     const pref = localStorage.getItem('npSourcePref');             // your last manual choice
                     const pi = d.sources.findIndex(s => s.res === pref);
                     if (pi >= 0 && (d.sources[pi].kind !== 'direct' || d.sources[pi].likely)) idx = pi;
-                    Object.assign(np, { open: true, video, data: d, srcIdx: idx, manual: false, failed: [], error: '', msg: '',
+                    clearTimeout(np.partTimer);
+                    Object.assign(np, { open: true, video, data: d, srcIdx: idx, manual: false, failed: [], error: '', msg: '', part: 0,
                                         playlistId: ctx.playlistId || null, loopA: null, loopB: null, chip: '', lastTime: 0, markers: [],
                                         touch: window.matchMedia('(pointer: coarse)').matches,
                                         prev: null, next: null, autoNext: localStorage.getItem('npAutoNext') !== '0',
@@ -11677,7 +11782,7 @@ No metadata is changed.`)) return;
                     const sane = s => s >= 5 && (!dur || s < dur - 5);
                     let start = Number(startAt) || 0;
                     if (sane(start)) this.npChip(`Resumed at ${this.formatTime(start)}`, 0, 'restart');
-                    else { start = 0; this.npOfferResume(video.path, sane); }
+                    else { start = 0; this.npOfferResume(d.path || video.path, sane); }        // multi-part: kept on part 1
                     this.npLoad(idx, start, true);
                     if (d.chapters_added) this.npChip(`Added ${d.chapters_added} marker${d.chapters_added === 1 ? '' : 's'} from the file's chapters`);
                     this.npCaptions();
@@ -11694,6 +11799,24 @@ No metadata is changed.`)) return;
                 npRegister() {
                     if (window.lustrNP.registered) return;
                     window.lustrNP.registered = true;
+                    // multi-part videos: the player sees one timeline; the file playing is one part, `offset` seconds in
+                    videojs.use('*', () => {
+                        const joined = () => { const a = window.lustrNP.app; return a && a.np.open && a.npParts() ? a : null; };
+                        const ranges = (videojs.time && videojs.time.createTimeRanges) || videojs.createTimeRanges;
+                        return {
+                            setSource(src, next) { next(null, src); },
+                            currentTime(t) { const a = joined(); return a ? a.npPartOffset() + t : t; },
+                            setCurrentTime(t) { const a = joined(); return a ? a.npSeekJoined(t) : t; },
+                            duration(d) { const a = joined(); return a ? a.np.data.duration : d; },
+                            buffered(b) {
+                                const a = joined();
+                                if (!a || !b || !b.length) return b;
+                                const off = a.npPartOffset(), r = [];
+                                for (let i = 0; i < b.length; i++) r.push([b.start(i) + off, b.end(i) + off]);
+                                return ranges(r);
+                            },
+                        };
+                    });
                     const MenuButton = videojs.getComponent('MenuButton'), MenuItem = videojs.getComponent('MenuItem');
                     class NpQualityItem extends MenuItem {
                         constructor(player, options) {
@@ -11842,6 +11965,7 @@ No metadata is changed.`)) return;
                     p.on('timeupdate', () => { this.npStripFollow(); this.npMediaPosition(); });
                     p.on('pause', () => { this.npSaveProgress(); this.npWake(false); TimerManager.videoPlaying(false); });
                     p.on('ended', () => {
+                        if (this.npNextPart()) return;                                    // multi-part: the next file
                         this.npSaveProgress(true);
                         this.npWake(false);
                         TimerManager.videoPlaying(false);
@@ -12300,14 +12424,58 @@ No metadata is changed.`)) return;
                     if (b) { b.update(); b.npLabel(); }
                 },
 
+                // ----- multi-part videos (cd1, cd2 ...): one timeline, the parts' files played in turn -----
+                npParts() { const d = this.np.data; return (d && d.parts && d.parts.length > 1) ? d.parts : null; },
+                npPartOffset() { const ps = this.npParts(); return ps ? (ps[this.np.part] || ps[0]).offset : 0; },
+                npPartAt(t) {                                // the part that whole-video time t falls in
+                    const ps = this.npParts();
+                    if (!ps) return 0;
+                    let k = 0;
+                    while (k < ps.length - 1 && t >= ps[k + 1].offset) k++;
+                    return k;
+                },
+                npPartSource(idx, k) {                       // quality idx (from the common list) in part k
+                    const s = this.np.data.sources[idx], part = this.np.data.parts[k];
+                    return (part && part.sources.find(x => x.res === s.res)) || s;
+                },
+                npToPart(t) {                                // whole-video time -> {path, at (in that file), end of that file}
+                    const ps = this.npParts();
+                    if (!ps) return { path: this.np.data?.path || this.np.video?.path, at: t, end: this.np.data?.duration || 0, k: 0 };
+                    const k = this.npPartAt(t), part = ps[k];
+                    return { path: part.path, at: Math.max(0, t - part.offset), end: part.duration, k };
+                },
+                // a seek (the seek bar, a marker, the keys): inside this part -> the file's own time; into another part ->
+                // load that part (a drag across the seek bar asks many times: only where it stops counts)
+                npSeekJoined(t) {
+                    const np = this.np, ps = this.npParts(), p = this.npPlayer();
+                    t = Math.max(0, Math.min(t, np.data.duration - 0.1));
+                    const k = this.npPartAt(t);
+                    clearTimeout(np.partTimer);
+                    if (k === np.part) return t - ps[k].offset;
+                    const playing = p && !p.paused();
+                    np.partTimer = setTimeout(() => this.npLoad(np.srcIdx, t, playing), 200);
+                    np.lastTime = t;
+                    try { return p.tech(true).currentTime(); } catch (e) { return 0; }
+                },
+                npNextPart() {                               // a part ended: on to the next one -> true
+                    const ps = this.npParts(), np = this.np;
+                    if (!ps || np.part >= ps.length - 1) return false;
+                    this.npLoad(np.srcIdx, ps[np.part + 1].offset, true);
+                    return true;
+                },
+
                 npLoad(idx, time = 0, play = true) {
-                    const p = this.npPlayer(), np = this.np, s = np.data && np.data.sources[idx];
+                    const p = this.npPlayer(), np = this.np;
+                    let s = np.data && np.data.sources[idx];
                     if (!p || !s) return;
                     np.srcIdx = idx;
                     np.error = '';
+                    if (this.npParts()) { np.part = this.npPartAt(time); s = this.npPartSource(idx, np.part); }
+                    const rate = p.playbackRate();
                     p.src({ src: s.src, type: s.type });
                     p.one('loadedmetadata', () => {
-                        if (time > 0) p.currentTime(time);
+                        if (time > 0) p.currentTime(time);       // multi-part: whole-video time, the middleware maps it
+                        if (rate && rate !== 1) p.playbackRate(rate);
                         if (play) { const r = p.play(); if (r && r.catch) r.catch(() => {}); }
                     });
                     this.npRefreshQuality();
@@ -12356,7 +12524,7 @@ No metadata is changed.`)) return;
                     const early = !(at >= 5);                          // don't wipe a resume point by opening and closing
                     if (!dur || (early && !log.played)) return;
                     fetch('/api/watch/progress', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: np.video.path, current_time: at || 0, duration: dur, ...log, log_only: early }) }).catch(() => {});
+                        body: JSON.stringify({ path: (np.data && np.data.path) || np.video.path, current_time: at || 0, duration: dur, ...log, log_only: early }) }).catch(() => {});
                 },
 
                 async npOfferResume(path, sane) {
@@ -12558,6 +12726,8 @@ No metadata is changed.`)) return;
                     const C = this.clipMk, len = C.end - C.start;
                     if (len <= 0) return 'The end is before the start.';
                     if (len > 60) return 'Clips can be at most 60 seconds.';
+                    if (this.np.open && this.npParts() && this.npPartAt(C.start) !== this.npPartAt(C.end - 0.01))
+                        return 'This crosses the join between two parts - the clip stops at the end of the first.';
                     if (C.format === 'gif' && (len > 15 || C.size > 640)) {
                         const mb = Math.round(len * (C.fps || 15) * (C.size || 480) * (C.size || 480) * 1.6 / 8 / 1e6 * 0.6);
                         return `A GIF this long or large gets big (roughly ${mb} MB) - WebM looks the same at a fraction of the size.`;
@@ -12569,7 +12739,9 @@ No metadata is changed.`)) return;
                     C.busy = true;
                     C.error = '';
                     try {
-                        await this.extDbPostAny('/api/clips', { path: C.path, start: C.start, end: C.end, format: C.format, shape: C.shape,
+                        const a = this.np.open ? this.npToPart(C.start) : { path: C.path, at: C.start, end: Infinity },
+                              off = C.start - a.at;                   // multi-part: the clip is cut from the part it starts in
+                        await this.extDbPostAny('/api/clips', { path: a.path, start: a.at, end: Math.min(C.end - off, a.end), format: C.format, shape: C.shape,
                                                                  size: C.size, fps: C.fps, cx: C.cx, cy: C.cy, audio: C.audio,
                                                                  quality: C.quality, title: C.title });
                         C.open = false;
@@ -12831,6 +13003,17 @@ No metadata is changed.`)) return;
 
                 async playVideo(video, startAt = null) { 
                     if (video.type === 'folder') return;
+                    if (video.parts && video.parts.length > 1 && !video._part) {    // multi-part: play the part startAt falls in
+                        const ps = video.parts;
+                        let off = 0;
+                        const offs = ps.map(x => { const o = off; off += Number(x.length_seconds) || 0; return o; });
+                        const t = Number(startAt) || 0;
+                        let k = 0;
+                        while (k < ps.length - 1 && offs[k + 1] && t >= offs[k + 1]) k++;
+                        return this.playVideo({ ...video, path: ps[k].path, filename: ps[k].filename, length: ps[k].length,
+                                                codec: ps[k].codec || video.codec, resolution: ps[k].resolution || video.resolution,
+                                                _part: { k, offs, total: off, whole: video } }, t - offs[k]);
+                    }
                     
                     // Stop thumbnail animations
                     this.stopHover();
@@ -12971,6 +13154,8 @@ No metadata is changed.`)) return;
 
                     videoEl.onended = () => {
                         TimerManager.videoPlaying(false);
+                        const P = this.activeVideo && this.activeVideo._part;     // multi-part: on to the next part
+                        if (P && P.k < P.offs.length - 1) this.classicPart(P.k + 1);
                     };
                 },
 
@@ -15413,6 +15598,8 @@ No metadata is changed.`)) return;
                                             <span x-show="video.favorite" class="absolute top-1 right-1 text-yellow-400 text-xl drop-shadow pointer-events-none" title="Favorite">★</span>
                                             <span x-show="video.versions && video.versions.length > 1" class="absolute top-7 left-1 bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none"
                                                   x-text="(video.versions?.length || 0) + '×'" title="Merged versions"></span>
+                                            <span x-show="video.parts?.length > 1" class="absolute top-7 left-1 bg-teal-700 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none"
+                                                  x-text="video.parts?.length + ' parts'" title="One video in several files"></span>
                                             <div x-show="video.watch_duration > 0 && video.watch_progress > 0" class="absolute bottom-0 left-0 right-0 h-1 bg-gray-700">
                                                 <div class="h-full bg-blue-500" :style="`width: ${video.watch_duration > 0 ? Math.min(100, video.watch_progress / video.watch_duration * 100) : 0}%`"></div>
                                             </div>
@@ -15785,6 +15972,9 @@ No metadata is changed.`)) return;
                                         :class="hasCC(video) ? 'left-8' : 'left-1'" title="Has a photo album - open it">📷</button>
                                 
                                 <!-- Version badge -->
+                                <div x-show="video.parts?.length > 1" title="One video in several files"
+                                     class="absolute top-1 left-1 bg-teal-700 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none z-10"
+                                     x-text="video.parts?.length + ' parts'"></div>
                                 <div x-show="video.versions && video.versions.length > 1" 
                                      class="absolute top-1 left-1 bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none flex items-center gap-0.5 z-10">
                                     <svg class="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
@@ -16023,6 +16213,9 @@ No metadata is changed.`)) return;
                                             :class="hasCC(video) ? 'left-8' : 'left-1'" title="Has a photo album - open it">📷</button>
                                     
                                     <!-- Version badge -->
+                                    <div x-show="video.parts?.length > 1" title="One video in several files"
+                                         class="absolute top-1 left-1 bg-teal-700 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none z-10"
+                                         x-text="video.parts?.length + ' parts'"></div>
                                     <div x-show="video.versions && video.versions.length > 1" 
                                          class="absolute top-1 left-1 bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none flex items-center gap-0.5 z-10">
                                         <svg class="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
@@ -16369,6 +16562,9 @@ No metadata is changed.`)) return;
                                         </div>
                                         
                                         <!-- Version Badge -->
+                                        <div x-show="video.parts?.length > 1" title="One video in several files"
+                                             class="absolute top-1 left-1 bg-teal-700 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none z-10"
+                                             x-text="video.parts?.length + ' parts'"></div>
                                         <div x-show="video.versions && video.versions.length > 1" 
                                              class="absolute top-1 left-1 bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded flex items-center gap-1 z-10">
                                             <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
@@ -16613,16 +16809,24 @@ No metadata is changed.`)) return;
                 </svg>
                 Merge into Single Video
             </button>
+            <button 
+                x-show="selectedPaths.size >= 2"
+                @click="openJoinParts()"
+                class="w-full text-left px-4 py-2 hover:bg-blue-600 text-purple-400 text-sm flex items-center gap-2"
+                title="The files are pieces of one video (cd1, cd2 ...): one card, played back to back on one seek bar">
+                <span class="w-4 text-center">⛓</span>
+                Join as Parts (cd1, cd2…)
+            </button>
 
             <!-- Split option (when 1 file with multiple versions selected) -->
-            <template x-if="selectedPaths.size === 1 && (() => { const video = _videoByPath(Array.from(selectedPaths)[0]); return video && video.versions && video.versions.length > 1; })()">
+            <template x-if="selectedPaths.size === 1 && (() => { const video = _videoByPath(Array.from(selectedPaths)[0]); return video && ((video.versions && video.versions.length > 1) || (video.parts && video.parts.length > 1)); })()">
                 <button 
                     @click="splitVideo()"
                     class="w-full text-left px-4 py-2 hover:bg-blue-600 text-orange-400 text-sm flex items-center gap-2">
                     <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V8a2 2 0 00-2-2h-5L9 4H4zm7 5a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V9z" clip-rule="evenodd"/>
                     </svg>
-                    Split into Separate Videos
+                    <span x-text="_videoByPath(Array.from(selectedPaths)[0])?.parts?.length ? 'Unjoin Parts' : 'Split into Separate Videos'"></span>
                 </button>
             </template>
             
@@ -17703,14 +17907,36 @@ No metadata is changed.`)) return;
                     <!-- File versions section -->
                     <div>
                         <h4 class="text-sm font-semibold text-gray-300 mb-3">
-                            File Versions 
+                            <span x-text="infoVideo?.parts?.length ? 'Parts' : 'File Versions'"></span>
+                            <span x-show="infoVideo?.parts?.length" class="text-xs text-gray-400"
+                                  x-text="'(' + (infoVideo?.parts?.length || 0) + ' files, ' + (infoVideo?.length || '?') + ' in all - played as one video)'"></span>
                             <span x-show="infoVideo?.versions && infoVideo.versions.length > 1" class="text-xs text-gray-400">
                                 (<span x-text="infoVideo?.versions?.length || 0"></span> versions)
                             </span>
                         </h4>
                         
                         <!-- Single version display -->
-                        <div x-show="!infoVideo?.versions || infoVideo.versions.length <= 1" class="bg-gray-900 p-4 rounded space-y-3">
+                        <!-- Multi-part video: its files in order -->
+                        <div x-show="infoVideo?.parts?.length" class="space-y-2">
+                            <template x-for="(pt, i) in (infoVideo?.parts || [])" :key="pt.path">
+                                <div class="bg-gray-900 p-3 rounded flex items-start gap-3">
+                                    <span class="text-xs font-semibold text-blue-400 shrink-0 pt-0.5" x-text="'Part ' + (i + 1)"></span>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="font-mono text-xs break-all select-all" x-text="pt.path"></div>
+                                        <div class="text-xs text-gray-400 mt-1" x-text="[pt.length, pt.resolution, pt.codec, pt.file_size].filter(Boolean).join(' · ')"></div>
+                                    </div>
+                                    <div class="flex items-center gap-1 shrink-0">
+                                        <button @click="const a = infoVideo.parts.map(x => x.path); [a[i - 1], a[i]] = [a[i], a[i - 1]]; partsOrder(infoVideo, a)"
+                                                :disabled="i === 0" class="text-xs px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30" title="Earlier">▲</button>
+                                        <button @click="const a = infoVideo.parts.map(x => x.path); [a[i + 1], a[i]] = [a[i], a[i + 1]]; partsOrder(infoVideo, a)"
+                                                :disabled="i === infoVideo.parts.length - 1" class="text-xs px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30" title="Later">▼</button>
+                                        <button @click="partsSplitOut(infoVideo, pt.path)" class="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-orange-300"
+                                                title="Make this file a video of its own again">Split out</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                        <div x-show="!infoVideo?.parts?.length && (!infoVideo?.versions || infoVideo.versions.length <= 1)" class="bg-gray-900 p-4 rounded space-y-3">
                             <div><span class="text-gray-400 block text-xs uppercase">Filename</span><span x-text="infoVideo?.filename" class="font-mono text-xs"></span></div>
                             <div><span class="text-gray-400 block text-xs uppercase">Full Path</span><span x-text="infoVideo?.path" class="font-mono bg-black px-2 py-1 rounded block mt-1 break-all select-all text-xs"></span></div>
                             <div x-show="infoVideo?.cache_id"><span class="text-gray-400 block text-xs uppercase">Cache ID</span><span x-text="infoVideo?.cache_id" class="font-mono bg-black px-2 py-1 rounded block mt-1 break-all select-all text-xs"></span></div>
@@ -20039,6 +20265,34 @@ No metadata is changed.`)) return;
             </div>
         </div>
 
+        <!-- Join as parts -->
+        <div x-show="joinParts.open" x-cloak class="fixed inset-0 z-[190] bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg w-full max-w-xl p-5 shadow-2xl" @keydown.escape.window="joinParts.open && !mergeLinkPick.open && (joinParts.open = false)">
+                <h2 class="text-lg font-bold mb-1">Join as parts</h2>
+                <p class="text-xs text-gray-400 mb-3">One video in several files: one card, played in this order on one seek bar.
+                    Tags, cast and markers are combined. Unjoin any time from the right-click menu, or split a part out in File Info.</p>
+                <label class="block text-xs text-gray-400 mb-1">Title</label>
+                <input type="text" x-model="joinParts.title" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm mb-3">
+                <div class="space-y-1 max-h-72 overflow-y-auto">
+                    <template x-for="(p, i) in joinParts.paths" :key="p">
+                        <div class="flex items-center gap-2 bg-gray-900 rounded px-2 py-1.5 text-sm">
+                            <span class="text-xs text-blue-400 w-12 shrink-0" x-text="'Part ' + (i + 1)"></span>
+                            <span class="flex-1 truncate font-mono text-xs" :title="p" x-text="p.split('/').pop()"></span>
+                            <span class="text-xs text-gray-500" x-text="_videoByPath(p)?.length || ''"></span>
+                            <button @click="joinPartsMove(i, -1)" :disabled="i === 0" class="text-xs px-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30">▲</button>
+                            <button @click="joinPartsMove(i, 1)" :disabled="i === joinParts.paths.length - 1" class="text-xs px-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30">▼</button>
+                        </div>
+                    </template>
+                </div>
+                <p x-show="joinParts.error" class="text-xs text-red-400 mt-2" x-text="joinParts.error"></p>
+                <div class="flex justify-end gap-2 mt-4">
+                    <button @click="joinParts.open = false" class="px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600">Cancel</button>
+                    <button @click="joinPartsGo()" :disabled="!!joinParts.busy" class="px-3 py-1.5 rounded text-sm bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-60"
+                            x-text="joinParts.busy ? 'Joining…' : 'Join ' + joinParts.paths.length + ' parts'"></button>
+                </div>
+            </div>
+        </div>
+
         <!-- Choose Main Thumbnail -->
         <div x-show="thumbPick.open" x-cloak class="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
             <div x-init="$nextTick(() => { makeDraggable($el); metaSizeInit($el, 'thumbPickSize'); })"
@@ -21074,6 +21328,9 @@ No metadata is changed.`)) return;
             </select>
             <span x-show="!np.touch" class="hidden sm:inline text-xs px-2 py-0.5 rounded" :class="npSource()?.kind === 'direct' ? 'bg-green-800 text-green-100' : 'bg-blue-800 text-blue-100'"
                   :title="npSource()?.kind === 'hls' ? 'Transcoded on the server' : 'The file as it is'" x-text="npSource()?.label || ''"></span>
+            <span x-show="np.data?.parts?.length > 1" class="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-200"
+                  :title="(np.data?.parts || []).map(x => 'Part ' + x.part + ': ' + x.path.split('/').pop()).join('\n')"
+                  x-text="'Part ' + ((np.part || 0) + 1) + ' / ' + (np.data?.parts?.length || 0)"></span>
             <template x-if="np.playlistId">
                 <div class="flex items-center gap-1">
                     <button @click="npGo('prev')" :disabled="!np.prev" class="px-2 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-40" title="Previous in the playlist (P)">◀ Prev</button>
@@ -21322,6 +21579,17 @@ No metadata is changed.`)) return;
                 -->
                 <div class="bg-gray-900 px-4 pt-2 pb-3 shrink-0 border-t border-gray-700"
                      style="min-height: 64px;">
+                    <!-- multi-part video: which part, and the others -->
+                    <div x-show="activeVideo?._part" class="flex items-center gap-1 text-xs text-gray-400 mb-1">
+                        <span>Part</span>
+                        <template x-for="(o, i) in (activeVideo?._part?.offs || [])" :key="'cp' + i">
+                            <button @click="classicPart(i)" class="px-1.5 rounded"
+                                    :class="i === activeVideo?._part?.k ? 'bg-blue-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'"
+                                    :title="activeVideo?._part?.whole?.parts?.[i]?.filename" x-text="i + 1"></button>
+                        </template>
+                        <button x-show="activeVideo?._part && activeVideo._part.k < activeVideo._part.offs.length - 1"
+                                @click="classicPart(activeVideo._part.k + 1)" class="ml-1 hover:text-white" title="Next part">▸</button>
+                    </div>
                     <!-- Time display -->
                     <div class="flex justify-between text-xs text-gray-300 font-mono mb-1.5">
                         <span x-text="displayTime"></span>

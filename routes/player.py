@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 import sprites
 import transcoder
+import video_parts
 from media_handler import MediaHandler
 
 router = APIRouter(prefix='/api/player', tags=['player'])
@@ -151,6 +152,61 @@ def stream_list(conn, path, settings=None):
             'start_source': pick_source(sources, s['default_source']), 'sprite': sprite_info(cache_id)}
 
 
+def joined_stream_list(conn, path, settings=None):
+    """stream_list() for a multi-part video: every part's sources, where it starts, and the qualities they all have.
+    -> None for a normal file."""
+    ps = video_parts.parts(conn, video_parts.video_of(conn, path))
+    if not ps:
+        return None
+    s = settings or get_settings(conn)
+    lists = [stream_list(conn, p['path'], s) for p in ps]
+    parts, offset = [], 0.0
+    for p, d in zip(ps, lists):
+        parts.append({'path': p['path'], 'part': p['part'], 'offset': offset, 'duration': d['duration'],
+                      'cache_id': d['cache_id'], 'width': d['width'], 'height': d['height'], 'sources': d['sources']})
+        offset += d['duration']
+    first = lists[0]
+    common = [x for x in first['sources'] if all(any(y['res'] == x['res'] for y in d['sources']) for d in lists[1:])]
+    for x in common:                       # Direct is "likely" only when every part's file plays as it is
+        x['likely'] = all(y['likely'] for d in lists for y in d['sources'] if y['res'] == x['res'])
+    return {**first, 'path': ps[0]['path'], 'duration': offset, 'parts': parts, 'sources': common,
+            'start_source': pick_source(common, s['default_source']), 'sprite': joined_sprite_info(conn, ps)}
+
+
+def joined_sprite_info(conn, ps):
+    ids = [MediaHandler._get_cache_key(p['path'], video_parts.video_of(conn, p['path']), p['cache_id']) for p in ps]
+    vid = video_parts.video_of(conn, ps[0]['path'])
+    v = max(sprites.version(c) for c in ids)
+    return {'ready': all(sprites.ready(c) for c in ids), 'cache_ids': ids,
+            'vtt': f'/api/player/sprites/joined.vtt?video_id={quote(vid, safe="")}&v={v}'}
+
+
+def _vtt_seconds(t):
+    h, m, rest = t.strip().split(':')
+    return int(h) * 3600 + int(m) * 60 + float(rest)
+
+
+def joined_vtt(conn, video_id):
+    """One seek-preview VTT for a multi-part video: each part's cues, moved to where the part starts."""
+    out, offset = ['WEBVTT', ''], 0.0
+    for p in video_parts.parts(conn, video_id):
+        cid = MediaHandler._get_cache_key(p['path'], video_id, p['cache_id'])
+        try:
+            with open(os.path.join(sprites.folder(cid), sprites.VTT), encoding='utf-8') as f:
+                lines = f.read().splitlines()
+        except OSError:
+            lines = []
+        dur = float(p['length_seconds'] or 0) or video_parts.length_of(conn, p['path'])
+        img = f'/cache/{cid}/'
+        for i, line in enumerate(lines):
+            if '-->' in line and i + 1 < len(lines):
+                a, b = line.split('-->')
+                out += [f'{sprites._vtt_time(_vtt_seconds(a) + offset)} --> {sprites._vtt_time(_vtt_seconds(b) + offset)}',
+                        img + lines[i + 1].strip(), '']
+        offset += dur
+    return '\n'.join(out)
+
+
 def sprite_info(cache_id):
     return {'ready': sprites.ready(cache_id), 'vtt': f'/cache/{cache_id}/{sprites.VTT}?v={sprites.version(cache_id)}'}
 
@@ -170,6 +226,22 @@ def streams(path: str = Query(...), model=Depends(get_model)):
     try:
         conn = _conn()
         s = get_settings(conn)
+        d = joined_stream_list(conn, path, s)
+        if d:                                        # a multi-part video: one timeline over its parts
+            if not d['sprite']['ready'] and s['sprites_on_open']:
+                for p in d['parts']:
+                    if not sprites.ready(p['cache_id']):
+                        sprites.worker.enqueue(p['path'], p['cache_id'], front=True)
+                d['sprite']['queued'] = True
+            try:
+                import chapters
+                ensure_markers(conn)
+                d['chapters_added'] = sum(chapters.import_file(conn, p['path'], offset=p['offset']) for p in d['parts'])
+            except Exception as e:
+                d['chapters_added'] = 0
+                print(f'[chapters] {os.path.basename(path)}: {e}')
+            d['captions'] = {'tracks': [], 'queued': False, 'whisper': False}     # not joined (yet)
+            return {'success': True, **d}
         d = stream_list(conn, path, s)
         if not d['sprite']['ready'] and s['sprites_on_open']:
             sprites.worker.enqueue(path, d['cache_id'], front=True)
@@ -194,12 +266,21 @@ def streams(path: str = Query(...), model=Depends(get_model)):
 # ---------------------------------------------------------------------------
 # seek-bar previews (sprites)
 # ---------------------------------------------------------------------------
+@router.get('/sprites/joined.vtt')
+def sprites_joined(video_id: str = Query(...), model=Depends(get_model)):
+    return PlainTextResponse(joined_vtt(_conn(), video_id), media_type='text/vtt', headers={'Cache-Control': 'no-store'})
+
+
 @router.get('/sprites/check')
 def sprites_check(path: str = Query(...), model=Depends(get_model)):
     try:
-        row = _file_row(_conn(), path)
+        conn = _conn()
+        row = _file_row(conn, path)
         if not row:
             raise FileNotFoundError('Not in your library')
+        ps = video_parts.parts(conn, row[0])
+        if ps:
+            return {'success': True, **joined_sprite_info(conn, ps)}
         return {'success': True, **sprite_info(MediaHandler._get_cache_key(path, row[0], row[1]))}
     except Exception as e:
         return _err(e)

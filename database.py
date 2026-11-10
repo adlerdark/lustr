@@ -350,6 +350,9 @@ class Database:
             if 'library' not in cols:            # the library a file sits in (a merged video can have files in several)
                 cursor.execute('ALTER TABLE file_versions ADD COLUMN library TEXT')
                 conn.commit()
+            if 'part' not in cols:               # multi-part videos (cd1, cd2 ...): the part number, NULL for a normal file
+                cursor.execute('ALTER TABLE file_versions ADD COLUMN part INTEGER')
+                conn.commit()
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_file_versions_library ON file_versions(library, video_id)')
             self.refresh_file_libraries()
             # Collections (roadmap #9) live in playlists too: kind 'collection' (manual) or 'smart'
@@ -1866,7 +1869,8 @@ class Database:
             return False
         
         print(f"  Found {len(versions)} versions")
-        preferred = self._select_preferred_version(versions)
+        parts = sorted((v for v in versions if v.get('part') is not None), key=lambda v: v['part'])
+        preferred = parts[0] if parts else self._select_preferred_version(versions)   # multi-part: part 1 leads
         if preferred:
             print(f"  Selected: {preferred['path']}")
             print(f"  Bitrate: {preferred.get('total_bitrate')}")

@@ -71,8 +71,9 @@ def key(start, index):
     return f'chapter:{int(round(start * 1000))}:{index}'
 
 
-def import_file(conn, path, force=False):
-    """Chapters of one file -> markers on its video. -> number of markers added"""
+def import_file(conn, path, force=False, offset=None):
+    """Chapters of one file -> markers on its video. -> number of markers added
+    offset: where the file starts on its video's timeline (part 2+ of a multi-part video); None = work it out."""
     ensure_schema(conn)
     if not force and checked(conn, path):
         return 0
@@ -85,10 +86,14 @@ def import_file(conn, path, force=False):
     added = 0
     if row:
         vid = row[0]
+        if offset is None:
+            import video_parts
+            offset = video_parts.offset_of(conn, path)
         keys = {r[0] for r in conn.execute('SELECT source_key FROM video_markers WHERE video_id = ? AND source_key IS NOT NULL', (vid,))}
         keys |= {r[0] for r in conn.execute('SELECT source_key FROM marker_dismissed WHERE video_id = ?', (vid,))}
         times = [r[0] for r in conn.execute('SELECT seconds FROM video_markers WHERE video_id = ?', (vid,))]
         for i, (start, title) in enumerate(chs, 1):
+            start += offset
             k = key(start, i)
             if k in keys or any(abs(t - start) <= NEAR for t in times):
                 continue

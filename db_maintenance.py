@@ -215,8 +215,9 @@ def purge_versions(conn, paths):
             gone += 1
         elif not conn.execute('SELECT 1 FROM file_versions WHERE video_id = ? AND is_preferred = 1 AND deleted_at IS NULL',
                               (vid,)).fetchone():
+            order = 'part IS NULL, part, path' if 'part' in {c[1] for c in _rows(conn, 'PRAGMA table_info(file_versions)')} else 'path'
             conn.execute('UPDATE file_versions SET is_preferred = 1 WHERE path = (SELECT path FROM file_versions '
-                         'WHERE video_id = ? AND deleted_at IS NULL ORDER BY path LIMIT 1)', (vid,))
+                         f'WHERE video_id = ? AND deleted_at IS NULL ORDER BY {order} LIMIT 1)', (vid,))
     return n, gone
 
 
@@ -913,10 +914,10 @@ def list_backups():
     return sorted(out, key=lambda b: b['modified'], reverse=True)
 
 
-def make_backup(conn, auto=False):
+def make_backup(conn, auto=False, prefix=None):
     """Consistent copy of the live database (SQLite backup API) into data/backups/."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
-    name = f"library-{'auto-' if auto else ''}{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+    name = f"{prefix or ('library-auto-' if auto else 'library-')}{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
     path = os.path.join(BACKUP_DIR, name)
     dst = sqlite3.connect(path)
     try:
@@ -936,6 +937,30 @@ def delete_backups(names):
             os.remove(full)
             n += 1
     return n
+
+
+# Before a bulk removal (many files' metadata deleted at once) the database is copied first.
+SAFETY_PREFIX = 'library-safety-'
+SAFETY_KEEP = 5            # the newest few are kept (each is a full copy of the database)
+BULK = 10                  # "many": this many files or more in one go
+_safety_lock = threading.Lock()
+
+
+def safety_backup(conn, reason, reuse_seconds=300):
+    """Copy the database before a bulk removal -> the backup's name (relative to data/).
+    One made in the last few minutes is reused, so batches run back to back don't each copy 2 GB.
+    Raises if the copy fails - the caller must not go on removing things."""
+    slug = re.sub(r'[^a-z0-9]+', '-', (reason or 'bulk').lower()).strip('-')[:40] or 'bulk'
+    with _safety_lock:
+        cutoff = (datetime.now() - timedelta(seconds=reuse_seconds)).isoformat(timespec='seconds')
+        for b in list_backups():
+            if os.path.basename(b['name']).startswith(SAFETY_PREFIX) and b['modified'] >= cutoff:
+                return b['name']
+        name = make_backup(conn, prefix=f'{SAFETY_PREFIX}{slug}-')
+        safety = [b['name'] for b in list_backups() if os.path.basename(b['name']).startswith(SAFETY_PREFIX)]
+        delete_backups(safety[SAFETY_KEEP:])
+        print(f'[backup] before {reason}: {name}')
+        return name
 
 
 def _prune_auto_backups(keep):
