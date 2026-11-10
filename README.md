@@ -4,10 +4,11 @@ A self-hosted web app for organizing and streaming your personal adult video lib
 Point it at your video folders, tag performers, sites and attributes, find anything with
 filters and searches, and watch in the browser - on a desktop or a phone.
 
-> **Status:** in daily use and actively developed. Versions are still 0.x while things settle:
-> upgrades keep your data and apply database changes by themselves, but a setting or option may
-> still change between versions - see [Releases](https://github.com/adlerdark/lustr/releases) for
-> what's new in each. An install has **one account** (the owner).
+> **Status:** stable, in daily use and actively developed. Versions follow
+> [semantic versioning](https://semver.org): 1.x upgrades keep your data, settings and setup
+> (database changes apply by themselves); anything that would make you change your setup waits
+> for 2.0. See [Releases](https://github.com/adlerdark/lustr/releases) for what's new in each
+> version. An install has **one account** (the owner).
 
 ## Features
 
