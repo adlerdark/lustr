@@ -2,7 +2,7 @@
 #
 # Folder layout this assumes (change the paths below to yours - use full paths, not ~):
 #   /home/YOU/docker/lustr/src    the lustr source, if you build the image yourself
-#                                 (cd there && docker build -t lustr:0.1.0 .)
+#                                 (cd there && docker build -t lustr:latest .)
 #   /home/YOU/docker/lustr/data   everything lustr keeps: database, thumbnails, previews,
 #                                 users, settings (create it first: mkdir -p .../data)
 #
@@ -13,7 +13,7 @@
 # the first account to sign up becomes the owner.
 services:
   lustr:
-    image: lustr:0.1.0
+    image: lustr:latest
     container_name: lustr
     restart: unless-stopped
     ports:

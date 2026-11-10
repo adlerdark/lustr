@@ -4,8 +4,10 @@ A self-hosted web app for organizing and streaming your personal adult video lib
 Point it at your video folders, tag performers, sites and attributes, find anything with
 filters and searches, and watch in the browser - on a desktop or a phone.
 
-> **Status: 0.1.0, early release.** lustr works and is in daily use, but expect rough
-> edges. An install has **one account** (the owner).
+> **Status:** in daily use and actively developed. Versions are still 0.x while things settle:
+> upgrades keep your data and apply database changes by themselves, but a setting or option may
+> still change between versions - see [Releases](https://github.com/adlerdark/lustr/releases) for
+> what's new in each. An install has **one account** (the owner).
 
 ## Features
 
@@ -41,7 +43,7 @@ filters and searches, and watch in the browser - on a desktop or a phone.
 ```sh
 git clone https://github.com/adlerdark/lustr.git
 cd lustr
-docker build -t lustr:0.1.0 .
+docker build -t lustr:latest .
 ```
 
 (In Portainer you can also use **Images → Build a new image → Upload** with a `.tar.gz`
@@ -179,12 +181,16 @@ When a newer version is out, an **Update available** notice appears at the botto
 ```sh
 cd lustr
 git pull
-docker build -t lustr:0.1.0 .      # use the new version number if it changed
+docker build -t lustr:latest .
 ```
 
 Then recreate the container (in Portainer: the stack's **Update the stack** with
 "Re-pull image" off, or **Recreate**). Your data folder is kept; database changes are
-applied automatically on start.
+applied automatically on start. [Releases](https://github.com/adlerdark/lustr/releases) lists
+what changed in each version.
+
+If your stack still says `image: lustr:0.1.0` (from older instructions), either keep building
+with that tag or change the stack to `image: lustr:latest`.
 
 ## Notes
 
