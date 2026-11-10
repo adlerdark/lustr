@@ -6,13 +6,29 @@
          The <link> below loads the active theme CSS which overrides Tailwind colors.
          If the file is missing or removed, the hardcoded Tailwind defaults still work.
          Theme is stored in localStorage as 'lustr_theme'. -->
+    <!-- theme-map.css: every colour class -> the theme's variables; the theme file below only sets the variables -->
+    <link rel="stylesheet" href="/static/theme-map.css">
     <link id="lustr-theme-link" rel="stylesheet" href="">
     <script>
+        // light or dark, from the theme's page colour: light themes keep the players and picture overlays dark
+        window.lustrThemeMode = function () {
+            const v = getComputedStyle(document.documentElement).getPropertyValue('--surface-base').trim();
+            const m = /^#([0-9a-f]{6})$/i.exec(v);
+            let light = false;
+            if (m) {
+                const n = parseInt(m[1], 16), c = [n >> 16, (n >> 8) & 255, n & 255].map(x => {
+                    x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+                light = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] > 0.4;
+            }
+            document.documentElement.dataset.themeMode = light ? 'light' : 'dark';
+        };
         // Apply saved theme immediately (before Alpine loads) to avoid flash
         (function() {
             const saved = localStorage.getItem('lustr_theme') || 'default';
             const link = document.getElementById('lustr-theme-link');
+            link.onload = window.lustrThemeMode;
             if (saved !== 'none') link.href = '/static/themes/' + saved + '.css';
+            else window.lustrThemeMode();
         })();
     </script>
     <!-- Front-end libraries and the logo font ship with lustr (static/vendor): no internet needed -->
@@ -13743,15 +13759,20 @@ No metadata is changed.`)) return;
                 // name (display), preview (3 hex colors for the swatch).
                 get builtinThemes() {
                     return [
-                        { id: 'default',          name: 'Dark (Default)',   preview: ['#111827','#2563eb','#374151'] },
-                        { id: 'light',            name: 'Light',            preview: ['#f1f5f9','#2563eb','#e2e8f0'] },
-                        { id: 'ember',            name: 'Dark Ember',       preview: ['#1a1614','#a04030','#342e29'] },
-                        { id: 'midnight-forest',  name: 'Midnight Forest',  preview: ['#0d1512','#1f7048','#203228'] },
-                        { id: 'volcanic',         name: 'Volcanic',         preview: ['#141008','#c87c00','#261c0e'] },
-                        { id: 'arctic',           name: 'Arctic',           preview: ['#0a0e18','#10a0c0','#141c2c'] },
-                        { id: 'noir',             name: 'Noir',             preview: ['#0a0a0a','#606060','#222222'] },
-                        { id: 'sakura',           name: 'Sakura',           preview: ['#150f18','#a83870','#252028'] },
-                        { id: 'synthwave',        name: 'Synthwave',        preview: ['#0e0a1a','#9c20e0','#1a142e'] },
+                        { id: 'default', name: 'Dark (Default)', preview: ['#111827','#2563eb','#374151'] },
+                        { id: 'light', name: 'Light', preview: ['#eef2f6','#2563eb','#dee3e8'] },
+                        { id: 'paper', name: 'Paper', preview: ['#f3ede2','#8a5a2b','#e5dfd4'] },
+                        { id: 'mist', name: 'Mist', preview: ['#e6ecf2','#3b6ea5','#d8dee5'] },
+                        { id: 'dusk', name: 'Dusk', preview: ['#272e3b','#4a73c3','#464d58'] },
+                        { id: 'ember', name: 'Dark Ember', preview: ['#1a1614','#b4532a','#36322f'] },
+                        { id: 'midnight-forest', name: 'Midnight Forest', preview: ['#0d1512','#2c8453','#29312e'] },
+                        { id: 'volcanic', name: 'Volcanic', preview: ['#141008','#b46004','#312d24'] },
+                        { id: 'arctic', name: 'Arctic', preview: ['#0a0e18','#12819e','#272c35'] },
+                        { id: 'noir', name: 'Noir', preview: ['#0b0b0b','#d4d4d4','#292929'] },
+                        { id: 'sakura', name: 'Sakura', preview: ['#150f18','#bc487c','#332c35'] },
+                        { id: 'synthwave', name: 'Synthwave', preview: ['#0e0a1a','#b026ff','#2c2738'] },
+                        { id: 'deep-sea', name: 'Deep Sea', preview: ['#06161c','#13b5c8','#233338'] },
+                        { id: 'aurora', name: 'Aurora', preview: ['#0b1020','#34d399','#292d3d'] },
                     ];
                 },
                 get allThemes() {
@@ -13761,8 +13782,10 @@ No metadata is changed.`)) return;
                     this.activeTheme = themeId;
                     localStorage.setItem('lustr_theme', themeId);
                     const link = document.getElementById('lustr-theme-link');
+                    link.onload = window.lustrThemeMode;
                     if (themeId === 'none') {
                         link.href = '';
+                        window.lustrThemeMode();
                     } else {
                         const isUploaded = this.uploadedThemes.some(t => t.id === themeId);
                         link.href = '/static/themes/' + themeId + '.css' + (isUploaded ? '?v=' + Date.now() : '');
@@ -17196,7 +17219,7 @@ No metadata is changed.`)) return;
         </div>
 
         <!-- Images: the viewer (← → / swipe, wheel / pinch / double-click zoom, Space slideshow, F full screen, S favorite) -->
-        <div id="imgViewer" x-show="iv.open" x-cloak class="fixed inset-0 z-[95] bg-black select-none" @keydown.window="ivKey($event)">
+        <div id="imgViewer" x-show="iv.open" x-cloak class="lustr-dark fixed inset-0 z-[95] bg-black select-none" @keydown.window="ivKey($event)">
             <template x-if="iv.open && ivCur()">
                 <div class="absolute inset-0 overflow-hidden touch-none" @wheel.prevent="ivWheel($event)" @contextmenu.prevent="imgShowInfo({ id: ivCur().id })"
                      @pointerdown="ivDown($event)" @pointermove="ivMove($event)" @pointerup="ivUp($event)" @pointercancel="ivUp($event)"
@@ -20462,8 +20485,11 @@ No metadata is changed.`)) return;
                         <div class="border-t border-gray-700 pt-4">
                             <h4 class="text-sm font-semibold mb-1 text-gray-300">Upload Custom Theme</h4>
                             <p class="text-xs text-gray-500 mb-3">
-                                A theme is a plain CSS file that defines <code class="bg-gray-900 px-1 rounded">:root { --color-* }</code> variables.
-                                Download <a href="/static/themes/default.css" download="default.css" class="text-blue-400 hover:underline">default.css</a> as a starting point.
+                                A theme is a plain CSS file with one <code class="bg-gray-900 px-1 rounded">:root { … }</code> block of colour variables
+                                (backgrounds, borders, text, and eight accent colours); lustr applies them everywhere. Download
+                                <a href="/static/themes/default.css" download="default.css" class="text-blue-400 hover:underline">default.css</a>
+                                or <a href="/static/themes/light.css" download="light.css" class="text-blue-400 hover:underline">light.css</a>,
+                                change the colours, and upload it. The comment at the top explains each variable.
                             </p>
                             <label class="flex items-center gap-3 cursor-pointer">
                                 <span class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors">Choose .css file</span>
@@ -20640,7 +20666,7 @@ No metadata is changed.`)) return;
                 </div>
                 <!-- a clip full size (click a clip's picture): with sound and controls; ← → the others -->
                 <template x-if="clipsWin.big">
-                    <div class="absolute inset-0 z-10 bg-black/95 rounded-lg flex flex-col p-3" @click.self="clipsWin.big = null"
+                    <div class="lustr-dark absolute inset-0 z-10 bg-black/95 rounded-lg flex flex-col p-3" @click.self="clipsWin.big = null"
                          @keydown.arrow-right.window="clipStep(1)" @keydown.arrow-left.window="clipStep(-1)">
                         <div class="flex items-center gap-2 text-sm text-gray-200 mb-2">
                             <span class="font-medium truncate" x-text="clipsWin.big.title"></span>
@@ -21791,7 +21817,7 @@ No metadata is changed.`)) return;
 
 
     <!-- NEW PLAYER (np) - roadmap #8. video.js; separate from the classic VIDEO PLAYER below. -->
-    <div x-show="np.open" x-cloak class="fixed inset-0 bg-black flex flex-col" :class="modals.metadata ? 'z-[78]' : 'z-[100]'">
+    <div x-show="np.open" x-cloak class="lustr-dark fixed inset-0 bg-black flex flex-col" :class="modals.metadata ? 'z-[78]' : 'z-[100]'">
         <div class="flex flex-wrap items-center gap-2 gap-y-1 px-3 sm:px-4 py-2 bg-gray-900 text-sm border-b border-gray-800">
             <span class="flex-1 min-w-[50%] sm:min-w-0 truncate" :title="np.video?.path + (orderedCast(np.video).length ? '\n' + orderedCast(np.video).join(', ') : '')">
                 <span class="font-semibold text-gray-100" x-text="npTitle()"></span>
@@ -21913,7 +21939,7 @@ No metadata is changed.`)) return;
     </div>
 
     <!-- VIDEO PLAYER -->
-    <div x-show="activeVideo" x-cloak id="videoPlayerContainer" class="fixed inset-0 z-[100] bg-black flex items-center justify-center">
+    <div x-show="activeVideo" x-cloak id="videoPlayerContainer" class="lustr-dark fixed inset-0 z-[100] bg-black flex items-center justify-center">
         <div class="w-full h-full flex flex-col">
 
             <!-- ── Player Header ────────────────────────────────────────────────── -->

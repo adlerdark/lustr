@@ -8,7 +8,13 @@ Open Settings with ⚙ at the top right. Pages that a guide page explains have a
 
 **Account & Security**: your password, logging out after inactivity, linking a TV, and **Show libraries and videos**, which hides library types and orientations just for you. See [Privacy & login](privacy.md) and [Link a TV](tv.md) (for the [lustr-tv](https://github.com/adlerdark/lustr-tv) app).
 
-**Appearance**: which **Header buttons** show in the top bar, the **Theme** (or **Upload Custom Theme** with your own `.css`), and the **Settings layout**: a full page or a popup window.
+**Appearance**: which **Header buttons** show in the top bar, the **Settings layout** (a full page or a popup window), and the **Theme**:
+
+- **Light themes**: Light, Paper (warm, off-white) and Mist (cool grey-blue). The players, the image viewer and the badges on pictures stay dark in them.
+- **Dark themes**: Dark (Default), Dusk (a softer, mid-tone dark), Dark Ember, Midnight Forest, Volcanic, Arctic, Noir, Sakura, Synthwave, Deep Sea and Aurora.
+- **Upload Custom Theme**: your own `.css` file. A theme is just one block of colour variables. Download `default.css` or `light.css` from that section, change the colours, and upload it; the comment at the top of the file explains each one.
+
+The theme is saved in this browser.
 
 **Browsing**: see [Browsing & search](browsing.md).
 

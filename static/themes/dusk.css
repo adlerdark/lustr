@@ -1,0 +1,109 @@
+/*
+ * lustr theme: Dusk  (dark)
+ *
+ * Made by scripts/build_themes.py - change the theme there and rebuild, or copy this file to make your own
+ * (Settings -> Appearance -> Upload Custom Theme). A theme is only these colour variables;
+ * static/theme-map.css applies them to the whole page.
+ *
+ *   surface-*   backgrounds: deepest (behind everything), base (page), mid, raised (panels, cards),
+ *               elevated (buttons at rest), high (hover), higher (pressed)
+ *   border-*    subtle, default, strong (inputs), stronger
+ *   text-*      default / brightest (headings), brighter, primary (body), secondary, muted, faint
+ *   <family>-*  primary (main accent), success, danger, warning, purple, cast, orange, info:
+ *               subtle (tinted background), dark / base / light (button fills: pressed, normal, hover),
+ *               soft, softer, faint, faintest (coloured text, strongest first)
+ *   on-<family> text on that family's button fills
+ */
+:root {
+    --theme-mode: dark;
+    --surface-deepest: #191e26;
+    --surface-base: #272e3b;
+    --surface-mid: #2f3643;
+    --surface-raised: #353c49;
+    --surface-elevated: #464d58;
+    --surface-high: #575d68;
+    --surface-higher: #747983;
+    --border-subtle: #3a414d;
+    --border-default: #4b515d;
+    --border-strong: #5e646f;
+    --border-stronger: #7d838c;
+    --text-default: #e7eaf0;
+    --text-brightest: #e7eaf0;
+    --text-brighter: #dbdfe5;
+    --text-primary: #d4d6dd;
+    --text-secondary: #adb2ba;
+    --text-muted: #91959f;
+    --text-faint: #747983;
+    --primary-subtle: #36496d;
+    --primary-dark: #4971bf;
+    --primary-base: #4a73c3;
+    --primary-light: #5272b2;
+    --primary-soft: #8caff4;
+    --primary-softer: #adc6f7;
+    --primary-faint: #cbdbfa;
+    --primary-faintest: #e1eafc;
+    --on-primary: #ffffff;
+    --success-subtle: #2e4d46;
+    --success-dark: #327e4f;
+    --success-base: #338051;
+    --success-light: #42835b;
+    --success-soft: #79ba92;
+    --success-softer: #9fceb1;
+    --success-faint: #c2e0cd;
+    --success-faintest: #dcede3;
+    --on-success: #ffffff;
+    --danger-subtle: #5b3b45;
+    --danger-dark: #b34a4a;
+    --danger-base: #c05050;
+    --danger-light: #b15656;
+    --danger-soft: #e98e8e;
+    --danger-softer: #f0aeae;
+    --danger-faint: #f5cbcb;
+    --danger-faintest: #f9e2e2;
+    --on-danger: #ffffff;
+    --warning-subtle: #594f3d;
+    --warning-dark: #ae8334;
+    --warning-base: #d9a441;
+    --warning-light: #deaf58;
+    --warning-soft: #e4bf7a;
+    --warning-softer: #ecd2a0;
+    --warning-faint: #f3e2c2;
+    --warning-faintest: #f8efdd;
+    --on-warning: #111111;
+    --purple-subtle: #4a4469;
+    --purple-dark: #8262b3;
+    --purple-base: #8564b6;
+    --purple-light: #8066a8;
+    --purple-soft: #bfa3e9;
+    --purple-softer: #d1bdf0;
+    --purple-faint: #e2d5f5;
+    --purple-faintest: #eee7f9;
+    --on-purple: #ffffff;
+    --cast-subtle: #3f476b;
+    --cast-dark: #626bba;
+    --cast-base: #646dbd;
+    --cast-light: #666eac;
+    --cast-soft: #a3aaef;
+    --cast-softer: #bdc2f4;
+    --cast-faint: #d5d8f8;
+    --cast-faintest: #e7e9fb;
+    --on-cast: #ffffff;
+    --orange-subtle: #5b473f;
+    --orange-dark: #b36b3b;
+    --orange-base: #e0864a;
+    --orange-light: #e49560;
+    --orange-soft: #e9aa80;
+    --orange-softer: #f0c2a4;
+    --orange-faint: #f5d8c5;
+    --orange-faintest: #f9e9de;
+    --on-orange: #111111;
+    --info-subtle: #2e5060;
+    --info-dark: #328799;
+    --info-base: #3fa9bf;
+    --info-light: #56b3c7;
+    --info-soft: #79c3d2;
+    --info-softer: #9fd4df;
+    --info-faint: #c2e3eb;
+    --info-faintest: #dcf0f3;
+    --on-info: #111111;
+}

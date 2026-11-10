@@ -1,185 +1,109 @@
 /*
- * LUSTR Theme: Noir
- * File: noir.css
+ * lustr theme: Noir  (dark)
  *
- * This file overrides the default Tailwind color classes used throughout
- * index.html. Edit the CSS custom properties in :root to change colors.
+ * Made by scripts/build_themes.py - change the theme there and rebuild, or copy this file to make your own
+ * (Settings -> Appearance -> Upload Custom Theme). A theme is only these colour variables;
+ * static/theme-map.css applies them to the whole page.
  *
- * Color roles:
- *   --surface-*     Background surfaces (page, panels, cards)
- *   --border-*      Borders and dividers
- *   --text-*        Text at different emphasis levels
- *   --primary-*     Primary action color (buttons, links, accents)
- *   --success-*     Positive / confirmed states
- *   --danger-*      Destructive / error states
- *   --warning-*     Caution states
- *   --special-*     Tag badges, cast badges, misc UI elements
- *
- * To add a new theme:
- *   1. Copy this file and rename it (e.g. mytheme.css)
- *   2. Edit the :root values below
- *   3. Place the file in the same directory as index.html
- *   4. Register it in the LUSTR_THEMES array in index.html (search for THEMES_CONFIG)
- *      or upload it via Settings → Appearance → Upload Theme
+ *   surface-*   backgrounds: deepest (behind everything), base (page), mid, raised (panels, cards),
+ *               elevated (buttons at rest), high (hover), higher (pressed)
+ *   border-*    subtle, default, strong (inputs), stronger
+ *   text-*      default / brightest (headings), brighter, primary (body), secondary, muted, faint
+ *   <family>-*  primary (main accent), success, danger, warning, purple, cast, orange, info:
+ *               subtle (tinted background), dark / base / light (button fills: pressed, normal, hover),
+ *               soft, softer, faint, faintest (coloured text, strongest first)
+ *   on-<family> text on that family's button fills
  */
-
 :root {
-    /*  */
-    --surface-deepest: #000000;  /* Deepest background — page chrome, sidebars behind sidebars */
-    --surface-base: #0a0a0a;  /* Page background */
-    --surface-raised: #141414;  /* Modals, cards, panels */
-    --surface-mid: #1a1a1a;  /* Nested panels inside cards */
-    --surface-elevated: #222222;  /* Buttons, interactive elements at rest */
-    --surface-high: #2c2c2c;  /* Hover states for elevated elements */
-    --surface-higher: #383838;  /* Active/pressed states */
-    --border-subtle: #1a1a1a;  /* Subtle separator — barely visible */
-    --border-default: #242424;  /* Standard border on panels and cards */
-    --border-strong: #303030;  /* Input field borders */
-    --border-stronger: #3c3c3c;  /* High-contrast borders */
-    --text-default: #ffffff;  /* Body text default (white in dark themes) */
-    --text-brightest: #f0f0f0;  /* Near-white text on dark surfaces */
-    --text-brighter: #d8d8d8;  /* Headings, labels */
-    --text-primary: #b8b8b8;  /* Normal readable text */
-    --text-secondary: #909090;  /* Supporting text, metadata */
-    --text-muted: #606060;  /* Placeholder text, disabled state */
-    --text-faint: #383838;  /* Very subtle, barely readable */
-    --primary-subtle: #181818;  /* Tinted background for selected items / focus areas */
-    --primary-dark: #444444;  /* Pressed/active button state */
-    --primary-base: #606060;  /* Primary button fill — the main action color */
-    --primary-light: #787878;  /* Hover state for primary buttons */
-    --primary-soft: #a0a0a0;  /* Accent text, active nav indicators */
-    --primary-softer: #c0c0c0;  /* Lighter accent text */
-    --primary-faint: #e0e0e0;  /* Very light tint on dark surfaces */
-    --primary-faintest: #f4f4f4;  /* Barely-there tint */
-    --success-subtle: #0a180a;  /* Tinted background for success states */
-    --success-dark: #205020;  /* Dark success button */
-    --success-base: #306030;  /* Success button fill */
-    --success-light: #408040;  /* Success hover / border */
-    --success-soft: #60a060;  /* Success text on dark surface */
-    --danger-subtle: #180a0a;  /* Tinted background for error/delete areas */
-    --danger-dark: #602020;  /* Dark danger button */
-    --danger-base: #803030;  /* Delete / destructive button fill */
-    --danger-light: #a04040;  /* Danger hover */
-    --danger-soft: #c06060;  /* Error text */
-    --danger-softer: #d89090;  /* Light error text */
-    --danger-faint: #f0c8c8;  /* Very light error tint */
-    --warning-subtle: #181408;  /* Tinted background for warnings / favorites */
-    --warning-dark: #585010;  /* Dark warning button */
-    --warning-base: #787020;  /* Warning button fill */
-    --warning-light: #989030;  /* Warning hover */
-    --warning-soft: #b8b050;  /* Warning text (favorite star) */
-    --warning-softer: #d0c870;  /* Light warning text */
-    --warning-softest: #282828;
-    --special-cast: #1e1e1e;  /* Cast member badge background */
-    --special-cast-dark: #383838;  /* Cast member badge hover */
-    --special-purple: #2c2c2c;  /* Watchlist / playlist badge */
-    --special-purple-dark: #909090;  /* Watchlist badge hover */
-    --special-purple-text: #b0b0b0;  /* Purple text (tags, categories) */
-    --special-purple-text-light: #484838;  /* Light purple text */
-    --special-orange: #342e1c;  /* VLC button / external app buttons */
-    --special-orange-dark: #787878;  /* VLC button hover */
-    --special-orange-text: #989898;  /* Orange text / icons */
-    --special-orange-text-light: #686868;  /* Light orange text */
+    --theme-mode: dark;
+    --surface-deepest: #070707;
+    --surface-base: #0b0b0b;
+    --surface-mid: #131313;
+    --surface-raised: #191919;
+    --surface-elevated: #292929;
+    --surface-high: #3a3a3a;
+    --surface-higher: #565656;
+    --border-subtle: #1e1e1e;
+    --border-default: #2e2e2e;
+    --border-strong: #414141;
+    --border-stronger: #5f5f5f;
+    --text-default: #f5f5f5;
+    --text-brightest: #f5f5f5;
+    --text-brighter: #e7e7e7;
+    --text-primary: #d2d2d2;
+    --text-secondary: #afafaf;
+    --text-muted: #8c8c8c;
+    --text-faint: #696969;
+    --primary-subtle: #434343;
+    --primary-dark: #aaaaaa;
+    --primary-base: #d4d4d4;
+    --primary-light: #d9d9d9;
+    --primary-soft: #e1e1e1;
+    --primary-softer: #eaeaea;
+    --primary-faint: #f1f1f1;
+    --primary-faintest: #f7f7f7;
+    --on-primary: #111111;
+    --success-subtle: #1a3423;
+    --success-dark: #327e4c;
+    --success-base: #33804e;
+    --success-light: #3f7d54;
+    --success-soft: #79bb8f;
+    --success-softer: #9fceaf;
+    --success-faint: #c2e0cc;
+    --success-faintest: #dceee2;
+    --on-success: #ffffff;
+    --danger-subtle: #3f1919;
+    --danger-dark: #9d3030;
+    --danger-base: #c43c3c;
+    --danger-light: #c14f4f;
+    --danger-soft: #d67676;
+    --danger-softer: #e29e9e;
+    --danger-faint: #ecc1c1;
+    --danger-faintest: #f4dcdc;
+    --on-danger: #ffffff;
+    --warning-subtle: #433714;
+    --warning-dark: #aa8623;
+    --warning-base: #d4a72c;
+    --warning-light: #d9b245;
+    --warning-soft: #e1c16b;
+    --warning-softer: #ead396;
+    --warning-faint: #f1e3bb;
+    --warning-faintest: #f7efd9;
+    --on-warning: #111111;
+    --purple-subtle: #342b42;
+    --purple-dark: #7e66a6;
+    --purple-base: #8068a9;
+    --purple-light: #7c689c;
+    --purple-soft: #baa5dd;
+    --purple-softer: #cebfe7;
+    --purple-faint: #e0d6f0;
+    --purple-faintest: #ede8f6;
+    --on-purple: #ffffff;
+    --cast-subtle: #2f3044;
+    --cast-dark: #6e72ab;
+    --cast-base: #6a6fa5;
+    --cast-light: #7073a2;
+    --cast-soft: #adb1e2;
+    --cast-softer: #c4c7ea;
+    --cast-faint: #dadbf2;
+    --cast-faintest: #eaebf8;
+    --on-cast: #ffffff;
+    --orange-subtle: #452a18;
+    --orange-dark: #ae622e;
+    --orange-base: #a85e2d;
+    --orange-light: #a2653c;
+    --orange-soft: #e4a275;
+    --orange-softer: #ecbc9c;
+    --orange-faint: #f3d4c0;
+    --orange-faintest: #f8e7dc;
+    --on-orange: #ffffff;
+    --info-subtle: #23373b;
+    --info-dark: #4c8693;
+    --info-base: #5fa8b8;
+    --info-light: #72b2c1;
+    --info-soft: #8fc2cd;
+    --info-softer: #afd4dc;
+    --info-faint: #cce3e8;
+    --info-faintest: #e2eff2;
+    --on-info: #111111;
 }
-
-/* ── Override Tailwind classes with theme variables ─────────────────────── */
-/* Surfaces */
-.bg-gray-950 { background-color: var(--surface-deepest) !important; }
-.bg-gray-900 { background-color: var(--surface-base) !important; }
-.bg-gray-800 { background-color: var(--surface-raised) !important; }
-.bg-gray-750 { background-color: var(--surface-mid) !important; }
-.bg-gray-700 { background-color: var(--surface-elevated) !important; }
-.bg-gray-600 { background-color: var(--surface-high) !important; }
-.bg-gray-500 { background-color: var(--surface-higher) !important; }
-
-/* Borders */
-.border-gray-800 { border-color: var(--border-subtle) !important; }
-.border-gray-700 { border-color: var(--border-default) !important; }
-.border-gray-600 { border-color: var(--border-strong) !important; }
-.border-gray-500 { border-color: var(--border-stronger) !important; }
-hr, .divide-gray-700 > * + * { border-color: var(--border-default) !important; }
-
-/* Text */
-.text-gray-100 { color: var(--text-brightest) !important; }
-.text-gray-200 { color: var(--text-brighter) !important; }
-.text-gray-300 { color: var(--text-primary) !important; }
-.text-gray-400 { color: var(--text-secondary) !important; }
-.text-gray-500 { color: var(--text-muted) !important; }
-.text-gray-600 { color: var(--text-faint) !important; }
-body, .text-white { color: var(--text-default) !important; }
-
-/* Primary (accent) */
-.bg-blue-900  { background-color: var(--primary-subtle) !important; }
-.bg-blue-700  { background-color: var(--primary-dark) !important; }
-.bg-blue-600  { background-color: var(--primary-base) !important; }
-.bg-blue-500  { background-color: var(--primary-light) !important; }
-.text-blue-600 { color: var(--primary-base) !important; }
-.text-blue-500 { color: var(--primary-light) !important; }
-.text-blue-400 { color: var(--primary-soft) !important; }
-.text-blue-300 { color: var(--primary-softer) !important; }
-.text-blue-200 { color: var(--primary-faint) !important; }
-.text-blue-100 { color: var(--primary-faintest) !important; }
-.border-blue-700 { border-color: var(--primary-dark) !important; }
-.border-blue-500 { border-color: var(--primary-light) !important; }
-.border-blue-400 { border-color: var(--primary-soft) !important; }
-.ring-blue-500  { --tw-ring-color: var(--primary-light) !important; }
-.focus\:border-blue-500:focus { border-color: var(--primary-light) !important; }
-
-/* Indigo (often used for cast badges) */
-.bg-indigo-700 { background-color: var(--special-cast-dark) !important; }
-.bg-indigo-600 { background-color: var(--special-cast) !important; }
-
-/* Purple (watchlist etc) */
-.bg-purple-700 { background-color: var(--special-purple-dark) !important; }
-.bg-purple-600 { background-color: var(--special-purple) !important; }
-.text-purple-400 { color: var(--special-purple-text) !important; }
-.text-purple-300 { color: var(--special-purple-text-light) !important; }
-.border-purple-700 { border-color: var(--special-purple-dark) !important; }
-
-/* Orange (VLC button etc) */
-.bg-orange-700 { background-color: var(--special-orange-dark) !important; }
-.bg-orange-600 { background-color: var(--special-orange) !important; }
-.text-orange-400 { color: var(--special-orange-text) !important; }
-.text-orange-300 { color: var(--special-orange-text-light) !important; }
-
-/* Success */
-.bg-green-800  { background-color: var(--success-subtle) !important; }
-.bg-green-700  { background-color: var(--success-dark) !important; }
-.bg-green-600  { background-color: var(--success-base) !important; }
-.text-green-600 { color: var(--success-base) !important; }
-.text-green-500 { color: var(--success-light) !important; }
-.text-green-400 { color: var(--success-soft) !important; }
-.border-green-900 { border-color: var(--success-subtle) !important; }
-.border-green-500 { border-color: var(--success-light) !important; }
-.ring-green-500 { --tw-ring-color: var(--success-light) !important; }
-
-/* Danger */
-.bg-red-900  { background-color: var(--danger-subtle) !important; }
-.bg-red-700  { background-color: var(--danger-dark) !important; }
-.bg-red-600  { background-color: var(--danger-base) !important; }
-.bg-red-500  { background-color: var(--danger-light) !important; }
-.text-red-500 { color: var(--danger-light) !important; }
-.text-red-400 { color: var(--danger-soft) !important; }
-.text-red-300 { color: var(--danger-softer) !important; }
-.text-red-200 { color: var(--danger-faint) !important; }
-.border-red-900 { border-color: var(--danger-subtle) !important; }
-.border-red-500 { border-color: var(--danger-light) !important; }
-
-/* Warning */
-.bg-yellow-900  { background-color: var(--warning-subtle) !important; }
-.bg-yellow-700  { background-color: var(--warning-dark) !important; }
-.bg-yellow-600  { background-color: var(--warning-base) !important; }
-.bg-yellow-500  { background-color: var(--warning-light) !important; }
-.text-yellow-600 { color: var(--warning-base) !important; }
-.text-yellow-500 { color: var(--warning-light) !important; }
-.text-yellow-400 { color: var(--warning-soft) !important; }
-.text-yellow-300 { color: var(--warning-softer) !important; }
-.border-yellow-900 { border-color: var(--warning-subtle) !important; }
-.border-yellow-700 { border-color: var(--warning-dark) !important; }
-.border-yellow-500 { border-color: var(--warning-light) !important; }
-
-/* Scrollbar theming */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--surface-base); }
-::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
