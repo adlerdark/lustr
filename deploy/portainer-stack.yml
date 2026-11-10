@@ -1,8 +1,10 @@
 # lustr - Portainer stack (Stacks -> Add stack -> Web editor), or `docker compose -f portainer-stack.yml up -d`.
 #
-# Folder layout this assumes (change the paths below to yours - use full paths, not ~):
-#   /home/YOU/docker/lustr/src    the lustr source, if you build the image yourself
-#                                 (cd there && docker build -t lustr:latest .)
+# The image comes ready-made from GitHub's registry (ghcr.io/adlerdark/lustr). To upgrade:
+# Portainer -> the stack -> Update the stack with "Re-pull image" on (compose: docker compose pull && up -d).
+# Building it yourself instead: git clone the repo, docker build -t lustr:latest . and use image: lustr:latest.
+#
+# Folder this assumes (change the paths below to yours - use full paths, not ~):
 #   /home/YOU/docker/lustr/data   everything lustr keeps: database, thumbnails, previews,
 #                                 users, settings (create it first: mkdir -p .../data)
 #
@@ -13,7 +15,7 @@
 # the first account to sign up becomes the owner.
 services:
   lustr:
-    image: lustr:latest
+    image: ghcr.io/adlerdark/lustr:latest          # or a fixed version, e.g. ghcr.io/adlerdark/lustr:1.0.0
     container_name: lustr
     restart: unless-stopped
     ports:

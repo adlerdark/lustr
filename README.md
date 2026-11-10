@@ -33,12 +33,23 @@ filters and searches, and watch in the browser - on a desktop or a phone.
 - Optional: an **Intel or AMD GPU** for hardware transcoding (`/dev/dri`). Without one,
   transcoding runs on the CPU.
 - No internet needed while watching: all front-end libraries ship with lustr (see
-  [`static/vendor`](static/vendor/README.md)). Only building the image and the optional
-  external-database features go online.
+  [`static/vendor`](static/vendor/README.md)). Only getting the image, the update check and the
+  optional external-database features go online.
 
 ## Install
 
-### 1. Build the image
+### 1. Get the image
+
+The image is built for you and published on GitHub's registry: `ghcr.io/adlerdark/lustr`.
+The stack in step 3 already uses it, so there is nothing to do here, unless you'd rather pull it first:
+
+```sh
+docker pull ghcr.io/adlerdark/lustr:latest
+```
+
+`latest` is the newest version; `ghcr.io/adlerdark/lustr:1.0.0` (any version number) stays on that version.
+
+<details><summary>Or build it yourself</summary>
 
 ```sh
 git clone https://github.com/adlerdark/lustr.git
@@ -46,8 +57,9 @@ cd lustr
 docker build -t lustr:latest .
 ```
 
-(In Portainer you can also use **Images → Build a new image → Upload** with a `.tar.gz`
-of the source.)
+Then use `image: lustr:latest` in the stack. (In Portainer you can also use **Images → Build a new image →
+Upload** with a `.tar.gz` of the source.)
+</details>
 
 ### 2. Make a data folder
 
@@ -178,19 +190,16 @@ Your video files are mounted **read-only**: lustr never changes or deletes them.
 When a newer version is out, an **Update available** notice appears at the bottom of lustr's sidebar
 (the server checks GitHub about twice a day; turn it off in Settings → Maintenance).
 
-```sh
-cd lustr
-git pull
-docker build -t lustr:latest .
-```
+- **Portainer**: open the stack → **Update the stack**, with **Re-pull image** switched on.
+- **Compose**: `docker compose -f portainer-stack.yml pull && docker compose -f portainer-stack.yml up -d`
 
-Then recreate the container (in Portainer: the stack's **Update the stack** with
-"Re-pull image" off, or **Recreate**). Your data folder is kept; database changes are
-applied automatically on start. [Releases](https://github.com/adlerdark/lustr/releases) lists
-what changed in each version.
+Your data folder is kept; database changes are applied automatically on start.
+[Releases](https://github.com/adlerdark/lustr/releases) lists what changed in each version.
 
-If your stack still says `image: lustr:0.1.0` (from older instructions), either keep building
-with that tag or change the stack to `image: lustr:latest`.
+If you build the image yourself: `git pull`, `docker build -t lustr:latest .`, then recreate the
+container (in Portainer, **Update the stack** with "Re-pull image" off). If your stack still says
+`image: lustr:0.1.0` (from older instructions), change it to `image: ghcr.io/adlerdark/lustr:latest`,
+or keep building with that tag.
 
 ## Notes
 
