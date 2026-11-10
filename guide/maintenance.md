@@ -42,7 +42,7 @@ The backups are in the `backups` folder inside lustr's data folder. To go back t
 
 About twice a day the server asks GitHub for the list of lustr versions. When a newer one is out, an **Update available** notice appears at the bottom of the sidebar, under 🎞 Clips. Click it to open the new version on GitHub, then upgrade as the [README](https://github.com/adlerdark/lustr#upgrading) describes. Once you're running it, the notice goes away.
 
-To turn the check off, untick **Check GitHub for new versions** in **Settings → Maintenance → Overview**.
+To check straight away, use **☰ → Check for Updates** in the top bar; the answer appears right in the menu. To turn the automatic check off, untick **Check GitHub for new versions** in **Settings → Maintenance → Overview**.
 
 ## Import / Export
 

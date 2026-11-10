@@ -5,7 +5,7 @@
 ## Linking
 
 1. Open [lustr-tv](https://github.com/adlerdark/lustr-tv) on the TV. It shows a **4-digit code**.
-2. In lustr in your browser, open **Settings → Account & Security → Link a TV**. Or click 📺 in the top bar, which takes you there.
+2. In lustr in your browser, open **Settings → Account & Security → Link a TV**. Or use **☰ → Link a TV** in the top bar, which takes you there.
 3. Type the code and click **Link**. The TV logs in within a few seconds.
 
 A code is valid for 5 minutes. If it runs out, or lustr restarts in the meantime, the TV shows a new one.

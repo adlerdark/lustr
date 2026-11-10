@@ -231,6 +231,7 @@ hr { border-color: var(--border-default) !important; }
 .divide-gray-700\/70 > :not([hidden]) ~ :not([hidden]) { border-color: color-mix(in srgb, var(--border-default) 70%, transparent) !important; }
 .divide-gray-800 > :not([hidden]) ~ :not([hidden]) { border-color: var(--border-subtle) !important; }
 .ring-blue-500 { --tw-ring-color: var(--primary-light) !important; }
+.ring-gray-800 { --tw-ring-color: var(--border-subtle) !important; }
 .ring-green-500 { --tw-ring-color: var(--success-light) !important; }
 .ring-yellow-400\/60 { --tw-ring-color: color-mix(in srgb, var(--warning-soft) 60%, transparent) !important; }
 .hover\:ring-blue-500:hover { --tw-ring-color: var(--primary-light) !important; }
@@ -283,6 +284,7 @@ hr { border-color: var(--border-default) !important; }
 .hover\:text-blue-200:hover { color: var(--primary-faint) !important; }
 .hover\:text-blue-300:hover { color: var(--primary-softer) !important; }
 .hover\:text-blue-400:hover { color: var(--primary-soft) !important; }
+.hover\:text-emerald-300:hover { color: var(--success-softer) !important; }
 .hover\:text-gray-200:hover { color: var(--text-brighter) !important; }
 .hover\:text-gray-300:hover { color: var(--text-primary) !important; }
 .hover\:text-orange-300:hover { color: var(--orange-softer) !important; }

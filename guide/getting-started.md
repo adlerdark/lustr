@@ -47,7 +47,8 @@ Later you can pick a better frame while watching: press **T** in the player to m
 - The **search box**. See [Browsing & search](browsing.md#searching).
 - **Sort**, ★ **favorites only**, **Select All**, and the view buttons (thumbnails, list, folders).
 - 👥 **Cast** for your performers, and 🔍 **Metadata** to browse every value of every field.
-- ⚙ **Settings**, ❓ **Help** (this guide), and **Log Out**.
+- ⚙ **Settings**.
+- The **☰ menu** at the far right: **Help** (this guide), **Link a TV**, **Check for Updates** and **Log Out**. A green dot on it means a new version is out.
 - **Rescan** looks for new, moved and deleted files in the current library.
 
 At the bottom of the sidebar are **Manage Libraries**, **🎞 Clips**, and the version you're running. When a newer version is out, an **Update available** notice appears there instead.

@@ -88,7 +88,7 @@ length, codec and resolution fill in a moment later. Then make thumbnails with t
 
 ## User guide
 
-Click **?** at the top right of lustr (or press `?`) for the user guide: getting started,
+Open **☰ → Help** at the top right of lustr (or press `?`) for the user guide: getting started,
 browsing and search, the player, and more. The same pages are in [`guide/`](guide/getting-started.md)
 if you'd rather read them here.
 

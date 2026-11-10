@@ -704,11 +704,12 @@
                 quickFilters: { captions: '', chapters: '', markers: '' },   // header ⏷ Filters: '' | yes | no (sent as captions: / chapters: / markers:)
                 quickFilterNames: [['captions', 'Captions'], ['chapters', 'Chapters in the file'], ['markers', 'Markers']],
                 showFilterMenu: false,
+                userMenu: { open: false, checked: false },   // the header menu: Help, Link a TV, Check for Updates, Log Out
                 // header buttons you can hide (Settings -> Appearance); search, ⚙, Edit Search and Log Out always show
                 headerItems: [['sort', 'Sort'], ['favorites', '★ Favorites only'], ['select', 'Select All'], ['view', 'View (thumbnails / list / folders)'],
                               ['notes', '📝 Notes'], ['playlists', '📋 Playlists'], ['cast', '👥 Cast'], ['metadata', '🔍 Metadata'],
                               ['filters', '⏷ Filters (captions / chapters / markers)'], ['scene', '🌐 Scene link filter'], ['match', '🌐 Match scenes'],
-                              ['display', '👁 Libraries and videos shown'], ['tv', '📺 Link a TV'], ['thumbs', '📷 Generate all thumbnails'], ['rescan', 'Rescan']],
+                              ['display', '👁 Libraries and videos shown'], ['thumbs', '📷 Generate all thumbnails'], ['rescan', 'Rescan']],
                 resFilter: '',             // library filter: the lowest resolution to show (sent as a hidden res: keyword)
                 resFilters: [['4k', '4K'], ['hd', 'HD'], ['sdhigh', 'SD High'], ['sdlow', 'SD Low']],
                 maintRes: { running: false, done: 0, total: 0, changed: 0, unreadable: 0, error: '', backup: null, finished: false },
@@ -1883,6 +1884,11 @@
                     // a check that just started (stale cache) answers in a few seconds: look once more
                     if (!this.upd.checked_at && !window._updRetry) window._updRetry = setTimeout(() => this.updLoad(), 15000);
                 },
+                async userMenuCheck() {             // the menu's Check for Updates: ask GitHub now, answer in the menu
+                    this.userMenu.checked = true;
+                    if (this.upd.enabled) await this.updSet({ check_now: true });
+                    else await this.updLoad();
+                },
                 async updSet(body) {
                     this.upd.busy = true;
                     try {
@@ -2854,6 +2860,7 @@
                 },
 
                 handleEscape() {
+                    if (this.userMenu.open) { this.userMenu.open = false; return; }
                     if (this.help.open) { this.helpClose(); return; }
                     if (this.imgCast.open) { this.imgCast.open = false; return; }
                     if (this.clipsWin.big) { this.clipsWin.big = null; return; }
@@ -15466,19 +15473,47 @@ No metadata is changed.`)) return;
                         <button @click="setDisplayFilter(displayTypes)" class="w-full mt-1 text-xs text-gray-400 hover:text-white text-left">Show all</button>
                     </div>
                 </div>
-                <button x-show="hdr('tv')" @click="openSettings('account'); $nextTick(() => document.getElementById('settings-link-tv')?.scrollIntoView({ block: 'center' }))"
-                        class="text-gray-400 hover:text-white p-1" title="Link a TV…">📺</button>
                 <button x-show="hdr('thumbs')" @click="generateAllThumbs(currentLibrary)" class="text-gray-400 hover:text-white p-1" title="Gen All Thumbs">&#128247;</button>
                 <button @click="openSettings()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
-                <button @click="helpOpen()" class="text-gray-400 hover:text-white p-1 font-bold" title="Help: the user guide (?)">?</button>
                 <button x-show="hdr('rescan') || scanning || folderAdding" @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning || folderAdding"
                         :title="folderAdding ? 'Adding a folder to ' + folderAddingLib + ' and looking for videos' : ''">
                     <svg x-show="scanning || folderAdding" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                     <span x-text="scanning ? 'Scanning...' : folderAdding ? 'Adding folder...' : 'Rescan'" class="hidden sm:inline"></span>
                 </button>
-                <button @click="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded text-sm flex items-center gap-2" title="Log Out">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
-                </button>
+                <!-- the account menu: Help, Link a TV, Check for Updates, Log Out -->
+                <div class="relative" @click.outside="userMenu.open = false">
+                    <button @click="userMenu.open = !userMenu.open; userMenu.checked = false" class="relative bg-gray-700 hover:bg-gray-600 px-2 py-1.5 rounded text-sm flex items-center"
+                            :title="upd.newer ? 'Menu - a new version is available' : 'Menu: help, link a TV, updates, log out'" aria-haspopup="menu" :aria-expanded="userMenu.open">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                        <span x-show="upd.newer" x-cloak class="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-gray-800"></span>
+                    </button>
+                    <div x-show="userMenu.open" x-cloak role="menu" class="absolute right-0 mt-1 w-60 bg-gray-800 border border-gray-600 rounded shadow-xl z-50 py-1 text-sm">
+                        <div x-show="account.username" class="px-3 py-1.5 text-xs text-gray-500 border-b border-gray-700 truncate" x-text="'Logged in as ' + account.username"></div>
+                        <button role="menuitem" @click="userMenu.open = false; helpOpen()" class="w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center gap-2">
+                            <span class="w-5 text-center font-bold">?</span><span class="flex-1">Help</span></button>
+                        <button role="menuitem" @click="userMenu.open = false; openSettings('account'); $nextTick(() => document.getElementById('settings-link-tv')?.scrollIntoView({ block: 'center' }))"
+                                class="w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center gap-2"><span class="w-5 text-center">📺</span>Link a TV</button>
+                        <button role="menuitem" @click="userMenuCheck()" :disabled="upd.busy" class="w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center gap-2">
+                            <span class="w-5 text-center">&#8593;</span><span class="flex-1">Check for Updates</span>
+                            <span x-show="upd.newer" class="h-2 w-2 rounded-full bg-emerald-500"></span></button>
+                        <div x-show="userMenu.checked || upd.newer" class="px-3 pb-2 -mt-1 pl-10 text-xs">
+                            <span x-show="upd.busy" class="text-gray-400">Checking GitHub…</span>
+                            <template x-if="!upd.busy">
+                                <span>
+                                    <a x-show="upd.newer" :href="upd.url" target="_blank" rel="noopener noreferrer" class="text-emerald-400 hover:text-emerald-300 underline"
+                                       x-text="'v' + upd.latest + ' is available ↗'"></a>
+                                    <span x-show="!upd.newer && !upd.enabled" class="text-gray-400">Update checks are off (Settings → Maintenance)</span>
+                                    <span x-show="!upd.newer && upd.enabled && upd.error" class="text-yellow-400" x-text="'Could not check: ' + upd.error"></span>
+                                    <span x-show="!upd.newer && upd.enabled && !upd.error" class="text-gray-400" x-text="'Up to date (v' + upd.current + ')'"></span>
+                                </span>
+                            </template>
+                        </div>
+                        <div class="border-t border-gray-700 my-1"></div>
+                        <button role="menuitem" @click="userMenu.open = false; logout()" class="w-full text-left px-3 py-2 hover:bg-gray-700 text-red-400 flex items-center gap-2">
+                            <svg class="w-4 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                            Log Out</button>
+                    </div>
+                </div>
             </header>
             
             <div x-show="folderMode && currentFolder && currentLibrary !== 'Home'" class="bg-gray-800 border-b border-gray-700 px-4 py-2 flex items-center gap-2 text-sm overflow-x-auto whitespace-nowrap shrink-0">
@@ -20434,7 +20469,7 @@ No metadata is changed.`)) return;
                         <!-- Header buttons: hide the ones you don't use (this browser) -->
                         <div class="bg-gray-900 p-3 rounded space-y-2">
                             <div><span class="block text-sm font-semibold text-gray-300">Header buttons</span>
-                                <span class="block text-xs text-gray-500">Which buttons show in the bar at the top (this browser). Search, ⚙ Settings, Edit Search and Log Out always show.</span></div>
+                                <span class="block text-xs text-gray-500">Which buttons show in the bar at the top (this browser). Search, ⚙ Settings, Edit Search and the ☰ menu always show.</span></div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-sm">
                                 <template x-for="[k, label] in headerItems" :key="'hi-' + k">
                                     <label class="flex items-center gap-2 cursor-pointer select-none">
