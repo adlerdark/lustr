@@ -15,3 +15,5 @@ deploy/
 tests/
 docs/
 *.md
+!guide/
+!guide/*.md

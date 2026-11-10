@@ -539,7 +539,8 @@ def export_json(request: Request, model = Depends(get_model), library: str = Que
             else:
                 video = model.files.get(path)
             
-            if video and SearchParser.matches_filters(path, video, field_filters):
+            if video and SearchParser.matches_field_filters(video, {k: v for k, v in field_filters.items() if k != 'path'}) \
+                    and ('path' not in field_filters or SearchParser.matches_path(path, field_filters['path'])):
                 if not base_query or SearchParser.matches_base_query(path, video, base_query):
                     paths.append(path)
         

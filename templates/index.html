@@ -581,6 +581,8 @@
                 castPicker: { open: false, typed: '', choices: [], resolve: null },   // 'which Jane Doe?'
                 mergeLinkPick: { open: false, links: [], resolve: null },             // merging files linked to different scenes
                 joinParts: { open: false, paths: [], title: '', busy: false, error: '' },  // Join as parts (cd1, cd2 ...)
+                // Help: the user guide (guide/*.md, listed in guide/index.json; routes/ui.py)
+                help: { open: false, pages: [], version: '', loaded: false, page: '', html: '', texts: {}, q: '', error: '', nav: false },
                 mainScrollX: 0,           // the main scroll area's sideways scroll (list view): the tab bar moves with it
                 jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1, tabsH: 0,   // tabsH: the sticky library tab bar's height   // # A-Z jump bar (Title / Cast / Filename sorts)
                 castPeek: { name: '', primary: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
@@ -1850,6 +1852,214 @@
                     this.activeMenu = null;
                 },
 
+                // ----- Help: the user guide -----
+                helpEnsureIndex() {
+                    if (this.help.loaded) return Promise.resolve(true);
+                    if (!window._helpLoading) window._helpLoading = this.helpLoadIndex().finally(() => { window._helpLoading = null; });
+                    return window._helpLoading;
+                },
+
+                async helpLoadIndex() {
+                    const H = this.help;
+                    try {
+                        const r = await fetch('/api/guide');
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        const d = await r.json();
+                        H.pages = d.pages || [];
+                        H.version = d.version || '';
+                        H.loaded = true;
+                        H.error = '';
+                        // every written page up front (a few small files), so search covers their text
+                        await Promise.all(H.pages.filter(p => p.status === 'done').map(async p => {
+                            try {
+                                const pr = await fetch('/api/guide/' + p.id);
+                                if (pr.ok) H.texts[p.id] = (await pr.json()).markdown || '';
+                            } catch (e) { /* left out of search */ }
+                        }));
+                        return true;
+                    } catch (e) {
+                        H.error = 'Could not load the guide: ' + e.message;
+                        return false;
+                    }
+                },
+
+                async helpOpen(id = '', anchor = '') {
+                    const H = this.help;
+                    H.open = true;
+                    H.q = '';
+                    if (!await this.helpEnsureIndex()) return;
+                    let last = '';
+                    try { last = localStorage.getItem('helpPage') || ''; } catch (e) { /* private window */ }
+                    const done = H.pages.filter(p => p.status === 'done');
+                    const pick = [id, last].find(x => x && done.some(p => p.id === x)) || (done[0] && done[0].id) || '';
+                    if (pick) this.helpGo(pick, anchor);
+                },
+
+                helpGo(id, anchor = '') {
+                    const H = this.help;
+                    const entry = H.pages.find(p => p.id === id);
+                    if (!entry || entry.status !== 'done') return;
+                    H.page = id;
+                    H.nav = false;
+                    H.html = this.helpMd(H.texts[id] || '*This page could not be loaded.*');
+                    try { localStorage.setItem('helpPage', id); } catch (e) { /* private window */ }
+                    this.$nextTick(() => {
+                        const box = this.$refs.helpBody;
+                        if (!box) return;
+                        const el = anchor ? document.getElementById('help-' + anchor) : null;
+                        if (el) el.scrollIntoView({ block: 'start' });
+                        else box.scrollTop = 0;
+                    });
+                },
+
+                helpClose() { this.help.open = false; },
+
+                // the guide page that explains the Settings page you're on, or '' (the "? Help" link there)
+                helpForSettings() {
+                    const p = this.help.pages.find(x => x.status === 'done' && (x.settings || []).includes(this.settingsPage));
+                    return p ? p.id : '';
+                },
+
+                helpGroups() {
+                    const out = [];
+                    for (const p of this.help.pages) {
+                        let g = out.find(x => x[0] === p.group);
+                        if (!g) out.push(g = [p.group, []]);
+                        g[1].push(p);
+                    }
+                    return out;
+                },
+
+                // search: page titles and headings, then the text of every written page -> [{id, title, anchor, snippet}]
+                helpResults() {
+                    const H = this.help, q = H.q.trim().toLowerCase();
+                    if (q.length < 2) return [];
+                    const out = [];
+                    for (const p of H.pages.filter(x => x.status === 'done')) {
+                        const text = H.texts[p.id] || '';
+                        let heading = '';
+                        let hits = 0;
+                        for (const line of text.split('\n')) {
+                            const h = line.match(/^#{1,4}\s+(.*)$/);
+                            if (h) heading = h[1];
+                            if (line.toLowerCase().includes(q) && hits < 3) {
+                                const plain = line.replace(/^[#>\-*\d.\s|]+/, '').replace(/[*`|]/g, '').trim();
+                                out.push({ id: p.id, title: p.title, anchor: heading ? this.helpSlug(heading) : '', heading,
+                                           snippet: plain.length > 140 ? plain.slice(0, 140) + '…' : plain });
+                                hits++;
+                            }
+                        }
+                        if (!hits && p.title.toLowerCase().includes(q)) out.push({ id: p.id, title: p.title, anchor: '', heading: '', snippet: '' });
+                    }
+                    return out;
+                },
+
+                helpSlug(s) {                                  // the same anchors GitHub makes from headings
+                    return s.toLowerCase().replace(/<[^>]+>/g, '').replace(/[^\p{L}\p{N}\s_-]/gu, '').trim().replace(/ /g, '-');
+                },
+
+                // links in a guide page: other pages (x.md#anchor) and anchors open inside Help, the rest in a new tab
+                helpLinkClick(e) {
+                    const a = e.target.closest('a');
+                    if (!a) return;
+                    if (a.dataset.guide !== undefined) {
+                        e.preventDefault();
+                        this.helpGo(a.dataset.guide || this.help.page, a.dataset.anchor || '');
+                    }
+                },
+
+                // a small Markdown renderer for the guide: headings, paragraphs, lists, tables, code, > notes, links
+                helpMd(md) {
+                    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                    const inline = raw => raw.split(/(`[^`]+`)/).map(part => {
+                        if (/^`[^`]+`$/.test(part)) return '<code class="bg-gray-800 text-gray-100 px-1 rounded text-[0.9em]">' + esc(part.slice(1, -1)) + '</code>';
+                        let s = esc(part);
+                        s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, href) => {
+                            const g = href.match(/^(?:([a-z0-9-]+)\.md)?(?:#([a-z0-9-]+))?$/);
+                            const cls = 'text-blue-400 hover:text-blue-300 underline';
+                            if (g && (g[1] || g[2])) return `<a href="#" class="${cls}" data-guide="${g[1] || ''}" data-anchor="${g[2] || ''}">${text}</a>`;
+                            if (/^https?:\/\//.test(href)) return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="${cls}">${text}</a>`;
+                            return text;
+                        });
+                        s = s.replace(/\*\*([^*]+)\*\*/g, '<strong class="text-white">$1</strong>');
+                        s = s.replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, '$1<em>$2</em>');
+                        return s;
+                    }).join('');
+                    const lines = md.replace(/\r\n?/g, '\n').split('\n');
+                    const out = [];
+                    let para = [];
+                    const flush = () => { if (para.length) out.push('<p class="my-3 leading-relaxed">' + inline(para.join(' ')) + '</p>'); para = []; };
+                    const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        if (/^```/.test(line)) {                                       // code block
+                            flush();
+                            const code = [];
+                            for (i++; i < lines.length && !/^```/.test(lines[i]); i++) code.push(lines[i]);
+                            out.push('<pre class="bg-gray-800 rounded p-3 my-3 text-sm overflow-x-auto"><code>' + esc(code.join('\n')) + '</code></pre>');
+                            continue;
+                        }
+                        const h = line.match(/^(#{1,4})\s+(.*)$/);
+                        if (h) {
+                            flush();
+                            const n = h[1].length, size = ['text-2xl', 'text-xl', 'text-lg', 'text-base'][n - 1];
+                            out.push(`<h${n} id="help-${this.helpSlug(h[2])}" class="${size} font-bold text-white ${n === 1 ? 'mb-4' : 'mt-8 mb-2'} scroll-mt-4">${inline(h[2])}</h${n}>`);
+                            continue;
+                        }
+                        if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {   // table
+                            flush();
+                            const head = cells(line);
+                            const rows = [];
+                            for (i += 2; i < lines.length && /^\s*\|/.test(lines[i]); i++) rows.push(cells(lines[i]));
+                            i--;
+                            out.push('<div class="overflow-x-auto my-4"><table class="w-full text-sm border-collapse"><thead><tr>'
+                                + head.map(c => '<th class="text-left font-semibold text-gray-200 border-b border-gray-600 px-2 py-1.5">' + inline(c) + '</th>').join('')
+                                + '</tr></thead><tbody>'
+                                + rows.map(r => '<tr class="border-b border-gray-700/60">' + r.map(c => '<td class="px-2 py-1.5 align-top">' + inline(c) + '</td>').join('') + '</tr>').join('')
+                                + '</tbody></table></div>');
+                            continue;
+                        }
+                        if (/^>\s?/.test(line)) {                                      // a note
+                            flush();
+                            const q = [];
+                            for (; i < lines.length && /^>\s?/.test(lines[i]); i++) q.push(lines[i].replace(/^>\s?/, ''));
+                            i--;
+                            out.push('<div class="my-4 border-l-4 border-blue-500 bg-blue-500/10 rounded-r px-3 py-2">' + inline(q.join(' ')) + '</div>');
+                            continue;
+                        }
+                        const li = line.match(/^([-*]|\d+\.)\s+(.*)$/);
+                        if (li) {                                                     // a list, with one level of sub-lists
+                            flush();
+                            const ordered = /\d/.test(li[1]);
+                            const items = [];                                         // [{ text, sub: [], subOrdered }]
+                            for (; i < lines.length; i++) {
+                                const m = lines[i].match(/^([-*]|\d+\.)\s+(.*)$/);
+                                const sm = lines[i].match(/^\s{2,}([-*]|\d+\.)\s+(.*)$/);
+                                if (m && /\d/.test(m[1]) === ordered) items.push({ text: m[2], sub: [], subOrdered: false });
+                                else if (sm && items.length) {
+                                    const it = items[items.length - 1];
+                                    if (!it.sub.length) it.subOrdered = /\d/.test(sm[1]);
+                                    it.sub.push(sm[2]);
+                                } else if (items.length && /^\s{2,}\S/.test(lines[i])) {
+                                    const it = items[items.length - 1];
+                                    if (it.sub.length) it.sub[it.sub.length - 1] += ' ' + lines[i].trim();
+                                    else it.text += ' ' + lines[i].trim();
+                                } else break;
+                            }
+                            i--;
+                            const list = (ord, inner) => `<${ord ? 'ol' : 'ul'} class="my-2 pl-6 space-y-1 ${ord ? 'list-decimal' : 'list-disc'}">${inner}</${ord ? 'ol' : 'ul'}>`;
+                            out.push(list(ordered, items.map(it => '<li class="leading-relaxed">' + inline(it.text)
+                                + (it.sub.length ? list(it.subOrdered, it.sub.map(t => '<li class="leading-relaxed">' + inline(t) + '</li>').join('')) : '')
+                                + '</li>').join('')));
+                            continue;
+                        }
+                        if (!line.trim()) { flush(); continue; }
+                        para.push(line.trim());
+                    }
+                    flush();
+                    return out.join('\n');
+                },
+
                 // ----- multi-part videos: Join as parts -----
                 openJoinParts() {
                     if (this.selectedPaths.size < 2) return;
@@ -2069,6 +2279,12 @@
                     window.addEventListener('keydown', (e) => {
                         if (this.np.open && !this.modals.metadata) { this.npKey(e); return; }   // the new player has its own keys (not while editing)
                         if (e.key === 'Escape') this.handleEscape();
+                        // ? opens Help (not while typing)
+                        if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey && this.isLoggedIn && !this.help.open && !this.activeVideo
+                            && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName) && !e.target?.isContentEditable) {
+                            e.preventDefault();
+                            this.helpOpen();
+                        }
                         if (e.key === 'Enter' && e.ctrlKey && this.modals.metadata) this.saveMetadata();
                         if (e.key === 'Enter' && e.ctrlKey && this.imgEdit.open) this.imgEditSave();
                         
@@ -2597,6 +2813,7 @@
                 },
 
                 handleEscape() {
+                    if (this.help.open) { this.helpClose(); return; }
                     if (this.imgCast.open) { this.imgCast.open = false; return; }
                     if (this.clipsWin.big) { this.clipsWin.big = null; return; }
                     if (this.img.menu.open) { this.img.menu.open = false; return; }
@@ -8615,6 +8832,7 @@ No metadata is changed.`)) return;
                     if (page) this.settingsPage = page;
                     if (!this.settingsPages.some(p => p.id === this.settingsPage)) this.settingsPage = 'browsing';
                     this.modals.settings = true;
+                    this.helpEnsureIndex();                     // for the "? Help" link on each page
                     this.loadAutomation();
                     this.tvLoadSessions();
                     if (this.settingsLayout !== 'page') {                       // the popup: the tab that holds that page
@@ -15112,6 +15330,7 @@ No metadata is changed.`)) return;
                         class="text-gray-400 hover:text-white p-1" title="Link a TV…">📺</button>
                 <button x-show="hdr('thumbs')" @click="generateAllThumbs(currentLibrary)" class="text-gray-400 hover:text-white p-1" title="Gen All Thumbs">&#128247;</button>
                 <button @click="openSettings()" class="text-gray-400 hover:text-white p-1" title="Settings">&#9881;</button>
+                <button @click="helpOpen()" class="text-gray-400 hover:text-white p-1 font-bold" title="Help: the user guide (?)">?</button>
                 <button x-show="hdr('rescan') || scanning || folderAdding" @click="async () => { scanning=true; await rescanLibrary(currentLibrary); page=1; await fetchVideos('reset'); await updateLibraryAlertCounts(); scanning=false; }" class="bg-green-700 hover:bg-green-800 px-3 py-1.5 rounded text-sm flex items-center gap-2" :disabled="scanning || folderAdding"
                         :title="folderAdding ? 'Adding a folder to ' + folderAddingLib + ' and looking for videos' : ''">
                     <svg x-show="scanning || folderAdding" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
@@ -17987,6 +18206,76 @@ No metadata is changed.`)) return;
             </div>
         </div>
         
+        <!-- Help: the user guide (guide/*.md). A full page over everything but the players; Esc closes it. -->
+        <div x-show="help.open" x-cloak class="fixed inset-0 z-[90] bg-gray-900 flex flex-col md:flex-row text-gray-300">
+            <!-- Contents (desktop) -->
+            <nav class="hidden md:flex flex-col w-64 shrink-0 bg-gray-800 border-r border-gray-700 overflow-y-auto">
+                <div class="flex items-center justify-between px-4 py-4 border-b border-gray-700">
+                    <h2 class="font-bold text-xl text-white">Help</h2>
+                    <button @click="helpClose()" class="text-gray-400 hover:text-white text-2xl leading-none" title="Close (Esc)">&times;</button>
+                </div>
+                <div class="py-2 text-sm">
+                    <template x-for="[g, pages] in helpGroups()" :key="'hg-' + g">
+                        <div>
+                            <div class="px-4 pt-4 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500" x-text="g"></div>
+                            <template x-for="p in pages" :key="'hp-' + p.id">
+                                <button @click="help.q = ''; helpGo(p.id)" :disabled="p.status !== 'done'"
+                                        class="w-full flex items-center justify-between gap-2 px-4 py-1.5 text-left transition-colors border-l-2"
+                                        :class="p.status !== 'done' ? 'text-gray-600 cursor-default border-transparent'
+                                                : help.page === p.id && !help.q ? 'bg-blue-600/20 text-white border-blue-500' : 'text-gray-300 hover:bg-gray-700 border-transparent'">
+                                    <span x-text="p.title"></span>
+                                    <span x-show="p.status !== 'done'" class="text-[10px] italic shrink-0">coming soon</span>
+                                </button>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+                <div class="mt-auto px-4 py-3 text-xs text-gray-500 border-t border-gray-700" x-text="help.version ? 'lustr ' + help.version : ''"></div>
+            </nav>
+            <!-- Contents (phone) -->
+            <div class="md:hidden flex items-center gap-2 px-3 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
+                <h2 class="font-bold text-lg text-white shrink-0">Help</h2>
+                <select class="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+                        @change="help.q = ''; helpGo($event.target.value)">
+                    <template x-for="[g, pages] in helpGroups()" :key="'hmg-' + g">
+                        <optgroup :label="g">
+                            <template x-for="p in pages" :key="'hmp-' + p.id">
+                                <option :value="p.id" :disabled="p.status !== 'done'" :selected="help.page === p.id"
+                                        x-text="p.title + (p.status !== 'done' ? ' (coming soon)' : '')"></option>
+                            </template>
+                        </optgroup>
+                    </template>
+                </select>
+                <button @click="helpClose()" class="text-gray-400 hover:text-white text-2xl leading-none px-1" title="Close">&times;</button>
+            </div>
+            <!-- Page -->
+            <div class="flex-1 min-h-0 flex flex-col">
+                <div class="shrink-0 px-4 sm:px-8 pt-4">
+                    <div class="max-w-3xl mx-auto relative">
+                        <input type="search" x-model="help.q" placeholder="Search the guide…" @keydown.escape.stop="help.q ? help.q = '' : helpClose()"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+                <div x-ref="helpBody" class="flex-1 min-h-0 overflow-y-auto px-4 sm:px-8 py-4">
+                    <div class="max-w-3xl mx-auto pb-16">
+                        <p x-show="help.error" class="text-red-400 text-sm" x-text="help.error"></p>
+                        <!-- search results -->
+                        <div x-show="help.q.trim().length >= 2">
+                            <p class="text-xs text-gray-500 mb-3" x-text="helpResults().length ? helpResults().length + ' found' : 'Nothing found. Try another word.'"></p>
+                            <template x-for="(r, i) in helpResults()" :key="'hr-' + i">
+                                <button @click="help.q = ''; helpGo(r.id, r.anchor)" class="block w-full text-left rounded p-3 mb-2 bg-gray-800 hover:bg-gray-700">
+                                    <div class="text-sm text-white"><span x-text="r.title"></span><span x-show="r.heading && r.heading !== r.title" class="text-gray-400" x-text="' › ' + r.heading"></span></div>
+                                    <div x-show="r.snippet" class="text-xs text-gray-400 mt-1" x-text="r.snippet"></div>
+                                </button>
+                            </template>
+                        </div>
+                        <!-- the page -->
+                        <article x-show="help.q.trim().length < 2" x-html="help.html" @click="helpLinkClick($event)" class="text-[15px]"></article>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Settings: a full page with a sidebar (settingsLayout 'page'), or the older popup with tabs ('popup').
              One copy of the content: sPage(id) / sShow(tab, pages) pick what each layout shows. -->
         <div x-show="modals.settings" x-cloak class="fixed inset-0"
@@ -18100,7 +18389,9 @@ No metadata is changed.`)) return;
                 <div x-ref="settingsBody" class="flex-1 min-h-0 overflow-y-auto" :class="settingsLayout === 'page' ? '' : 'p-4 space-y-4'">
                   <div :class="settingsLayout === 'page' ? 'mx-auto w-full px-4 sm:px-8 py-6 space-y-4 ' + (settingsInfo().wide ? 'max-w-7xl' : 'max-w-3xl') : 'space-y-4'">
                     <h2 x-show="settingsLayout === 'page'" class="text-2xl font-bold flex items-center gap-2 pb-2">
-                        <span x-text="settingsInfo().icon"></span><span x-text="settingsInfo().label"></span></h2>
+                        <span x-text="settingsInfo().icon"></span><span x-text="settingsInfo().label"></span>
+                        <button x-show="helpForSettings()" @click="helpOpen(helpForSettings())"
+                                class="ml-auto text-sm font-normal text-blue-400 hover:text-blue-300" title="Open the user guide on this">? Help</button></h2>
                     <!-- Libraries & Groups (was the Manage Libraries popup): page Libraries & Scans › Libraries / Groups / Library settings.
                          Edits a working copy of the order and groups; saved by Save, by leaving the page or by closing Settings. -->
                     <div x-show="sShow('libraries', 'libraries') && modals.library && (settingsLayout !== 'page' || libraryManagementTab !== 'scans')" class="space-y-4">

@@ -1,0 +1,28 @@
+[
+  {"id": "getting-started", "title": "Getting started", "group": "Start", "status": "done", "settings": ["libraries", "thumbnails"]},
+  {"id": "browsing", "title": "Browsing & search", "group": "Start", "status": "done", "settings": ["browsing", "appearance"]},
+  {"id": "player", "title": "Watching videos", "group": "Start", "status": "done", "settings": ["player", "playhistory", "vlc"]},
+
+  {"id": "metadata", "title": "Editing metadata & bulk edit", "group": "Organize", "status": "done", "settings": []},
+  {"id": "quick-tags", "title": "Quick tags", "group": "Organize", "status": "done", "settings": ["metadata"]},
+  {"id": "filename-parser", "title": "Filename parser", "group": "Organize", "status": "done", "settings": []},
+  {"id": "cast", "title": "Cast & performers", "group": "Organize", "status": "done", "settings": []},
+  {"id": "collections", "title": "Collections & playlists", "group": "Organize", "status": "done", "settings": []},
+  {"id": "movies", "title": "Movies", "group": "Organize", "status": "done", "settings": []},
+  {"id": "images", "title": "Images", "group": "Organize", "status": "done", "settings": []},
+  {"id": "notes", "title": "Notes", "group": "Organize", "status": "done", "settings": []},
+  {"id": "clips", "title": "Clips", "group": "Organize", "status": "done", "settings": []},
+
+  {"id": "external-db", "title": "StashDB & ThePornDB", "group": "External data", "status": "done", "settings": ["extdb"]},
+  {"id": "tag-mappings", "title": "Tag mappings", "group": "External data", "status": "done", "settings": []},
+
+  {"id": "scans", "title": "Scans & file changes", "group": "Keep it tidy", "status": "done", "settings": []},
+  {"id": "maintenance", "title": "Maintenance & backups", "group": "Keep it tidy", "status": "done", "settings": ["maintenance", "importexport"]},
+  {"id": "corrupt", "title": "Corrupt files", "group": "Keep it tidy", "status": "done", "settings": []},
+  {"id": "captions", "title": "Captions", "group": "Keep it tidy", "status": "done", "settings": ["captions"]},
+
+  {"id": "settings", "title": "Settings reference", "group": "Reference", "status": "done", "settings": []},
+  {"id": "tv", "title": "Link a TV", "group": "Reference", "status": "done", "settings": []},
+  {"id": "privacy", "title": "Privacy & login", "group": "Reference", "status": "done", "settings": ["account"]},
+  {"id": "troubleshooting", "title": "Troubleshooting", "group": "Reference", "status": "done", "settings": []}
+]

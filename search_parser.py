@@ -31,7 +31,8 @@ class SearchParser:
         library_filters = []
         
         # Enhanced pattern to match field:value or field:(value1,value2) or field:"exact value"
-        field_pattern = r'(\w+):\(([^)]+)\)|(\w+):"([^"]+)"|(\w+):([\w.-]+)'
+        # (a bare value may hold * / % wildcards: cast:jane*, site:*tube)
+        field_pattern = r'(\w+):\(([^)]+)\)|(\w+):"([^"]+)"|(\w+):([\w.*%-]+)'
         
         remaining_parts = []
         last_end = 0
@@ -156,6 +157,15 @@ class SearchParser:
         pattern = pattern.replace(r'\*', '.*').replace(r'\%', '.*')
         return pattern
     
+    @staticmethod
+    def has_wildcard(value) -> bool:
+        return '*' in str(value) or '%' in str(value)
+
+    @staticmethod
+    def wildcard_match(pattern: str, value: str) -> bool:
+        """The whole value matches the pattern (* or % = any characters), ignoring case: jane* / *tube / *ann*."""
+        return re.fullmatch(SearchParser.wildcard_to_regex(str(pattern).lower()), str(value).lower(), re.S) is not None
+
     @staticmethod
     def matches_path(path: str, search_patterns: List[str]) -> bool:
         """
@@ -418,7 +428,15 @@ class SearchParser:
                 required_lower = str(required_value).lower()
                 
                 # Special fuzzy matching for cast field
-                if field_name == 'cast':
+                if field_name == 'cast' and SearchParser.has_wildcard(required_value):
+                    import cast_names
+                    for field_value in field_data:
+                        # jane* also finds the same-name performers 'Jane Doe (1)', ...
+                        if (SearchParser.wildcard_match(required_value, field_value)
+                                or SearchParser.wildcard_match(required_value, cast_names.base_name(field_value))):
+                            match_found = True
+                            break
+                elif field_name == 'cast':
                     import cast_names
                     plain = cast_names.split_suffix(str(required_value))[1] is None
                     for field_value in field_data:
@@ -429,10 +447,9 @@ class SearchParser:
                             break
                 else:
                     # Check for wildcard patterns
-                    if '*' in required_lower or '%' in required_lower:
-                        regex_pattern = SearchParser.wildcard_to_regex(required_lower)
+                    if SearchParser.has_wildcard(required_lower):
                         for field_value in field_data_lower:
-                            if re.search(regex_pattern, field_value):
+                            if SearchParser.wildcard_match(required_lower, field_value):
                                 match_found = True
                                 break
                     else:

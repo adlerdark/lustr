@@ -509,3 +509,44 @@ async def upload_theme(request: Request, file: "UploadFile" = None):
         f.write(content)
 
     return JSONResponse({"ok": True, "id": safe_name.replace('.css', '')})
+
+# ── User guide (Help): Markdown pages in guide/, listed in guide/index.json ─────
+
+GUIDE_DIR = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'guide')
+_GUIDE_ID = _re.compile(r'^[a-z0-9-]+$')
+
+
+def guide_index():
+    """-> the table of contents: [{id, title, group, status, settings}] in order."""
+    import json
+    with open(_os.path.join(GUIDE_DIR, 'index.json'), encoding='utf-8') as f:
+        return json.load(f)
+
+
+def guide_page_text(page_id):
+    """-> the Markdown of a written guide page, or None (bad id, not listed, not written yet)."""
+    if not isinstance(page_id, str) or not _GUIDE_ID.match(page_id):
+        return None
+    entry = next((p for p in guide_index() if p.get('id') == page_id), None)
+    if not entry or entry.get('status') != 'done':
+        return None
+    path = _os.path.join(GUIDE_DIR, page_id + '.md')
+    if not _os.path.isfile(path):
+        return None
+    with open(path, encoding='utf-8') as f:
+        return f.read()
+
+
+@api_router.get("/guide")
+def get_guide_index():
+    from config import VERSION
+    return {'version': VERSION, 'pages': guide_index()}
+
+
+@api_router.get("/guide/{page_id}")
+def get_guide_page(page_id: str):
+    from fastapi import HTTPException
+    text = guide_page_text(page_id)
+    if text is None:
+        raise HTTPException(status_code=404, detail='No such guide page')
+    return {'id': page_id, 'markdown': text}

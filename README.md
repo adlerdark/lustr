@@ -82,7 +82,13 @@ reachable by anyone else.
 In lustr: **Manage Libraries → add a library → add folders**. You can pick folders under
 `/media` (and `/media0`) - wherever you mounted your videos. lustr scans them right away;
 length, codec and resolution fill in a moment later. Then make thumbnails with the 📷 button
-(or Manage Library → Generate thumbnails).
+(or Manage Library → Generate Missing Thumbs).
+
+## User guide
+
+Click **?** at the top right of lustr (or press `?`) for the user guide: getting started,
+browsing and search, the player, and more. The same pages are in [`guide/`](guide/getting-started.md)
+if you'd rather read them here.
 
 ## Login and privacy
 

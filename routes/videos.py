@@ -465,10 +465,51 @@ def set_watch_history(watch_history):
     _watch_history = watch_history
 
 
+def _like_pattern(value):
+    """A search value with * / % wildcards -> its LIKE pattern (ESCAPE '\\'; _ stays literal), else None."""
+    if '*' not in value and '%' not in value:
+        return None
+    return value.replace('\\', '\\\\').replace('_', '\\_').replace('*', '%')
+
+
+def _value_match_sql(col, values):
+    """LOWER(col) is one of these search values, or matches one with wildcards (jane*, *tube) -> (sql, params)."""
+    exact, parts, params = [], [], []
+    for v in _unwrap_values(values):
+        pat = _like_pattern(v)
+        if pat is None:
+            exact.append(v)
+        else:
+            parts.append(f"LOWER({col}) LIKE ? ESCAPE '\\'")
+            params.append(pat)
+    if exact:
+        parts.insert(0, f"LOWER({col}) IN ({','.join('?' * len(exact))})")
+        params[:0] = exact
+    return '(' + (' OR '.join(parts) or '0') + ')', params
+
+
+def _path_match_sql(values, col='fv.path'):
+    """path:2023 / path:(a,b) / path:clips/*2023: paths containing any of them (* = any characters) -> (sql, params)."""
+    vals = _unwrap_values(values if isinstance(values, list) else [values])
+    conds, params = [], []
+    for v in vals:
+        v = v.strip().replace('\\', '/')
+        if v:
+            conds.append(f"{col} LIKE ? ESCAPE '\\'")
+            params.append('%' + (_like_pattern(v) or v.replace('_', '\\_').replace('%', '\\%')) + '%')
+    return '(' + (' OR '.join(conds) or '1') + ')', params
+
+
 def _cast_match_sql(names):
-    """SQL (on vc.value) matching these lowercase names, plus their numbered same-name performers."""
+    """SQL (on vc.value) matching these lowercase names, plus their numbered same-name performers.
+    A name with wildcards (jane*) matches as a pattern, the numbered ones too."""
     conds, params = [], []
     for n in names:
+        pat = _like_pattern(n)
+        if pat is not None:
+            conds.append("(LOWER(vc.value) LIKE ? ESCAPE '\\' OR LOWER(vc.value) LIKE ? ESCAPE '\\')")
+            params += [pat, pat + ' (%)']
+            continue
         conds.append("(LOWER(vc.value) = ? OR LOWER(vc.value) LIKE ? ESCAPE '\\')")
         esc = n.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         params += [n, esc + ' (%)']
@@ -528,15 +569,15 @@ def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.vide
             field_lower = field.lower()
             table_name = f'video_{field_lower}'
             junction_table = f'video_{field_lower}_junction'
-            placeholders = ','.join(['?' for _ in values])
+            match_sql, match_params = _value_match_sql('vt.value', values)
             conditions.append(f"""
                 {video_id_col} IN (
                     SELECT vj.video_id FROM {junction_table} vj
                     JOIN {table_name} vt ON vj.{field_lower}_id = vt.id
-                    WHERE LOWER(vt.value) IN ({placeholders})
+                    WHERE {match_sql}
                 )
             """)
-            params.extend(_unwrap_values(values))
+            params.extend(match_params)
         return
 
     # or_groups path: each group is ANDed; within a group, each {field:[values]}
@@ -555,15 +596,15 @@ def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.vide
             field_lower = field.lower()
             table_name = f'video_{field_lower}'
             junction_table = f'video_{field_lower}_junction'
-            placeholders = ','.join(['?' for _ in values])
+            match_sql, match_params = _value_match_sql('vt.value', values)
             group_subqueries.append(f"""
                 {video_id_col} IN (
                     SELECT vj.video_id FROM {junction_table} vj
                     JOIN {table_name} vt ON vj.{field_lower}_id = vt.id
-                    WHERE LOWER(vt.value) IN ({placeholders})
+                    WHERE {match_sql}
                 )
             """)
-            group_params.extend(_unwrap_values(values))
+            group_params.extend(match_params)
 
         if group_subqueries:
             conditions.append('(' + ' OR '.join(group_subqueries) + ')')
@@ -675,8 +716,9 @@ def _get_videos_sql_fast(
             params.extend(mparams)
 
     if 'path' in field_filters:
-        conditions.append("fv.path LIKE ?")
-        params.append(f"%{field_filters['path']}%")
+        path_sql, path_params = _path_match_sql(field_filters['path'])
+        conditions.append(path_sql)
+        params.extend(path_params)
 
     # ── Date field filters ─────────────────────────────────────────────────────
     # Supports:  date_added:2024-03-15   date_added:2024-03   date_added:2024
@@ -1458,8 +1500,9 @@ def _get_available_filters_uncached(
     base_conditions.extend(_chapters_sql(ch_filters))
 
     if 'path' in field_filters:
-        base_conditions.append("fv.path LIKE ?")
-        base_params.append(f"%{field_filters['path']}%")
+        path_sql, path_params = _path_match_sql(field_filters['path'])
+        base_conditions.append(path_sql)
+        base_params.extend(path_params)
 
     # Date field filters (mirrors _get_videos_sql_fast)
     _DATE_MAP = {
@@ -1487,16 +1530,16 @@ def _get_available_filters_uncached(
             if not isinstance(cast_values, list):
                 cast_values = [cast_values]
             
-            cast_placeholders = ','.join(['?' for _ in cast_values])
+            cast_names_sql, cast_params = _cast_match_sql(_unwrap_values(cast_values))
             scope_conditions.append(f"""
                 v.video_id IN (
                     SELECT vcj.video_id 
                     FROM video_cast_junction vcj
                     JOIN video_cast vc ON vcj.cast_id = vc.id
-                    WHERE LOWER(vc.value) IN ({cast_placeholders})
+                    WHERE {cast_names_sql}
                 )
             """)
-            scope_params.extend(_unwrap_values(cast_values))
+            scope_params.extend(cast_params)
         _add_display_condition(scope_conditions, scope_params, model)
         
         scope_where = " AND ".join(scope_conditions)
