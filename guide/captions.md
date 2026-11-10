@@ -9,6 +9,20 @@ lustr can show captions (subtitles) in the player, in two ways:
 
 When a video has captions, the player's **CC** button turns them on and picks the language. If it has none, the CC button offers **CC: make captions**. The video goes to the front of the queue, and the CC menu appears once they're ready.
 
+## How captions look
+
+**Settings → Captions → How captions look** sets the look for everyone, in both players:
+
+- **Size**, from 50% to 300%.
+- **Text colour**, **Background** colour and **Background opacity** (0% is no box at all).
+- **Edge**: **Outline**, **Drop shadow**, **Raised**, **Depressed**, or none. An edge keeps text readable without a background.
+- **Font**: Sans-serif, Serif, Monospace or Casual.
+- **Position**: at the **Bottom** or the **Top** of the picture (in the new player).
+
+The preview shows the result as you change it, and a video that's open picks up the change straight away. **Reset** goes back to the defaults.
+
+> Note: on an iPhone or iPad in full screen, the system's own caption settings can take over.
+
 ## Making captions for many videos
 
 - Right-click videos → **Generate Captions**.

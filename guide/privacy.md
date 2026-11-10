@@ -27,11 +27,15 @@ Phones, media keys and the browser's media controls normally show what's playing
 
 ## What leaves your server
 
-Nothing, unless you ask:
+Your library stays on your server. lustr only talks to other sites in these cases:
+
+- **StashDB / ThePornDB**: only when you click something that searches them, and only if you've given it API keys. A search sends what it searches for, such as a title, a performer's name or a file name.
+- **The update check**: about twice a day the server asks GitHub for the list of lustr versions. Nothing about you or your library is sent. Turn it off in **Settings → Maintenance → Overview**.
+
+Everything else happens on your server:
 
 - Your video files are mounted read-only; lustr never changes or deletes them.
 - Thumbnails, previews, captions and clips are all made on your server. Captions use Whisper locally.
-- lustr only contacts StashDB or ThePornDB when you click something that searches them, and only if you've given it API keys.
 - Everything the page needs (scripts, fonts) ships with lustr, so it works with no internet.
 
 ## Reaching lustr from outside

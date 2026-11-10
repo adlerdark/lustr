@@ -32,7 +32,33 @@ MODEL_REPOS = {'tiny': 'Systran/faster-whisper-tiny', 'base': 'Systran/faster-wh
                'small': 'Systran/faster-whisper-small', 'medium': 'Systran/faster-whisper-medium',
                'large-v3-turbo': 'mobiuslabsgmbh/faster-whisper-large-v3-turbo'}
 DEFAULTS = {'model': 'small', 'language': 'auto', 'cpu_threads': 6, 'use_existing': True, 'auto_on_play': False,
-            'night': {'enabled': False, 'start': 1, 'end': 7, 'libraries': []}}
+            'night': {'enabled': False, 'start': 1, 'end': 7, 'libraries': []},
+            # how captions look in both players (Settings -> Captions); size and opacities in %
+            'style': {'size': 100, 'color': '#ffffff', 'bg_color': '#000000', 'bg_opacity': 50,
+                      'edge': 'dropshadow', 'font': 'sans', 'position': 'bottom'}}
+STYLE_EDGES = ('none', 'uniform', 'dropshadow', 'raised', 'depressed')
+STYLE_FONTS = ('sans', 'serif', 'mono', 'casual')
+STYLE_POSITIONS = ('bottom', 'top')
+_HEX = re.compile(r'^#[0-9a-f]{6}$')
+
+
+def _merge_style(style, changes):
+    """Apply valid caption-style changes; anything out of range or unknown is ignored."""
+    out = dict(style)
+    for k, lo, hi in (('size', 50, 300), ('bg_opacity', 0, 100)):
+        if k in changes:
+            try:
+                out[k] = max(lo, min(hi, int(changes[k])))
+            except (TypeError, ValueError):
+                pass
+    for k in ('color', 'bg_color'):
+        v = str(changes.get(k, '')).strip().lower()
+        if _HEX.match(v):
+            out[k] = v
+    for k, allowed in (('edge', STYLE_EDGES), ('font', STYLE_FONTS), ('position', STYLE_POSITIONS)):
+        if changes.get(k) in allowed:
+            out[k] = changes[k]
+    return out
 TEXT_SUB_CODECS = {'subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text'}
 INDEX = 'captions.json'
 NICE = 15
@@ -82,6 +108,11 @@ def _merge(s, changes):
         if isinstance(n.get('libraries'), list):
             night['libraries'] = [str(x) for x in n['libraries']]
         s['night'] = night
+    st = changes.get('style')
+    if st == 'reset':
+        s['style'] = dict(DEFAULTS['style'])
+    elif isinstance(st, dict):
+        s['style'] = _merge_style(s.get('style') or DEFAULTS['style'], st)
     return s
 
 

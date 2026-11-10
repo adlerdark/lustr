@@ -50,6 +50,10 @@ Check that the API key is set (`STASHDB_API_KEY`, `TPDB_API_KEY`) and that the s
 
 If **Settings → Captions** says Whisper isn't installed, the image was built without it; rebuild it. Otherwise check the queue on that page for errors.
 
+## "Update available" in the sidebar
+
+A newer lustr is out. Click the notice to see it on GitHub; the [README](https://github.com/adlerdark/lustr#upgrading) explains how to upgrade. If the check fails (no internet, say), **Settings → Maintenance → Overview** shows the error. You can also turn the check off there.
+
 ## Something else
 
 The server log often says what went wrong: run `docker logs lustr` on the server.

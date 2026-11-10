@@ -1,10 +1,10 @@
 # Link a TV
 
-A TV app for lustr can log in with a short code, so you never have to type your password with a remote.
+[lustr-tv](https://github.com/adlerdark/lustr-tv), the TV app for lustr, logs in with a short code, so you never have to type your password with a remote. Its page on GitHub explains how to install it.
 
 ## Linking
 
-1. Open the lustr app on the TV. It shows a **4-digit code**.
+1. Open [lustr-tv](https://github.com/adlerdark/lustr-tv) on the TV. It shows a **4-digit code**.
 2. In lustr in your browser, open **Settings → Account & Security → Link a TV**. Or click 📺 in the top bar, which takes you there.
 3. Type the code and click **Link**. The TV logs in within a few seconds.
 

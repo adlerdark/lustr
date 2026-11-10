@@ -6,7 +6,7 @@ Open Settings with ⚙ at the top right. Pages that a guide page explains have a
 
 ## Personal
 
-**Account & Security**: your password, logging out after inactivity, linking a TV, and **Show libraries and videos**, which hides library types and orientations just for you. See [Privacy & login](privacy.md) and [Link a TV](tv.md).
+**Account & Security**: your password, logging out after inactivity, linking a TV, and **Show libraries and videos**, which hides library types and orientations just for you. See [Privacy & login](privacy.md) and [Link a TV](tv.md) (for the [lustr-tv](https://github.com/adlerdark/lustr-tv) app).
 
 **Appearance**: which **Header buttons** show in the top bar, the **Theme** (or **Upload Custom Theme** with your own `.css`), and the **Settings layout**: a full page or a popup window.
 
@@ -39,7 +39,7 @@ Open Settings with ⚙ at the top right. Pages that a guide page explains have a
 
 **Player**: which player (**New** or **Classic**), the lock screen, transcoding and hardware encoding, the starting quality, seek-bar previews, and markers from chapters. See [Watching videos](player.md).
 
-**Captions**: see [Captions](captions.md).
+**Captions**: how captions are made and **How captions look** (size, colours, edge, font, position). See [Captions](captions.md).
 
 **VLC**: for **Open in VLC**. Each row maps a **Server path** to the **Local path on this computer**, for example `/media/videos` to `Z:\Videos`. On Windows, download the link helper and run it as Administrator once.
 
@@ -47,4 +47,4 @@ Open Settings with ⚙ at the top right. Pages that a guide page explains have a
 
 **External DB**: StashDB and ThePornDB. **Overview**, **Tag mappings**, **Site Linking** and **Linked videos**. See [StashDB & ThePornDB](external-db.md) and [Tag mappings](tag-mappings.md).
 
-**Maintenance** and **Import / Export**: see [Maintenance & backups](maintenance.md).
+**Maintenance** (including **Updates**, the check for new versions) and **Import / Export**: see [Maintenance & backups](maintenance.md).

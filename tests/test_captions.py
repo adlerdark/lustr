@@ -169,3 +169,34 @@ class IndexTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CaptionStyle(unittest.TestCase):
+    """How captions look (Settings -> Captions): validated, merged onto the defaults, 'reset' goes back."""
+
+    def test_defaults(self):
+        s = captions._merge(json.loads(json.dumps(captions.DEFAULTS)), {})
+        self.assertEqual(s['style'], captions.DEFAULTS['style'])
+
+    def test_valid_changes(self):
+        s = captions._merge(json.loads(json.dumps(captions.DEFAULTS)),
+                            {'style': {'size': 150, 'color': '#FFFF00', 'bg_opacity': 0, 'edge': 'uniform',
+                                       'font': 'serif', 'position': 'top'}})
+        st = s['style']
+        self.assertEqual((st['size'], st['color'], st['bg_opacity'], st['edge'], st['font'], st['position']),
+                         (150, '#ffff00', 0, 'uniform', 'serif', 'top'))
+        self.assertEqual(st['bg_color'], '#000000')              # untouched keys keep their value
+
+    def test_bad_values_ignored_or_clamped(self):
+        st = captions._merge(json.loads(json.dumps(captions.DEFAULTS)),
+                             {'style': {'size': 9999, 'color': 'red', 'bg_color': '#12345', 'bg_opacity': -5,
+                                        'edge': 'glow', 'font': 'wingdings', 'position': 'middle'}})['style']
+        self.assertEqual(st['size'], 300)
+        self.assertEqual(st['bg_opacity'], 0)
+        for k in ('color', 'bg_color', 'edge', 'font', 'position'):
+            self.assertEqual(st[k], captions.DEFAULTS['style'][k], k)
+
+    def test_reset(self):
+        s = json.loads(json.dumps(captions.DEFAULTS))
+        s = captions._merge(s, {'style': {'size': 200}})
+        self.assertEqual(captions._merge(s, {'style': 'reset'})['style'], captions.DEFAULTS['style'])

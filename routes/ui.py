@@ -550,3 +550,31 @@ def get_guide_page(page_id: str):
     if text is None:
         raise HTTPException(status_code=404, detail='No such guide page')
     return {'id': page_id, 'markdown': text}
+
+
+# ── Update check: a newer lustr on GitHub? (update_check.py; the sidebar notice) ─────
+
+class UpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    check_now: Optional[bool] = None
+
+
+@api_router.get("/update")
+def get_update_status(model = Depends(get_model)):
+    import update_check
+    try:
+        update_check.refresh_in_background(model.db.get_connection)     # at most twice a day; never waits
+    except Exception as e:
+        print(f"update check: {e}")
+    return update_check.status(model.db.get_connection())
+
+
+@api_router.post("/update")
+def set_update_check(req: UpdateRequest, model = Depends(get_model)):
+    import update_check
+    conn = model.db.get_connection()
+    if req.enabled is not None:
+        update_check.set_enabled(conn, req.enabled)
+    if req.check_now and update_check.load(conn)['enabled']:
+        update_check.check_now(conn)                                      # you asked: wait for the answer
+    return update_check.status(conn)

@@ -73,6 +73,9 @@
         #npStage .np-elapsed .vjs-time-divider { padding: 0 .3em; min-width: 0; }
         #npStage .np-elapsed .vjs-duration { padding-left: 0; }
         #npStage .vjs-np-fit-cover .vjs-tech { object-fit: cover; }
+        /* captions: the look comes from Settings -> Captions, so video.js's own caption-settings dialog is hidden */
+        #npStage .vjs-texttrack-settings { display: none; }
+        #npStage .np-cc-top .vjs-text-track-display .vjs-text-track-cue { top: 4% !important; bottom: auto !important; }
         #npStage .vjs-np-fit-fill .vjs-tech { object-fit: fill; }
         /* outside fullscreen the picture stops above the control bar, which stays visible */
         #npStage .video-js:not(.vjs-fullscreen) .vjs-tech { height: calc(100% - 3em); }
@@ -583,6 +586,8 @@
                 joinParts: { open: false, paths: [], title: '', busy: false, error: '' },  // Join as parts (cd1, cd2 ...)
                 // Help: the user guide (guide/*.md, listed in guide/index.json; routes/ui.py)
                 help: { open: false, pages: [], version: '', loaded: false, page: '', html: '', texts: {}, q: '', error: '', nav: false },
+                // a newer lustr on GitHub (update_check.py): the sidebar notice and Settings -> Maintenance
+                upd: { loaded: false, enabled: true, current: '', latest: null, newer: false, url: '', checked_at: null, error: null, busy: false },
                 mainScrollX: 0,           // the main scroll area's sideways scroll (list view): the tab bar moves with it
                 jumpLetters: [], jumpBusy: false, jumpCurrent: '', jumpBarH: 0, listStartPage: 1, tabsH: 0,   // tabsH: the sticky library tab bar's height   // # A-Z jump bar (Title / Cast / Filename sorts)
                 castPeek: { name: '', primary: '', src: '', x: 0, y: 0, show: false, timer: null, delay: 750 },   // photo after resting on a cast name
@@ -1852,6 +1857,24 @@
                     this.activeMenu = null;
                 },
 
+                // ----- update check (update_check.py) -----
+                async updLoad() {
+                    try {
+                        const d = await (await fetch('/api/update')).json();
+                        if (d && d.current) Object.assign(this.upd, d, { loaded: true });
+                    } catch (e) { /* no notice */ }
+                    if (!window._updTimer) window._updTimer = setInterval(() => this.updLoad(), 6 * 3600 * 1000);
+                    // a check that just started (stale cache) answers in a few seconds: look once more
+                    if (!this.upd.checked_at && !window._updRetry) window._updRetry = setTimeout(() => this.updLoad(), 15000);
+                },
+                async updSet(body) {
+                    this.upd.busy = true;
+                    try {
+                        const d = await this.extDbPostAny('/api/update', body);
+                        if (d && d.current) Object.assign(this.upd, d, { loaded: true });
+                    } catch (e) { alert('Could not check: ' + e.message); } finally { this.upd.busy = false; }
+                },
+
                 // ----- Help: the user guide -----
                 helpEnsureIndex() {
                     if (this.help.loaded) return Promise.resolve(true);
@@ -2406,6 +2429,8 @@
                         try { this.appSettings = { ...this.appSettings, ...JSON.parse(savedSettings) }; } catch(e){}
                     }
                     if(!this.appSettings.itemsPerPage) this.appSettings.itemsPerPage = 150;
+                    this.ccStyleLoad();                     // how captions look, in both players
+                    this.updLoad();                         // is there a newer lustr on GitHub (sidebar notice)
                     if (!(parseInt(this.appSettings.mvPerPage) > 0)) this.appSettings.mvPerPage = 120;
                     if (!['button', 'pages', 'scroll', 'all'].includes(this.appSettings.mvPagination)) this.appSettings.mvPagination = 'button';
                     if (!(parseInt(this.appSettings.imgAlbumsPerPage) > 0)) this.appSettings.imgAlbumsPerPage = 120;
@@ -12068,9 +12093,11 @@ No metadata is changed.`)) return;
                         npLabel() {
                             const m = window.lustrNP.app.npFit();
                             const ph = this.el().querySelector('.vjs-icon-placeholder');
-                            if (ph) ph.textContent = { contain: 'Fit', native: '1:1', cover: 'Fill', fill: 'Stretch' }[m];
+                            if (ph) ph.textContent = { contain: 'Fit', native: '1:1', x15: '1.5×', x2: '2×', cover: 'Fill', fill: 'Stretch' }[m];
                             this.controlText({ contain: 'Fit: whole picture, scaled to the window (A)',
                                                native: 'Original size: one video pixel per screen pixel, centred (A)',
+                                               x15: 'Zoom 1.5×: one and a half times the original size, never bigger than Fit (A)',
+                                               x2: 'Zoom 2×: twice the original size, never bigger than Fit (A)',
                                                cover: 'Fill: fills the window, edges cropped (A)',
                                                fill: 'Stretch: fills the window, picture stretched (A)' }[m]);
                         }
@@ -12081,13 +12108,13 @@ No metadata is changed.`)) return;
                 // picture size: contain (fit, scaled) / native (1:1 pixels) / cover (fill, cropped) / fill (stretched); remembered here
                 npFit() {
                     const m = localStorage.getItem('npFit');
-                    return ['contain', 'native', 'cover', 'fill'].includes(m) ? m : 'contain';
+                    return ['contain', 'native', 'x15', 'x2', 'cover', 'fill'].includes(m) ? m : 'contain';
                 },
 
-                npNativeSize() {                  // 1:1: the playing stream's own size in screen pixels
+                npNativeSize() {                  // 1:1 / 1.5x / 2x: the playing stream's own size in screen pixels, times the zoom
                     const p = this.npPlayer(), d = this.np.data || {};
                     if (!p) return;
-                    const dpr = window.devicePixelRatio || 1;
+                    const dpr = (window.devicePixelRatio || 1) / (this.npZoomSteps[this.npFit()] || 1);
                     const w = p.videoWidth() || d.width, h = p.videoHeight() || d.height;
                     if (w && h) {
                         p.el().style.setProperty('--np-w', (w / dpr) + 'px');
@@ -12100,16 +12127,37 @@ No metadata is changed.`)) return;
                     if (!p) return;
                     const m = this.npFit();
                     ['cover', 'fill', 'native'].forEach(c => p.removeClass('vjs-np-fit-' + c));
-                    if (m !== 'contain') p.addClass('vjs-np-fit-' + m);
+                    if (m !== 'contain') p.addClass('vjs-np-fit-' + (m in this.npZoomSteps ? 'native' : m));   // zoom steps: 1:1, bigger (capped at Fit)
                     this.npNativeSize();
                     const b = p.getChild('ControlBar').getChild('NpFitButton');
                     if (b) b.npLabel();
                 },
 
+                // A / the fit button: Fit -> 1:1 -> 1.5x -> 2x -> Fill -> Stretch. A zoom step that would be
+                // at least as big as Fit is skipped (it would look just like Fit).
                 npCycleFit() {
-                    const next = { contain: 'native', native: 'cover', cover: 'fill', fill: 'contain' }[this.npFit()];
-                    try { localStorage.setItem('npFit', next); } catch (e) { /* ignore */ }
+                    const order = ['contain', 'native', 'x15', 'x2', 'cover', 'fill'];
+                    let i = order.indexOf(this.npFit());
+                    for (let n = 0; n < order.length; n++) {
+                        i = (i + 1) % order.length;
+                        if (!(order[i] in this.npZoomSteps) || !this.npZoomReachesFit(this.npZoomSteps[order[i]])) break;
+                    }
+                    try { localStorage.setItem('npFit', order[i]); } catch (e) { /* ignore */ }
                     this.npApplyFit();
+                },
+
+                npZoomSteps: { x15: 1.5, x2: 2 },
+
+                // the video at k times its own pixel size would fill the window at least as much as Fit
+                npZoomReachesFit(k) {
+                    const p = this.npPlayer(), d = this.np.data || {};
+                    if (!p) return false;
+                    const w = p.videoWidth() || d.width, h = p.videoHeight() || d.height;
+                    const el = p.el(), bar = p.isFullscreen() ? 0 : (el.querySelector('.vjs-control-bar')?.offsetHeight || 0);
+                    const cw = el.clientWidth, ch = el.clientHeight - bar;
+                    if (!w || !h || !cw || !ch) return false;
+                    const dpr = window.devicePixelRatio || 1;
+                    return k / dpr >= Math.min(cw / w, ch / h) - 0.001;
                 },
 
                 npBuild() {
@@ -12138,7 +12186,10 @@ No metadata is changed.`)) return;
                             },
                         },
                         controlBar: { skipButtons: { forward: 10, backward: 10 }, pictureInPictureToggle: false },
-                        html5: { vhs: { overrideNative: !videojs.browser.IS_SAFARI }, nativeAudioTracks: false, nativeVideoTracks: false },
+                        // captions drawn by video.js (styled from Settings -> Captions), except on iPhone / iPad, whose
+                        // own fullscreen player only shows native captions (styled through video::cue instead)
+                        html5: { vhs: { overrideNative: !videojs.browser.IS_SAFARI }, nativeAudioTracks: false, nativeVideoTracks: false,
+                                 nativeTextTracks: !!videojs.browser.IS_IOS },
                     });
                     window.lustrNP.player = p;
                     this.npTouch(p);
@@ -13069,6 +13120,8 @@ No metadata is changed.`)) return;
                 npCaptions() {
                     const p = this.npPlayer(), cc = this.np.data && this.np.data.captions;
                     if (!p || !cc) return;
+                    if (cc.style) this.ccStyleSaved = cc.style;
+                    this.npCCStyle(p);
                     const remote = p.remoteTextTracks();
                     for (let i = remote.length - 1; i >= 0; i--) p.removeRemoteTextTrack(remote[i]);
                     let want = null;
@@ -13150,6 +13203,58 @@ No metadata is changed.`)) return;
                         this.ccIndexLoad(true);
                         alert(`Removed ${d.removed} caption track${d.removed === 1 ? '' : 's'}.`);
                     } catch (e) { alert('Could not remove captions: ' + e.message); }
+                },
+                // ----- how captions look (Settings -> Captions; captions.py 'style') -----
+                ccStyleDefault: { size: 100, color: '#ffffff', bg_color: '#000000', bg_opacity: 50, edge: 'dropshadow', font: 'sans', position: 'bottom' },
+                ccStyleNow() { return { ...this.ccStyleDefault, ...(this.cc.settings?.style || this.ccStyleSaved || {}) }; },
+                ccFonts: { sans: 'Arial, Helvetica, sans-serif', serif: 'Georgia, "Times New Roman", serif',
+                           mono: '"Courier New", Courier, monospace', casual: '"Comic Sans MS", "Comic Neue", cursive' },
+                ccShadows: { none: 'none', uniform: '0 0 4px #222, 0 0 4px #222, 0 0 4px #222, 0 0 4px #222',
+                             dropshadow: '2px 2px 3px #222, 2px 2px 4px #222, 2px 2px 5px #222',
+                             raised: '1px 1px #222, 2px 2px #222, 3px 3px #222', depressed: '1px 1px #ccc, 0 1px #ccc, -1px -1px #222, 0 -1px #222' },
+                ccRgba(hex, pct) {
+                    const h = /^#[0-9a-f]{6}$/i.test(hex || '') ? hex.slice(1) : '000000';
+                    return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${(pct ?? 50) / 100})`;
+                },
+                // the preview's look: the same as a cue in the players
+                ccPreviewStyle() {
+                    const st = this.ccStyleNow();
+                    return `color:${st.color};background-color:${this.ccRgba(st.bg_color, st.bg_opacity)};font-family:${this.ccFonts[st.font] || this.ccFonts.sans};`
+                         + `text-shadow:${this.ccShadows[st.edge] || 'none'};font-size:${(st.size / 100 * 1.25).toFixed(3)}rem;`;
+                },
+                async ccStyleLoad() {
+                    try {
+                        const d = await (await fetch('/api/captions/settings')).json();
+                        if (d.success && d.settings?.style) this.ccStyleSaved = d.settings.style;
+                    } catch (e) { /* defaults */ }
+                    this.ccStyleApply();
+                },
+                ccStyleSaved: null,
+                // classic player and native captions (iOS): video::cue; the new player: video.js's caption display
+                ccStyleApply() {
+                    const st = this.ccStyleNow();
+                    let el = document.getElementById('lustrCue');
+                    if (!el) { el = document.createElement('style'); el.id = 'lustrCue'; document.head.appendChild(el); }
+                    el.textContent = `video::cue { color: ${st.color}; background-color: ${this.ccRgba(st.bg_color, st.bg_opacity)};`
+                        + ` font-family: ${this.ccFonts[st.font] || this.ccFonts.sans}; text-shadow: ${this.ccShadows[st.edge] || 'none'};`
+                        + ` font-size: ${(st.size / 100 * 4.5).toFixed(2)}vh; }`;
+                    const p = this.npPlayer && this.npPlayer();
+                    if (p) this.npCCStyle(p);
+                },
+                npCCStyle(p) {
+                    const st = this.ccStyleNow(), tts = p.textTrackSettings;
+                    p.toggleClass('np-cc-top', st.position === 'top');
+                    if (!tts) return;
+                    const values = { color: st.color, textOpacity: '1', backgroundColor: st.bg_color, backgroundOpacity: String(st.bg_opacity / 100),
+                                     edgeStyle: st.edge, fontPercent: st.size / 100,
+                                     fontFamily: { sans: 'proportionalSansSerif', serif: 'proportionalSerif', mono: 'monospaceSansSerif', casual: 'casual' }[st.font] };
+                    tts.getValues = () => values;            // our settings, not video.js's own caption-settings dialog (hidden)
+                    try { p.textTrackDisplay && p.textTrackDisplay.updateDisplay(); } catch (e) { /* no cues yet */ }
+                },
+                async ccStyleSet(changes) {
+                    await this.ccSet({ style: changes });
+                    if (this.cc.settings?.style) this.ccStyleSaved = this.cc.settings.style;
+                    this.ccStyleApply();
                 },
                 async ccSettingsLoad() {
                     try {
@@ -15134,6 +15239,18 @@ No metadata is changed.`)) return;
             <div class="p-3 border-t border-gray-700 space-y-2 shrink-0 bg-gray-800 z-20">
                 <button @click="openLibraryModal()" class="w-full bg-gray-700 hover:bg-gray-600 py-1 rounded text-xs">Manage Libraries</button>
                 <button @click="clipsOpen()" class="w-full mt-1 bg-gray-700 hover:bg-gray-600 py-1 rounded text-xs" title="GIFs and short videos you made">🎞 Clips</button>
+                <!-- a newer lustr on GitHub: hard to miss, and a link to it (update_check.py) -->
+                <a x-show="upd.newer" x-cloak :href="upd.url" target="_blank" rel="noopener noreferrer"
+                   class="group flex items-center gap-3 rounded-lg border border-emerald-500/60 bg-emerald-500/15 hover:bg-emerald-500/25 px-3 py-2 text-left transition-colors shadow-[0_0_12px_rgba(16,185,129,0.25)]"
+                   :title="'lustr ' + upd.latest + ' is out - open it on GitHub'">
+                    <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white text-sm font-bold animate-pulse">&#8593;</span>
+                    <span class="min-w-0 flex-1">
+                        <span class="block text-sm font-semibold text-emerald-300 group-hover:text-emerald-200">Update available</span>
+                        <span class="block text-xs text-emerald-200/80 truncate" x-text="'v' + upd.current + ' → v' + upd.latest"></span>
+                    </span>
+                    <span class="text-emerald-300 text-xs shrink-0">&#8599;</span>
+                </a>
+                <div x-show="upd.loaded && !upd.newer" x-cloak class="text-center text-[11px] text-gray-500" x-text="'lustr v' + upd.current"></div>
             </div>
         </aside>
 
@@ -19020,6 +19137,62 @@ No metadata is changed.`)) return;
                                 from the player (<b>CC: make captions</b>), right-click → Generate Captions, a library's settings, or the night window below.</p>
                             <p x-show="cc.loaded && !cc.whisper" class="text-xs text-yellow-400">Whisper isn't installed in this image yet: only existing subtitles are found.
                                 Rebuild the image (docker build) to make captions automatically.</p>
+                            <!-- How captions look (captions.py 'style'): both players, every browser -->
+                            <template x-if="cc.settings">
+                                <div class="bg-gray-900 rounded p-3 space-y-3 text-sm">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <h4 class="font-bold">How captions look</h4>
+                                        <button @click="ccStyleSet('reset')" :disabled="cc.busy" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600">Reset</button>
+                                    </div>
+                                    <!-- preview: a dark frame with a caption styled like the players' -->
+                                    <div class="relative rounded overflow-hidden h-32 bg-gradient-to-br from-gray-700 via-gray-800 to-black flex justify-center px-4"
+                                         :class="ccStyleNow().position === 'top' ? 'items-start pt-3' : 'items-end pb-3'">
+                                        <span class="px-1.5 py-0.5 leading-snug text-center" :style="ccPreviewStyle()">This is how captions will look.<br>Two lines, like a long sentence.</span>
+                                    </div>
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+                                        <label class="flex items-center gap-2">
+                                            <span class="text-gray-300 w-24 shrink-0">Size</span>
+                                            <input type="range" min="50" max="300" step="10" :value="ccStyleNow().size" @input="cc.settings.style && (cc.settings.style.size = +$event.target.value)" @change="ccStyleSet({ size: +$event.target.value })" class="flex-1">
+                                            <span class="w-12 text-right text-gray-400" x-text="ccStyleNow().size + '%'"></span>
+                                        </label>
+                                        <label class="flex items-center gap-2">
+                                            <span class="text-gray-300 w-24 shrink-0">Text colour</span>
+                                            <input type="color" :value="ccStyleNow().color" @change="ccStyleSet({ color: $event.target.value })" class="h-7 w-12 bg-transparent cursor-pointer">
+                                        </label>
+                                        <label class="flex items-center gap-2">
+                                            <span class="text-gray-300 w-24 shrink-0">Background</span>
+                                            <input type="color" :value="ccStyleNow().bg_color" @change="ccStyleSet({ bg_color: $event.target.value })" class="h-7 w-12 bg-transparent cursor-pointer">
+                                        </label>
+                                        <label class="flex items-center gap-2">
+                                            <span class="text-gray-300 w-24 shrink-0">Background opacity</span>
+                                            <input type="range" min="0" max="100" step="5" :value="ccStyleNow().bg_opacity" @input="cc.settings.style && (cc.settings.style.bg_opacity = +$event.target.value)" @change="ccStyleSet({ bg_opacity: +$event.target.value })" class="flex-1">
+                                            <span class="w-12 text-right text-gray-400" x-text="ccStyleNow().bg_opacity + '%'"></span>
+                                        </label>
+                                        <label class="flex items-center gap-2">
+                                            <span class="text-gray-300 w-24 shrink-0">Edge</span>
+                                            <select @change="ccStyleSet({ edge: $event.target.value })" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs">
+                                                <template x-for="[v, l] in [['none', 'None'], ['uniform', 'Outline'], ['dropshadow', 'Drop shadow'], ['raised', 'Raised'], ['depressed', 'Depressed']]" :key="'cce' + v">
+                                                    <option :value="v" :selected="ccStyleNow().edge === v" x-text="l"></option></template>
+                                            </select>
+                                        </label>
+                                        <label class="flex items-center gap-2">
+                                            <span class="text-gray-300 w-24 shrink-0">Font</span>
+                                            <select @change="ccStyleSet({ font: $event.target.value })" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs">
+                                                <template x-for="[v, l] in [['sans', 'Sans-serif'], ['serif', 'Serif'], ['mono', 'Monospace'], ['casual', 'Casual']]" :key="'ccf' + v">
+                                                    <option :value="v" :selected="ccStyleNow().font === v" x-text="l"></option></template>
+                                            </select>
+                                        </label>
+                                        <label class="flex items-center gap-2">
+                                            <span class="text-gray-300 w-24 shrink-0">Position</span>
+                                            <select @change="ccStyleSet({ position: $event.target.value })" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs">
+                                                <option value="bottom" :selected="ccStyleNow().position === 'bottom'">Bottom</option>
+                                                <option value="top" :selected="ccStyleNow().position === 'top'">Top</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                    <p class="text-xs text-gray-500">For everyone, in both players. Position applies to the new player; on an iPhone or iPad in full screen, the system's own caption settings can override these.</p>
+                                </div>
+                            </template>
                             <template x-if="cc.settings">
                                 <div class="space-y-3">
                                     <div class="flex flex-wrap items-center gap-2">
@@ -19278,6 +19451,25 @@ No metadata is changed.`)) return;
                                         <span x-text="`${maint.audit?.legacy.table_count} tables (${(maint.audit?.legacy.rows || 0).toLocaleString()} rows), views: ${(maint.audit?.legacy.views || []).join(', ') || 'none'} - no longer used; removed by scripts/migrate_drop_legacy.py`"></span></div>
                                     <div><span class="text-gray-400">Last maintenance:</span>
                                         <span x-text="maint.audit?.settings.last_run ? (maint.audit.settings.last_run.slice(0, 16).replace('T', ' ') + (maint.audit.settings.last_result?.auto ? ' (automatic)' : '') + ' · ' + (maint.audit.settings.last_result?.removed_total || 0) + ' rows removed') : 'never'"></span></div>
+                                </div>
+                                <!-- Updates (update_check.py) -->
+                                <div class="bg-gray-900 p-3 rounded space-y-2 text-xs" x-init="updLoad()">
+                                    <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+                                        <span class="font-bold text-sm text-gray-200">Updates</span>
+                                        <span class="text-gray-300" x-text="'Running v' + (upd.current || '?')"></span>
+                                        <span x-show="upd.latest" :class="upd.newer ? 'text-emerald-400 font-semibold' : 'text-gray-400'"
+                                              x-text="upd.newer ? 'v' + upd.latest + ' is available' : 'Latest on GitHub: v' + upd.latest"></span>
+                                        <a x-show="upd.newer" :href="upd.url" target="_blank" rel="noopener noreferrer" class="text-emerald-300 underline">Open on GitHub ↗</a>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-3">
+                                        <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" class="rounded" :checked="!!upd.enabled" :disabled="upd.busy"
+                                               @change="updSet({ enabled: $event.target.checked })"> Check GitHub for new versions</label>
+                                        <button @click="updSet({ check_now: true })" :disabled="upd.busy || !upd.enabled" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50"
+                                                x-text="upd.busy ? 'Checking…' : 'Check now'"></button>
+                                        <span class="text-gray-500" x-text="upd.checked_at ? 'Checked ' + new Date(upd.checked_at * 1000).toLocaleString() : (upd.enabled ? 'Not checked yet' : '')"></span>
+                                        <span x-show="upd.error" class="text-yellow-400" x-text="'Last check failed: ' + upd.error"></span>
+                                    </div>
+                                    <p class="text-gray-500">About twice a day the server asks GitHub for the list of lustr versions; nothing else is sent. A newer version shows at the bottom of the sidebar.</p>
                                 </div>
                                 <div class="bg-gray-900 p-3 rounded flex flex-wrap items-center gap-3 text-xs">
                                     <button @click="maintResStart()" :disabled="!!maintRes.running" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50">Fix resolutions</button>

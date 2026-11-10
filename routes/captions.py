@@ -143,7 +143,7 @@ def player_info(conn, path, cache_id):
     queued = cache_id in captions.worker.queued_ids() or captions.worker.status().get('current_cache_id') == cache_id
     if not tr and s['auto_on_play'] and captions.whisper_available():
         queued = captions.worker.enqueue(path, cache_id, front=True) or queued
-    return {'tracks': tr, 'queued': bool(queued), 'whisper': captions.whisper_available()}
+    return {'tracks': tr, 'queued': bool(queued), 'whisper': captions.whisper_available(), 'style': s.get('style')}
 
 
 @router.get('')

@@ -9,6 +9,7 @@ The **Overview** shows the state of the database: how many videos and files, del
 - **🔍 Preview** shows what maintenance would do, without changing anything.
 - **🧹 Run maintenance** does it. It backs up the database first.
 - **Run + compact** also shrinks the database file. This takes about a minute.
+- **Updates**: the version you're running and the newest one on GitHub. **Check GitHub for new versions** (on by default) and **Check now**. See [Updates](#updates) below.
 - **Fix resolutions** re-reads every file so that vertical videos show their real resolution: 1080×1920 is 1080p, not 1920p. Resolutions you typed yourself are kept.
 
 ## The other pages
@@ -36,6 +37,12 @@ The **Backups** page lists them all with their date and size. **Keep the newest*
 The backups are in the `backups` folder inside lustr's data folder. To go back to one, stop lustr, copy it over `library.db`, and start lustr again.
 
 > Note: a backup of the database holds all your metadata, but not thumbnails, previews or clips. To back up everything, stop lustr and copy the whole data folder. See the [README](https://github.com/adlerdark/lustr#your-data-and-backups).
+
+## Updates
+
+About twice a day the server asks GitHub for the list of lustr versions. When a newer one is out, an **Update available** notice appears at the bottom of the sidebar, under 🎞 Clips. Click it to open the new version on GitHub, then upgrade as the [README](https://github.com/adlerdark/lustr#upgrading) describes. Once you're running it, the notice goes away.
+
+To turn the check off, untick **Check GitHub for new versions** in **Settings → Maintenance → Overview**.
 
 ## Import / Export
 

@@ -50,6 +50,8 @@ Later you can pick a better frame while watching: press **T** in the player to m
 - ⚙ **Settings**, ❓ **Help** (this guide), and **Log Out**.
 - **Rescan** looks for new, moved and deleted files in the current library.
 
+At the bottom of the sidebar are **Manage Libraries**, **🎞 Clips**, and the version you're running. When a newer version is out, an **Update available** notice appears there instead.
+
 You can hide the top bar buttons you don't use in **Settings → Appearance**.
 
 **The videos**

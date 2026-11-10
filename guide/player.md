@@ -30,6 +30,18 @@ In **Settings → Player** you can choose:
 - **Strip** shows a row of frames under the video. Click one to jump there.
 - Press **0**–**9** to jump to 0%–90% of the video.
 
+### Picture size
+
+**A**, or the size button in the control bar, steps through:
+
+- **Fit**: the whole picture, as big as the window allows.
+- **1:1**: the video's own size, one video pixel per screen pixel.
+- **1.5×** and **2×**: one and a half or two times its own size. Handy for small, SD videos that look soft at Fit. They never get bigger than Fit, and they're skipped when they would be as big as Fit anyway, so for HD videos the button goes straight from 1:1 to Fill.
+- **Fill**: fills the window; the edges are cropped.
+- **Stretch**: fills the window; the picture is stretched.
+
+lustr remembers your choice in that browser.
+
 ### Keyboard shortcuts
 
 | Key | Does |
@@ -41,7 +53,7 @@ In **Settings → Player** you can choose:
 | **↑** / **↓** | Volume up / down |
 | **M** | Mute |
 | **F** | Full screen |
-| **A** | Fit: switch between showing the whole picture and filling the screen |
+| **A** | Picture size: **Fit**, **1:1**, **1.5×**, **2×**, **Fill**, **Stretch** (see below) |
 | **L** | A-B loop: press once to set the start, again to set the end, a third time to stop |
 | **T** | Make the current frame the video's thumbnail |
 | **N** / **P** | Next / previous video in the playlist |

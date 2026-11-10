@@ -152,6 +152,7 @@ TPDB_API_KEY=...
 | `LUSTR_DATA_DIR` | `/app/data` | Where lustr keeps its data inside the container |
 | `LUSTR_DRI_DEVICE` | `/dev/dri/renderD128` | GPU render device for VAAPI |
 | `LIBVA_DRIVER_NAME` | auto | Force a VA driver (`iHD` for Intel, `radeonsi` for AMD) |
+| `LUSTR_UPDATE_REPO` | `adlerdark/lustr` | GitHub repo the update check compares with (owner/name) |
 
 ## Your data and backups
 
@@ -171,6 +172,9 @@ inside the container, e.g. `/media`, so your libraries still point at the right 
 Your video files are mounted **read-only**: lustr never changes or deletes them.
 
 ## Upgrading
+
+When a newer version is out, an **Update available** notice appears at the bottom of lustr's sidebar
+(the server checks GitHub about twice a day; turn it off in Settings → Maintenance).
 
 ```sh
 cd lustr
