@@ -6,7 +6,7 @@ Handles library scanning and duplicate file detection.
 """
 
 import os
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from media_handler import MediaHandler
 from config import USE_SQLITE
@@ -32,6 +32,7 @@ def set_model(model):
 class ScanRequest(BaseModel):
     fast: bool = False
     library: str = None  # Optional: specific library to scan
+    folder: str = None   # Optional: just this one of the library's folders
 
 
 # --- ROUTES ---
@@ -43,12 +44,16 @@ SCAN_LOCK = threading.Lock()      # a routine scan (automation.py) and a manual 
 @router.post("/scan")
 def scan_library(req: ScanRequest, model = Depends(get_model)):
     """Scan library for new and removed videos."""
+    if req.folder:
+        roots = {os.path.normpath(r) for r in (model.libraries.get(req.library) or [])}
+        if os.path.normpath(req.folder) not in roots:
+            raise HTTPException(400, "That folder isn't one of this library's folders")
     with SCAN_LOCK:
         return _scan_library(req, model)
 
 
 def _scan_library(req, model):
-    new, removed = model.scan_library(fast=req.fast, library=req.library)
+    new, removed = model.scan_library(fast=req.fast, library=req.library, folder=req.folder)
     
     # Note: The new version-aware scan already handles metadata extraction
     # No need to call _ensure_file_entry() - that's for the old schema

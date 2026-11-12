@@ -481,13 +481,14 @@ class LibraryModel:
         return False
 
     # --- File Operations ---
-    def scan_library(self, fast=False, library=None):
+    def scan_library(self, fast=False, library=None, folder=None):
         """
         Scan library folders for video files.
         
         Args:
             fast: If True, skip metadata extraction for new files
             library: Optional library name to scan (if None, scans all libraries)
+            folder: Optional - just this one of the library's folders (the caller checks it's one)
         """
         found_files = set()
         new_files = []
@@ -497,7 +498,9 @@ class LibraryModel:
         
         # Determine which libraries to scan
         all_paths = set()
-        if library and library != "All Videos":
+        if folder:
+            all_paths.add(os.path.normpath(folder))
+        elif library and library != "All Videos":
             # Scan specific library only
             if library in self.libraries:
                 all_paths.update(self.libraries[library])
