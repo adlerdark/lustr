@@ -1031,16 +1031,9 @@ class LibraryModel:
         if field_key in list_fields_lower:
             clean_list = [x.strip() for x in value.split(',') if x.strip()]
             file_data[field_key] = clean_list
-        elif field_key == "rating":
-            try:
-                if value.strip() == "": 
-                    file_data[field_key] = ""
-                else:
-                    val_float = float(value)
-                    if 0 <= val_float <= 10:
-                        file_data[field_key] = str(val_float)
-            except ValueError: 
-                pass
+        elif field_key == "rating":                         # half stars, 0.5 - 5; '' for none
+            from database import stars
+            file_data[field_key] = stars(value)
         else:
             file_data[field_key] = value.strip()
         

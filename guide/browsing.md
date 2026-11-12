@@ -12,6 +12,8 @@
 
 Click **⚙ Customise** to choose which rows show and in what order. **See all ›** on a row opens its full list.
 
+Home has the same tabs as a library. **Recommended** is Home itself; **Library**, **Collections**, **Movies** and **Images** open those tabs of **All Videos**, so every collection, movie and album is one click away.
+
 ## Libraries, groups and All Videos
 
 Click a library in the sidebar to see its videos, or a group to see all its libraries together. **All Videos** shows everything. **Total** and **Filtered** under the list tell you how many videos the library has and how many your filters leave.
@@ -50,7 +52,8 @@ All filters add up: a video has to pass every one of them to show.
 | Sites | sidebar, **Sites** tab | The same as tags, for sites. |
 | Length | sidebar | Buttons from **<2 min** to **40+ min**. **Settings → Browsing** can switch them to sliders. |
 | Resolution | sidebar | **4K**, **HD**, **SD High**, **SD Low**: the lowest quality to show. |
-| ★ | top bar | Favorites only. |
+| Rating | sidebar, under Resolution | Click or drag the stars to the lowest rating to show: 4 stars shows 4 and up. **✕** (or dragging to the far left) shows every video. |
+| ♥ | top bar | Favorites only. |
 | ⏷ **Filters** | top bar | With or without captions, chapters in the file, or markers. |
 | 🌐 | top bar | Videos linked to a StashDB / ThePornDB scene, not linked, or needing review. |
 | 👁 | top bar | Which library types and orientations are shown, just for you. |
@@ -89,17 +92,41 @@ Values are not case-sensitive. A field value has to match the whole value, so ei
 | `tags:(out*,pool)` | Wildcards work inside lists too. |
 | `path:clips/*2023` | Paths with "clips/" followed somewhere later by "2023". |
 
-### Combining terms
+### Combining terms (AND, OR, NOT and brackets)
 
-- Terms next to each other must **all** match: `cast:"Jane Doe" tags:outdoor`.
-- `OR` between terms means **either**: `cast:"Jane Doe" OR cast:"Ann Roe"`, or `hair:red OR tags:redhead`.
-- Field terms and plain words mix: `tags:outdoor beach`.
+You can combine any terms (field terms like `tags:outdoor`, plain words, `"a phrase"`) with **AND**, **OR**, **NOT** and round brackets, as deep as you like. The words can be in capitals or not.
+
+| Write | Means |
+|---|---|
+| `tags:outdoor beach` | Both. Terms next to each other must **all** match; `AND` between them says the same. |
+| `tags:outdoor AND beach` | The same. |
+| `hair:red OR tags:redhead` | Either one (or both). |
+| `NOT tags:vr` | Every video **without** that tag. |
+| `NOT(tags:vr)`, `-tags:vr` | The same: `NOT` with or without brackets, or a minus sign stuck to the front of a term. |
+| `(hair:red OR hair:blonde) NOT tags:vr` | Brackets group terms: red or blonde hair, and not VR. |
+
+**Which goes first.** `NOT` applies only to the term (or bracket) right after it. `AND` comes before `OR`, so `a OR b c` means `a OR (b AND c)`. When in doubt, add brackets: `(a OR b) c`.
+
+Some longer examples:
+
+- `(tags:s.tier OR tags:a.tier) AND (cast:"Jane Doe") AND (NOT(tags:vr))`: your top tiers, with Jane Doe, but not VR.
+- `(tags:s.tier OR tags:a.tier) AND (cast:"Jane Doe" AND NOT(tags:vr))`: the same, grouped another way.
+- `site:examplesite (outdoor OR pool) -(hair:red OR tags:vintage)`: one site, outdoors or by a pool, leaving out red hair and anything vintage.
+- `tags:full.movie NOT (tags:vintage OR tags:semi.vintage)`: full movies that aren't vintage.
+
+Good to know:
+
+- The same field twice means both: `tags:a tags:b` finds videos with both tags. For **either**, use `OR` or a list: `tags:(a,b)`.
+- A plain word in a boolean search looks in the title, the file path (name and folders) and every field's values, including cast and tags.
+- `library:`, `res:`, `stars:`, `movie:` and the other [special keywords](#special-keywords) work inside brackets too, for example `NOT library:Archive` or `(res:4k OR stars:5)`.
+- A hyphen inside a word, like `semi-vintage`, is just part of the word; only a `-` at the start of a term means NOT.
 
 ### Special keywords
 
 | You type | You get |
 |---|---|
 | `res:4k`, `res:hd`, `res:sdhigh`, `res:sdlow` | That quality or better (like the Resolution filter). |
+| `stars:4`, `stars:3.5` | Rated that many stars or more (like the Rating filter). |
 | `added:2024-03` | Added to lustr in March 2024. Also `added:2024` or `added:2024-03-15`. A date alone, like `2024-03`, works too. |
 | `modified:2024` | Files last changed in 2024. |
 | `captions:yes` / `captions:no` | With or without captions. |
@@ -109,7 +136,9 @@ Values are not case-sensitive. A field value has to match the whole value, so ei
 
 ### Advanced Search
 
-For bigger searches, open 🔍 **Metadata** → **🔬 Advanced Search**. Type search terms, search titles only, and click values from any field to add them. **AND** / **OR** sets whether a video needs all the values you picked or any of them. Running it searches **All Videos**; **🔍✏️ Edit Search** in the top bar brings the form back.
+For bigger searches, open 🔍 **Metadata** → **🔬 Advanced Search**. Type search terms, search titles only, and click values from any field to add them. **AND** / **OR** sets whether a video needs all the values you picked or any of them. **Search in** sets where it looks: **All Videos** (the default), or **Select libraries…**, which opens your libraries and groups in the same order as the sidebar (click ▾ to fold a group) to tick the ones to search. With one ticked, the search opens in that library or group; with several, in **All Videos**, limited to them (`library:(A,B)` in the search box). **🔍✏️ Edit Search** in the top bar brings the form back.
+
+**★ Save as smart collection…** at the bottom runs the search and saves it as a [smart collection](collections.md), so you can come back to it any time.
 
 ## Selecting videos
 

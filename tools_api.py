@@ -494,6 +494,46 @@ def maintenance_backups_create():
     return {'success': True, 'backup': dm.make_backup(_conn())}
 
 
+# Settings files that go with the database in a full backup. users.json (password hashes) and the
+# cache (thumbnails, previews: made again by themselves) stay out.
+BACKUP_SETTINGS_FILES = ('metadata_schema.json', 'quicktags.json', 'watch_history.json', 'captions_queue.json')
+
+
+@router.get("/maintenance/backups/download")
+def maintenance_backups_download(name: str):
+    """One of the backups listed in Maintenance, as a download."""
+    from fastapi.responses import FileResponse
+    if not any(b['name'] == name for b in dm.list_backups()):
+        raise HTTPException(404, 'No such backup')
+    return FileResponse(os.path.join(dm.DATA_DIR, name), media_type='application/octet-stream', filename=os.path.basename(name))
+
+
+def full_backup_zip():
+    """A fresh copy of the database plus the settings files, zipped into data/backups/ -> (zip path, db backup name)."""
+    import zipfile
+    name = dm.make_backup(_conn())
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    zpath = os.path.join(dm.BACKUP_DIR, f'lustr-full-backup-{stamp}.zip')
+    with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        z.write(os.path.join(dm.DATA_DIR, name), 'library.db')
+        for f in BACKUP_SETTINGS_FILES:
+            full = os.path.join(dm.DATA_DIR, f)
+            if os.path.isfile(full):
+                z.write(full, f)
+    return zpath, name
+
+
+@router.get("/maintenance/backups/full")
+def maintenance_backups_full():
+    """Download a full backup: a fresh copy of the database and the settings files, in one zip.
+    The zip is removed once it's sent; the database copy stays in the backups list."""
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+    zpath, _name = full_backup_zip()
+    return FileResponse(zpath, media_type='application/zip', filename=os.path.basename(zpath),
+                        background=BackgroundTask(lambda: os.path.exists(zpath) and os.remove(zpath)))
+
+
 @router.post("/maintenance/backups/delete")
 def maintenance_backups_delete(body: NamesBody):
     return {'success': True, 'deleted': dm.delete_backups(body.names)}

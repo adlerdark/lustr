@@ -563,7 +563,9 @@ def album_title(conn, folder):
 def set_album_meta(conn, folders, updates=None, add=None, remove=None):
     """Edit Album, for one album or several at once (the same shape the scene editor saves):
     updates {title / year / rating: text ('' clears)}, add / remove {field: [values]}.
-    A value already there in another case isn't added twice."""
+    A value already there in another case isn't added twice. New values in the house format (value_format.py)."""
+    import value_format
+    add = value_format.house_lists(conn, add)
     for folder in folders:
         for k, v in (updates or {}).items():
             v = (v or '').strip()
@@ -571,6 +573,9 @@ def set_album_meta(conn, folders, updates=None, add=None, remove=None):
                 conn.execute('INSERT INTO image_albums (folder, title) VALUES (?, ?) '
                              'ON CONFLICT(folder) DO UPDATE SET title = excluded.title', (folder, v or None))
             elif k in TEXT_FIELDS:
+                if k == 'rating':                                     # half stars, like videos
+                    from database import stars
+                    v = stars(v)
                 conn.execute('DELETE FROM image_album_meta WHERE folder = ? AND field = ?', (folder, k))
                 if v:
                     conn.execute('INSERT INTO image_album_meta (folder, field, value) VALUES (?, ?, ?)', (folder, k, v))

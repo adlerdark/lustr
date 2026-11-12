@@ -26,6 +26,11 @@ class SearchParser:
         """
         if not query:
             return "", {}, []
+
+        # Boolean searches - NOT, -term, ( ), or AND / OR - are parsed into a tree (see boolean_tree)
+        tree = SearchParser.boolean_tree(query)
+        if tree is not None:
+            return SearchParser._bool_result(tree)
         
         field_filters = {}
         library_filters = []
@@ -145,6 +150,142 @@ class SearchParser:
         
         return base_query, field_filters, library_filters
     
+    # ------------------------------------------------------------------
+    # Boolean search: (a OR b) AND NOT (c OR d), as deep as you like
+    # ------------------------------------------------------------------
+    # Nodes: ('and', [nodes]) ('or', [nodes]) ('not', node)
+    #        ('field', name, [values])  - values as parse_query gives them (('EXACT', v) when quoted)
+    #        ('text', word, exact)      - a plain word or "a phrase"
+    # NOT binds tightest, then AND (also implied between neighbours), then OR.
+    # 'NOT x', 'NOT(x)' and '-x' are the same.
+    # Keywords that narrow the whole search (library:, res:, stars:, scene:, captions:, chapters:,
+    # markers:, movie:, dates) are pulled out when they simply apply to everything (AND at the top);
+    # nested inside OR / NOT they're part of the expression (routes/videos.py _bool_sql).
+    SPECIAL_FIELDS = ('library', 'res', 'stars', 'scene', 'captions', 'chapters', 'markers', 'movie',
+                      'date_added', 'added', 'date_created', 'date_modified', 'modified')
+    _TOKEN = re.compile(r'(?P<neg>-(?=[\w"(]))?(?:(?P<fp>\w+):\((?P<fpv>[^)]*)\)|(?P<fq>\w+):"(?P<fqv>[^"]*)"'
+                        r'|(?P<fs>\w+):(?P<fsv>[^\s()"]+)|"(?P<q>[^"]*)")'
+                        r'|(?P<paren>[()])|(?P<word>[^\s()"]+)')
+
+    @staticmethod
+    def _tokens(query):
+        out = []
+        for m in SearchParser._TOKEN.finditer(query):
+            neg = bool(m.group('neg'))
+            if m.group('paren'):
+                out.append(('paren', m.group('paren')))
+                continue
+            if neg:
+                out.append(('op', 'not'))
+            if m.group('fp'):
+                vs = m.group('fpv').strip()
+                if vs.startswith('"') and vs.endswith('"') and len(vs) > 1:
+                    values = [('EXACT', vs.strip('"'))]
+                else:
+                    values = [v.strip() for v in vs.split(',') if v.strip()]
+                out.append(('field', m.group('fp').lower(), values))
+            elif m.group('fq'):
+                out.append(('field', m.group('fq').lower(), [('EXACT', m.group('fqv'))]))
+            elif m.group('fs'):
+                out.append(('field', m.group('fs').lower(), [m.group('fsv')]))
+            elif m.group('q') is not None:
+                if m.group('q').strip():
+                    out.append(('text', m.group('q').strip(), True))
+            else:
+                w = m.group('word')
+                lw = w.lower()
+                if lw in ('and', '&&'):
+                    out.append(('op', 'and'))
+                elif lw in ('or', '||'):
+                    out.append(('op', 'or'))
+                elif lw in ('not', '!'):
+                    out.append(('op', 'not'))
+                elif w.strip('-'):
+                    out.append(('text', w, False))
+        return out
+
+    @staticmethod
+    def boolean_tree(query):
+        """The search as a tree, when it uses boolean searching (NOT / -term / parentheses / AND / OR, or one
+        field given twice), else None (the simple parser handles it as before)."""
+        toks = SearchParser._tokens(query or '')
+        fields = [t[1] for t in toks if t[0] == 'field' and t[1] not in SearchParser.SPECIAL_FIELDS]
+        if not (any(t[0] in ('op', 'paren') for t in toks) or len(fields) != len(set(fields))):
+            return None
+        pos = [0]
+
+        def peek():
+            return toks[pos[0]] if pos[0] < len(toks) else None
+
+        def parse_or():
+            kids = [parse_and()]
+            while peek() == ('op', 'or'):
+                pos[0] += 1
+                kids.append(parse_and())
+            kids = [k for k in kids if k is not None]
+            return kids[0] if len(kids) == 1 else (('or', kids) if kids else None)
+
+        def parse_and():
+            kids = []
+            while True:
+                t = peek()
+                if t is None or t == ('op', 'or') or t == ('paren', ')'):
+                    break
+                if t == ('op', 'and'):
+                    pos[0] += 1
+                    continue
+                kids.append(parse_not())
+            kids = [k for k in kids if k is not None]
+            return kids[0] if len(kids) == 1 else (('and', kids) if kids else None)
+
+        def parse_not():
+            t = peek()
+            if t == ('op', 'not'):
+                pos[0] += 1
+                inner = parse_not()
+                return ('not', inner) if inner is not None else None
+            return parse_atom()
+
+        def parse_atom():
+            t = peek()
+            pos[0] += 1
+            if t == ('paren', '('):
+                inner = parse_or()
+                if peek() == ('paren', ')'):
+                    pos[0] += 1
+                return inner
+            if t[0] in ('field', 'text'):
+                return t
+            return None                                   # a stray ')' or operator: skipped
+
+        tree = None
+        while pos[0] < len(toks):                         # ')' with no '(' before it: go on after it
+            part = parse_or()
+            tree = part if tree is None else (('and', [tree, part]) if part is not None else tree)
+            if peek() == ('paren', ')'):
+                pos[0] += 1
+        return tree
+
+    @staticmethod
+    def _bool_result(tree):
+        """parse_query's (base, field_filters, libraries) for a boolean search: what applies to everything
+        is pulled out as before; the rest is field_filters['__bool__']."""
+        field_filters, libraries = {}, []
+        top = tree[1] if tree[0] == 'and' else [tree]
+        rest = []
+        for node in top:
+            if node[0] == 'field' and node[1] in SearchParser.SPECIAL_FIELDS:
+                if node[1] == 'library':
+                    libraries.extend(v[1] if isinstance(v, tuple) else v for v in node[2])
+                else:
+                    field_filters.setdefault(node[1], []).extend(node[2])
+            else:
+                rest.append(node)
+        field_filters['__or_groups__'] = []
+        if rest:
+            field_filters['__bool__'] = rest[0] if len(rest) == 1 else ('and', rest)
+        return '', field_filters, libraries
+
     @staticmethod
     def wildcard_to_regex(pattern: str) -> str:
         """
@@ -403,7 +544,7 @@ class SearchParser:
         
         # Check each field
         for field_name, required_values in field_filters.items():
-            if field_name == '__or_groups__':
+            if field_name.startswith('__'):              # __or_groups__ / __bool__: the SQL paths' business
                 continue
             field_data = data.get(field_name, [])
             

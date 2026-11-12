@@ -42,6 +42,7 @@ class ScanFolder(unittest.TestCase):
         self.m.db.save_libraries(self.m.libraries)
         self.m.fill_missing_metadata = lambda paths: None
         self.c = self.m.db.get_connection()
+        self.addCleanup(self.c.rollback)                 # a failed test never leaves the database locked
         for t in ('file_versions', 'videos', 'images', 'media_kind', 'file_changes'):
             try:
                 self.c.execute(f'DELETE FROM {t}')

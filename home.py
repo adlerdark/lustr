@@ -39,11 +39,21 @@ EVERYTHING = ('Home', 'All Videos', '', None)
 
 _cache = {}
 _cache_lock = threading.Lock()
+_listeners = []                    # other caches built from the same data (collections_store.found_libraries)
+
+
+def on_invalidate(fn):
+    _listeners.append(fn)
 
 
 def invalidate():
     with _cache_lock:
         _cache.clear()
+    for fn in _listeners:
+        try:
+            fn()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

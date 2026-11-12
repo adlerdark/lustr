@@ -109,9 +109,13 @@ def remove(body: VideosBody, model=Depends(get_model)):
 
 
 @router.get('/{cid}/items')
-def items(cid: int, request: Request, page: int = 1, limit: int = 100, seed: int = 0, paths_only: bool = False, model=Depends(get_model)):
+def items(cid: int, request: Request, page: int = 1, limit: int = 100, seed: int = 0, paths_only: bool = False,
+          rules: Optional[str] = None, model=Depends(get_model)):
+    """rules (JSON): a smart collection's filters as changed in the sidebar while it's open - used, not saved."""
     try:
+        import json
+        override = json.loads(rules) if rules else None
         return {'success': True, **cs.items(_model, _conn(), cid, request, check_auth(request), _watch_history,
-                                             max(1, page), max(1, min(limit, 500)), seed, paths_only)}
+                                             max(1, page), max(1, min(limit, 10000)), seed, paths_only, rules=override)}
     except Exception as e:
         return _err(e)

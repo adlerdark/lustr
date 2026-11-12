@@ -450,296 +450,101 @@ def parse_filename(req: ParseFilenameRequest, model = Depends(get_model)):
 
 
 
+# --- SPREADSHEET EXPORT / IMPORT (metadata_import.py) ---
+def _export_paths(request, model, library, query):
+    """One path per video in the library / group (or All Videos), with the search applied - as the grid shows them."""
+    import collections_store
+    rules = {'library': 'All Videos' if library in (None, '', 'Home') else library, 'query': query or ''}
+    d = collections_store._smart_query(model, request, rules, 1, 1, paths_only=True)
+    return [x['path'] for x in d.get('paths', []) if x.get('path')]
+
+
+def _safe_name(name):
+    name = re.sub(r'[\'"/\\:*?<>|]', '', (name or 'export').lower())
+    return re.sub(r'_+', '_', re.sub(r'\s+', '_', name)).strip('_') or 'export'
+
+
 @router.get("/export")
-def export_json(request: Request, model = Depends(get_model), library: str = Query(None), query: str = Query(None), format: str = Query("csv")):
-    """
-    Export library data to CSV (default) or JSON.
-    
-    Args:
-        library: Library name to export (None = all libraries)
-        query: Search query to filter results (None = all videos in library)
-        format: Export format - "csv" (default) or "json"
-    """
-    import re
-    import csv
-    import io
-    from urllib.parse import quote
-    
-    # Determine what to export
-    if library and library != "All Videos":
-        # Exporting specific library
-        library_name = library
-        
-        # Check if library exists
-        if USE_SQLITE:
-            if library not in model.libraries and library not in model.library_groups:
-                raise HTTPException(404, f"Library '{library}' not found")
-        else:
-            if library not in model.libraries:
-                raise HTTPException(404, f"Library '{library}' not found")
-        
-        # Get videos from this library
-        if USE_SQLITE:
-            # Get library paths
-            allowed_prefixes = []
-            if library in model.library_groups:
-                # This is a group - get all libraries in it
-                group_libs = model.get_libraries_in_group(library, recursive=True)
-                for lib in group_libs:
-                    if lib in model.libraries:
-                        allowed_prefixes.extend([os.path.normpath(p) for p in model.libraries[lib]])
-            elif library in model.libraries:
-                allowed_prefixes = [os.path.normpath(p) for p in model.libraries[library]]
-            
-            # Query database for videos in this library
-            with model.db.get_connection() as conn:
-                cursor = conn.cursor()
-            if allowed_prefixes:
-                # Add trailing slash to ensure exact directory match
-                conditions = ' OR '.join(['path LIKE ?' for _ in allowed_prefixes])
-                query_sql = f'SELECT path FROM file_versions WHERE deleted_at IS NULL AND ({conditions})'
-                params = [f"{path}/%" for path in allowed_prefixes]
-                cursor.execute(query_sql, params)
-            else:
-                raise HTTPException(400, f"Library '{library}' has no paths configured")
-            
-            paths = [row[0] for row in cursor.fetchall()]
-        else:
-            # Get paths from libraries dict
-            if library in model.libraries:
-                lib_paths = model.libraries[library]
-                paths = [p for p in model.files.keys() if any(p.startswith(lp + '/') for lp in lib_paths)]
-            else:
-                raise HTTPException(400, f"Library '{library}' not found")
-        
-        if not paths:
-            raise HTTPException(400, f"No videos found in library '{library}'")
-        
-    elif library == "All Videos" and query:
-        # Exporting search results from All Videos
-        library_name = "search_results"
-        
-        # Parse search query
-        base_query, field_filters, library_filters = SearchParser.parse_query(query)
-        
-        # Get all videos and filter
-        if USE_SQLITE:
-            with model.db.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT path FROM file_versions WHERE deleted_at IS NULL')
-                all_paths = [row[0] for row in cursor.fetchall()]
-        else:
-            all_paths = list(model.files.keys())
-        
-        # Apply search filters
-        paths = []
-        for path in all_paths:
-            if USE_SQLITE:
-                video = model.db.get_file(path)
-            else:
-                video = model.files.get(path)
-            
-            if video and SearchParser.matches_field_filters(video, {k: v for k, v in field_filters.items() if k != 'path'}) \
-                    and ('path' not in field_filters or SearchParser.matches_path(path, field_filters['path'])):
-                if not base_query or SearchParser.matches_base_query(path, video, base_query):
-                    paths.append(path)
-        
-        if not paths:
-            raise HTTPException(400, "No videos found matching search criteria")
-    
-    elif library == "All Videos" and not query:
-        # User tried to export All Videos without a search
-        raise HTTPException(400, "Cannot export 'All Videos' without a search query. Please use a search filter or select a specific library.")
-    
-    else:
-        # No library specified or invalid state
-        raise HTTPException(400, "No library selected for export")
-    
-    # Generate safe filename
-    # Remove/replace invalid characters: ' " / \ : * ? < > |
-    safe_name = library_name.lower()
-    safe_name = re.sub(r'[\'"/\\:*?<>|]', '', safe_name)  # Remove invalid chars
-    safe_name = re.sub(r'\s+', '_', safe_name)  # Replace spaces with underscores
-    safe_name = re.sub(r'_+', '_', safe_name)  # Collapse multiple underscores
-    safe_name = safe_name.strip('_')  # Remove leading/trailing underscores
-    
-    # Collect video data
-    videos_data = []
-    for path in paths:
-        if USE_SQLITE:
-            video = model.db.get_file(path)
-        else:
-            video = model.files.get(path)
-        
-        if video:
-            # Create a copy of video data
-            video_data = dict(video) if isinstance(video, dict) else video
-            # Add filename and path
-            video_data['filename'] = os.path.basename(path)
-            video_data['path'] = path
-            videos_data.append(video_data)
-    
-    # Export based on format
-    if format.lower() == 'csv':
-        # CSV Export - much more efficient
-        filename = f"export_{safe_name}.csv"
-        export_file = os.path.join(os.path.dirname(DATA_FILE), filename)
-        
-        try:
-            with open(export_file, 'w', encoding='utf-8', newline='') as f:
-                # Define field order
-                scalar_fields = ['path', 'filename', 'title', 'year', 'rating', 'resolution', 
-                               'codec', 'extension', 'length', 'total_bitrate', 'file_size',
-                               'date_created', 'date_modified', 'favorite', 'date_added', 'date_last_edited']
-                list_fields = [field.lower() for field in LIST_FIELDS]
-                all_fields = scalar_fields + list_fields
-                
-                writer = csv.DictWriter(f, fieldnames=all_fields, extrasaction='ignore')
-                writer.writeheader()
-                
-                for video_data in videos_data:
-                    row = {}
-                    for field in scalar_fields:
-                        value = video_data.get(field, '')
-                        # Handle boolean
-                        if isinstance(value, bool):
-                            row[field] = 'true' if value else 'false'
-                        else:
-                            row[field] = str(value) if value else ''
-                    
-                    # List fields - join with pipe separator
-                    for field in list_fields:
-                        values = video_data.get(field, [])
-                        if isinstance(values, list):
-                            row[field] = '|'.join(str(v) for v in values if v)
-                        else:
-                            row[field] = ''
-                    
-                    writer.writerow(row)
-            
-            return FileResponse(
-                export_file,
-                media_type='text/csv',
-                filename=filename
-            )
-        except Exception as e:
-            raise HTTPException(500, f"CSV export failed: {str(e)}")
-    
-    else:
-        # JSON Export - original format
-        filename = f"export_{safe_name}.json"
-        export_file = os.path.join(os.path.dirname(DATA_FILE), filename)
-        
-        try:
-            export_data = {}
-            for video_data in videos_data:
-                path = video_data['path']
-                export_data[path] = video_data
-            
-            with open(export_file, 'w', encoding='utf-8') as f:
-                json.dump(export_data, f, indent=2, ensure_ascii=False)
-            
-            return FileResponse(
-                export_file,
-                media_type='application/json',
-                filename=filename
-            )
-        except Exception as e:
-            raise HTTPException(500, f"JSON export failed: {str(e)}")
+def export_csv(request: Request, model = Depends(get_model), library: str = Query(None), query: str = Query(None),
+               template: bool = Query(False)):
+    """The videos of a library / group / search as CSV, to edit in a spreadsheet and import back.
+    template=1: only the paths and filenames filled in."""
+    import metadata_import
+    from fastapi.responses import Response
+    paths = _export_paths(request, model, library, query)
+    if not paths:
+        raise HTTPException(400, "No videos to export here")
+    text = metadata_import.export_csv(model.db.get_connection(), model.db.get_file, paths, template=template)
+    label = (library if library not in (None, '', 'Home', 'All Videos') else 'all_videos') + ('_search' if query else '')
+    fname = f"lustr_{_safe_name(label)}{'_template' if template else ''}.csv"
+    return Response('\ufeff' + text, media_type='text/csv; charset=utf-8',          # the BOM: Excel reads it as UTF-8
+                    headers={'Content-Disposition': f'attachment; filename="{fname}"'})
 
 
+class ImportPlanBody(BaseModel):
+    token: str
+    modes: Dict[str, str] = {}
 
-@router.post("/import")
-async def import_json(file: UploadFile, request: Request, model = Depends(get_model)):
-    """
-    Import metadata from CSV or JSON file.
-    Automatically detects format based on file extension.
-    """
+
+def _import_plan(model, token, modes):
+    import metadata_import
+    rows, name = metadata_import.stashed(token)
+    summary, work = metadata_import.plan(model.db.get_connection(), model.db.get_file, rows, modes)
+    return dict(summary, token=token, file=name), work
+
+
+@router.post("/import/upload")
+async def import_upload(file: UploadFile, model = Depends(get_model)):
+    """Read a CSV and show what importing it would change (nothing is written yet)."""
+    import metadata_import
     try:
-        contents = await file.read()
-        filename = file.filename.lower()
-        
-        if filename.endswith('.csv'):
-            # CSV Import
-            import csv
-            import io
-            
-            # Decode and parse CSV
-            text = contents.decode('utf-8')
-            reader = csv.DictReader(io.StringIO(text))
-            
-            # Convert CSV rows to JSON format for import
-            json_data = {}
-            for row in reader:
-                path = row.get('path', '')
-                if not path:
-                    continue
-                
-                # Build metadata dict
-                metadata = {'filename': row.get('filename', os.path.basename(path))}
-                
-                # Scalar fields
-                scalar_fields = ['title', 'year', 'rating', 'resolution', 'codec', 
-                               'extension', 'length', 'total_bitrate', 'file_size',
-                               'date_created', 'date_modified', 'date_added', 'date_last_edited']
-                for field in scalar_fields:
-                    value = row.get(field, '').strip()
-                    metadata[field] = value if value else ''
-                
-                # Favorite (boolean)
-                fav = row.get('favorite', '').lower()
-                metadata['favorite'] = fav == 'true'
-                
-                # List fields - split by pipe
-                list_fields = [field.lower() for field in LIST_FIELDS]
-                for field in list_fields:
-                    value = row.get(field, '').strip()
-                    if value:
-                        metadata[field] = [v.strip() for v in value.split('|') if v.strip()]
-                    else:
-                        metadata[field] = []
-                
-                json_data[path] = metadata
-            
-            # Use existing import logic
-            if USE_SQLITE:
-                count = model.db.import_from_json_data(json_data)
-                if count > 0:
-                    model.load()
-                    return {"imported": count, "format": "csv"}
-            else:
-                # JSON-based import
-                temp_path = DATA_FILE + ".import"
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    json.dump({"files": json_data}, f)
-                count = model.import_from_json(temp_path)
-                os.remove(temp_path)
-                return {"imported": count, "format": "csv"}
-        
-        else:
-            # JSON Import (original)
-            data = json.loads(contents.decode('utf-8'))
-            
-            if USE_SQLITE:
-                count = model.db.import_from_json_data(data)
-                if count > 0:
-                    model.load()
-                    return {"imported": count, "format": "json"}
-            else:
-                temp_path = DATA_FILE + ".import"
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f)
-                count = model.import_from_json(temp_path)
-                os.remove(temp_path)
-                if count > 0:
-                    print(f"🔄 Reloading model after importing {count} files...", flush=True)
-                    model.load()  # Refresh in-memory cache
-                    print(f"✅ Model reloaded, total files in memory: {len(model.files)}", flush=True)
-                return {"imported": count, "format": "json"}
-            
+        _cols, rows = metadata_import.read_csv(await file.read())
+        token = metadata_import.stash(rows, file.filename)
+        return {'success': True, **_import_plan(model, token, {})[0]}
+    except metadata_import.ImportError_ as e:
+        return {'success': False, 'error': str(e)}
     except csv.Error as e:
-        raise HTTPException(400, f"Invalid CSV: {str(e)}")
-    except json.JSONDecodeError as e:
-        raise HTTPException(400, f"Invalid JSON: {str(e)}")
-    except Exception as e: 
-        raise HTTPException(400, str(e))
+        return {'success': False, 'error': f'Could not read the CSV: {e}'}
+
+
+@router.post("/import/preview")
+def import_preview(body: ImportPlanBody, model = Depends(get_model)):
+    """The same upload again, with add / replace chosen per list column."""
+    import metadata_import
+    try:
+        return {'success': True, **_import_plan(model, body.token, body.modes)[0]}
+    except metadata_import.ImportError_ as e:
+        return {'success': False, 'error': str(e)}
+
+
+@router.post("/import/apply")
+def import_apply(body: ImportPlanBody, model = Depends(get_model)):
+    """Write the previewed changes (a safety backup of the database first)."""
+    import metadata_import
+    from routes import metadata as rm
+    try:
+        summary, work = _import_plan(model, body.token, body.modes)
+        conn = model.db.get_connection()
+
+        def apply_one(path, **kw):
+            rm.update_metadata(rm.UpdateMetadataRequest(paths=[path], **kw), model)
+
+        def set_favorite(path, on):
+            conn.execute('UPDATE videos SET favorite = ? WHERE video_id = (SELECT video_id FROM file_versions WHERE path = ?)',
+                         (1 if on else 0, path))
+            conn.commit()
+
+        n = metadata_import.apply(conn, work, apply_one, set_favorite)
+        metadata_import.stashed(body.token, drop=True)
+        try:
+            import home
+            home.invalidate()
+        except Exception:
+            pass
+        return {'success': True, 'updated': n}
+    except metadata_import.ImportError_ as e:
+        return {'success': False, 'error': str(e)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}

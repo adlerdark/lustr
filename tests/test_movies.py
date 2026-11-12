@@ -376,6 +376,34 @@ class FindTests(MovieBase):
         self.assertTrue(g['afullmovie']['videos'][0]['whole'])
         self.assertTrue(g['summerroadtrip13']['sure'])
 
+    def test_full_movie_tag_is_a_whole_movie(self):
+        self.c.execute("UPDATE videos SET title = 'Long Hot Night' WHERE video_id = 'v3'")
+        g = {x['key']: x for x in movies.find(self.model, self.c, 'Lib')}
+        self.assertNotIn('longhotnight', g)                                # untagged: just a title
+        movies.add_full_movie_tag(self.c, 'v3')
+        self.c.commit()
+        g = {x['key']: x for x in movies.find(self.model, self.c, 'Lib')}
+        v = g['longhotnight']['videos'][0]
+        self.assertEqual((v['video_id'], v['whole'], v['how']), ('v3', True, 'tag'))
+        self.assertTrue(g['longhotnight']['sure'])
+        movies.set_video_movie(self.c, 'v3', 'Something Else')            # already in a movie: not proposed
+        self.assertNotIn('longhotnight', {x['key'] for x in movies.find(self.model, self.c, 'Lib')})
+
+    def test_full_movie_tag_on_a_parsed_title(self):
+        movies.add_full_movie_tag(self.c, 'v3')                             # 'River S03': a scene number, stays a scene
+        self.c.commit()
+        g = {x['key']: x for x in movies.find(self.model, self.c, 'Lib')}
+        self.assertFalse(g['river']['videos'][0]['whole'])
+
+    def test_add_to_movie_suggestions(self):
+        movies.set_video_movie(self.c, 'v3', 'Summer ROAD Trip 13')          # a movie you have: its spelling
+        self.c.execute("UPDATE videos SET title = 'Long Hot Night' WHERE video_id = 'v3'")
+        s = {x['video_id']: x for x in movies.suggest_for(self.c, [A, B, C, '/nope.mp4'])}
+        self.assertEqual(set(s), {'v1', 'v2', 'v3'})
+        self.assertEqual((s['v1']['movie'], s['v1']['scene'], s['v1']['existing']), ('Summer ROAD Trip 13', 1, True))
+        self.assertEqual((s['v2']['movie'], s['v2']['scene']), ('Summer ROAD Trip 13', 2))
+        self.assertEqual((s['v3']['movie'], s['v3']['scene'], s['v3']['existing']), ('Long Hot Night', None, False))   # no scene: the title
+
     def test_lone_release_names_are_left_out(self):
         self.c.execute("UPDATE videos SET title = '', filename_base = 'Jane Doe - JaneDoe_s01_JohnRoe_1080p' WHERE video_id = 'v3'")
         self.assertFalse([x for x in movies.find(self.model, self.c, 'Lib') if x['key'] == 'janedoe'])

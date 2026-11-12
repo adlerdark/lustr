@@ -6,7 +6,7 @@ lustr also shows the pictures in your library folders. Each library has an **Ima
 
 - **Find an album, cast, tag…** searches album names and their details.
 - Sort by **Title**, **Cast**, **Most photos** or **Newest**, and tick **Favorites first**.
-- **★** on an album marks it as a favorite.
+- **♥** on an album marks it as a favorite.
 - Click an album to open it; **‹ Albums** (or **Esc**) goes back.
 
 ## Album details

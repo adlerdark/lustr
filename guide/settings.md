@@ -16,15 +16,14 @@ Open Settings with ⚙ at the top right. Pages that a guide page explains have a
 
 The theme is saved in this browser.
 
-**Browsing**: see [Browsing & search](browsing.md).
+**Browsing**: see [Browsing & search](browsing.md). It has four parts:
 
-- **When a library opens**: its starting sort, view and tab. Each library can override this.
-- **Configure Columns** for the list view.
-- **Items Per Page**, **Pagination Style**, **Manual Pagination** (a Load More button) or **Load All Items**, and **Movies per page**.
-- **Same-name performers: show their number** on cards, rows and in the player.
-- **Sidebar: Hide Unavailable Tags / Sites** instead of greying them out.
-- **Length Filter: Slider Mode**.
-- **Images tab: folders to skip**.
+- **General**: **Show libraries and videos**, **Same-name performers: show their number** (on cards, rows and in the player), and **Sidebar: Hide Unavailable Tags / Sites** instead of greying them out.
+- **Library tab**: **Videos per page** and how pages work; **When a library opens** (its starting sort, view and tab; each library can override this); **Configure Columns** for the list view; the length filter's **Slider Mode** and **Default**.
+- **Movies tab**: **Movies per page** and how pages work.
+- **Images tab**: **Albums per page** and **Photos per page**, how pages work, and **Folders to skip**.
+
+Each tab has the same four ways to page: **Pages** (Previous / Next, only the current page shows), a **Load More button**, **Infinite scroll**, or **Show everything**. An open collection follows the Library tab's choice.
 
 ## Library
 

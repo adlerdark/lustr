@@ -27,7 +27,7 @@ Files were moved, copied or went missing. Click it to review them. See [Scans & 
 
 - Use quotes around values with spaces: `cast:"Jane Doe"`.
 - A field value has to match the whole value. Use the full name, or a wildcard: `cast:jane*`.
-- Check the filters that are still on: tags or sites in the sidebar, length, resolution, ★, ⏷ Filters and 👁 all narrow the results.
+- Check the filters that are still on: tags or sites in the sidebar, length, resolution, rating, ♥, ⏷ Filters and 👁 all narrow the results.
 - See [Browsing & search](browsing.md#searching).
 
 ## Videos or libraries are missing

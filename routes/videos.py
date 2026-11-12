@@ -304,6 +304,29 @@ def _pop_resolution_filter(field_filters):
     return RES_MINIMUMS.get(str(v[1] if isinstance(v, tuple) else v).strip().lower())
 
 
+def _pop_rating_filter(field_filters):
+    """stars:4 -> 4.0, the lowest rating to show (the sidebar's Min rating), removed from the parsed filters."""
+    vals = field_filters.pop('stars', None)
+    for group in field_filters.get('__or_groups__') or []:
+        group.pop('stars', None)
+    if field_filters.get('__or_groups__') is not None:
+        field_filters['__or_groups__'] = [g for g in field_filters['__or_groups__'] if g]
+    if not vals:
+        return None
+    v = vals[0] if isinstance(vals, list) else vals
+    try:
+        n = float(str(v[1] if isinstance(v, tuple) else v).strip().lstrip('>=').strip())
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+def _add_rating_condition(minimum, conditions, params, col='v.rating'):
+    if minimum:
+        conditions.append(f"({col} IS NOT NULL AND {col} != '' AND CAST({col} AS REAL) >= ?)")
+        params.append(minimum)
+
+
 def _add_resolution_condition(minimum, conditions, params, conn, col='v.video_id'):
     """A video goes by its preferred version, the one its badge shows."""
     if not minimum:
@@ -533,6 +556,140 @@ def _unwrap_values(values):
     return out
 
 
+# ---------------------------------------------------------------------------
+# boolean search: SearchParser.boolean_tree -> one SQL condition on v.video_id
+# ---------------------------------------------------------------------------
+_TABLE_NAME = re.compile(r'^[a-z0-9_]+$')
+
+
+def _junction_sql(conn, field, match_sql):
+    """v.video_id IN (the videos whose `field` has a value matching match_sql, on vt.value) - or None (no such field)."""
+    if not _TABLE_NAME.match(field) or not _table_exists(conn, f'video_{field}_junction'):
+        return None
+    return (f'v.video_id IN (SELECT vj.video_id FROM video_{field}_junction vj '
+            f'JOIN video_{field} vt ON vj.{field}_id = vt.id WHERE {match_sql})')
+
+
+def _contains_pattern(value):
+    """'%value%' for LIKE ... ESCAPE '\\' (* / % inside it stay wildcards)."""
+    v = str(value).lower()
+    return '%' + (_like_pattern(v) or v.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')) + '%'
+
+
+def _text_sql(conn, word):
+    """A plain word / "phrase": in the title, the path (filename and folders), or any value (cast, tags, site...)."""
+    pat = _contains_pattern(word)
+    parts, params = ["LOWER(COALESCE(v.title, '')) LIKE ? ESCAPE '\\'"], [pat]
+    sub = ["SELECT video_id FROM file_versions WHERE deleted_at IS NULL AND LOWER(path) LIKE ? ESCAPE '\\'"]
+    params.append(pat)
+    for f in [x.lower() for x in LIST_FIELDS]:
+        if _TABLE_NAME.match(f) and _table_exists(conn, f'video_{f}_junction'):
+            sub.append(f"SELECT vj.video_id FROM video_{f}_junction vj JOIN video_{f} vt ON vj.{f}_id = vt.id "
+                       f"WHERE LOWER(vt.value) LIKE ? ESCAPE '\\'")
+            params.append(pat)
+    parts.append('v.video_id IN (' + ' UNION '.join(sub) + ')')
+    return '(' + ' OR '.join(parts) + ')', params
+
+
+def _special_sql(conn, model, name, values):
+    """library: / res: / stars: / scene: / captions: / chapters: / markers: / movie: / dates inside a boolean search."""
+    ff, conds, params = {name: list(values)}, [], []
+    if name == 'library':
+        import library_scope
+        names = _get_library_names(model, 'All Videos', _unwrap_values_raw(values))
+        if names is None:
+            return '1', []
+        return library_scope.videos_in(names)
+    if name == 'res':
+        _add_resolution_condition(_pop_resolution_filter(ff), conds, params, conn)
+    elif name == 'stars':
+        _add_rating_condition(_pop_rating_filter(ff), conds, params)
+    elif name == 'scene':
+        _add_scene_condition(_pop_scene_filter(ff), conds, params)
+    elif name == 'captions':
+        cc = _pop_captions_filter(ff)
+        if cc is not None:
+            conds.append(_captions_sql(cc))
+    elif name in ('chapters', 'markers'):
+        conds.extend(_chapters_sql(_pop_chapters_filter(ff)))
+    elif name == 'movie':
+        import movies
+        msql, mparams = movies.filter_sql(_pop_movie_filter(ff))
+        if msql:
+            conds.append(msql)
+            params.extend(mparams)
+    else:                                                         # dates: 2024, 2024-03, 2024-03-15
+        col = {'date_added': 'v.date_added', 'added': 'v.date_added'}.get(name)
+        for val in _unwrap_values_raw(values):
+            if col:
+                conds.append(f'{col} LIKE ?')
+            else:
+                fcol = 'date_created' if name == 'date_created' else 'date_modified'
+                conds.append(f'v.video_id IN (SELECT video_id FROM file_versions WHERE deleted_at IS NULL AND {fcol} LIKE ?)')
+            params.append(str(val).strip() + '%')
+    return ('(' + ' AND '.join(conds) + ')' if conds else '1'), params
+
+
+def _unwrap_values_raw(values):
+    return [str(v[1]) if isinstance(v, tuple) else str(v) for v in values]
+
+
+def _bool_sql(conn, model, node):
+    """A boolean search tree -> (sql on v.video_id, params)."""
+    kind = node[0]
+    if kind in ('and', 'or'):
+        parts, params = [], []
+        for kid in node[1]:
+            sql, p = _bool_sql(conn, model, kid)
+            parts.append(sql)
+            params.extend(p)
+        return '(' + (' AND ' if kind == 'and' else ' OR ').join(parts) + ')', params
+    if kind == 'not':
+        sql, p = _bool_sql(conn, model, node[1])
+        return f'(NOT {sql})', p
+    if kind == 'text':
+        return _text_sql(conn, node[1])
+    name, values = node[1], node[2]
+    if name in SearchParser.SPECIAL_FIELDS:
+        return _special_sql(conn, model, name, values)
+    if name == 'path':
+        sql, p = _path_match_sql(values, col='path')
+        return f'v.video_id IN (SELECT video_id FROM file_versions WHERE deleted_at IS NULL AND {sql})', p
+    if name == 'title':
+        conds, p = [], []
+        for v in _unwrap_values(values):
+            conds.append("LOWER(COALESCE(v.title, '')) LIKE ? ESCAPE '\\'")
+            p.append(_contains_pattern(v))
+        return '(' + (' OR '.join(conds) or '0') + ')', p
+    if name == 'year':
+        vals = _unwrap_values(values)
+        return f"(CAST(v.year AS TEXT) IN ({','.join('?' * len(vals)) or 'NULL'}))", vals
+    if name == 'cast':
+        csql, p = _cast_match_sql(_unwrap_values(values))
+        return (f'v.video_id IN (SELECT vcj.video_id FROM video_cast_junction vcj JOIN video_cast vc ON vcj.cast_id = vc.id '
+                f'WHERE {csql})'), p
+    match_sql, p = _value_match_sql('vt.value', values)
+    sql = _junction_sql(conn, name, match_sql)
+    return (sql, p) if sql else ('0', [])                           # a field lustr doesn't have: nothing matches
+
+
+def _add_bool_condition(field_filters, conditions, params, conn, model):
+    tree = field_filters.get('__bool__')
+    if tree is not None:
+        sql, p = _bool_sql(conn, model, tree)
+        conditions.append(sql)
+        params.extend(p)
+
+
+def _bool_video_ids(conn, model, field_filters):
+    """The videos a boolean search matches (the per-file paths), or None when it isn't one."""
+    tree = field_filters.get('__bool__')
+    if tree is None:
+        return None
+    sql, p = _bool_sql(conn, model, tree)
+    return {r[0] for r in conn.execute(f'SELECT v.video_id FROM videos v WHERE {sql}', p)}
+
+
 def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.video_id'):
     """
     Generate SQL conditions for field_filters, respecting cross-field OR groups.
@@ -551,7 +708,7 @@ def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.vide
     or_groups (i.e. __or_groups__ is missing).
     """
     or_groups = field_filters.get('__or_groups__', None)
-    skip_fields = {'cast', 'path', '__or_groups__'}
+    skip_fields = {'cast', 'path', '__or_groups__', '__bool__'}
 
     # Flat fields not covered by or_groups (date, resolution, etc.) are
     # handled by their own dedicated blocks — we only deal with LIST_FIELDS here.
@@ -639,6 +796,7 @@ def _get_videos_sql_fast(
     ch_filters = _pop_chapters_filter(field_filters)
     movie_filter = _pop_movie_filter(field_filters)
     res_min = _pop_resolution_filter(field_filters)
+    stars_min = _pop_rating_filter(field_filters)
     tag_fields = [f.lower() for f in LIST_FIELDS if f.lower() not in ['site', 'cast']]
     
     conn = model.db.get_connection()
@@ -703,8 +861,10 @@ def _get_videos_sql_fast(
     
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.video_id')
+    _add_bool_condition(field_filters, conditions, params, conn, model)
     _add_scene_condition(scene_kind, conditions, params)
     _add_resolution_condition(res_min, conditions, params, conn)
+    _add_rating_condition(stars_min, conditions, params)
     if cc_filter is not None:
         conditions.append(_captions_sql(cc_filter))
     conditions.extend(_chapters_sql(ch_filters))
@@ -998,8 +1158,10 @@ def get_videos(
     cc_filter = _pop_captions_filter(field_filters)
     ch_filters = _pop_chapters_filter(field_filters)
     res_min = _pop_resolution_filter(field_filters)
+    stars_min = _pop_rating_filter(field_filters)
     cc_paths = None
     movie_filter = _pop_movie_filter(field_filters)
+    bool_vids = _bool_video_ids(model.db.get_connection(), model, field_filters) if USE_SQLITE else None   # (a OR b) AND NOT c
     movie_vids = None
     if movie_filter:
         import movies
@@ -1177,6 +1339,7 @@ def get_videos(
         # --- FILTERS ---
         if favorites_only and not data.get('favorite', False): continue
         if res_min and (_resolution_num(data.get('resolution')) or 0) < res_min: continue
+        if stars_min and (_num(data.get('rating')) or 0) < stars_min: continue
         
         # Length filter (supports multiple ranges)
         if length_filter:
@@ -1247,6 +1410,7 @@ def get_videos(
             if 'path' in field_filters and not SearchParser.matches_path(path, field_filters['path']): continue
             other_filters = {k: v for k, v in field_filters.items() if k not in ('path', '__or_groups__')}
             if other_filters and not SearchParser.matches_field_filters(data, other_filters): continue
+        if bool_vids is not None and data.get('video_id') not in bool_vids: continue
 
         if base_query:
             if USE_SQLITE:
@@ -1428,6 +1592,7 @@ def _get_available_filters_uncached(
     cc_filter = _pop_captions_filter(field_filters)
     ch_filters = _pop_chapters_filter(field_filters)
     res_min = _pop_resolution_filter(field_filters)
+    stars_min = _pop_rating_filter(field_filters)
     is_cast_search_all = (library == "All Videos" and 'cast' in field_filters and not library_filters)
     
     required_tags = set(t.strip().lower() for t in tags.split(',') if t.strip()) if tags else set()
@@ -1493,8 +1658,10 @@ def _get_available_filters_uncached(
     
     # Other field filters (respects cross-field OR groups)
     _build_or_groups_sql(field_filters, base_conditions, base_params, video_id_col='v.video_id')
+    _add_bool_condition(field_filters, base_conditions, base_params, conn, model)
     _add_scene_condition(scene_kind, base_conditions, base_params)
     _add_resolution_condition(res_min, base_conditions, base_params, conn)
+    _add_rating_condition(stars_min, base_conditions, base_params)
     if cc_filter is not None:
         base_conditions.append(_captions_sql(cc_filter))
     base_conditions.extend(_chapters_sql(ch_filters))

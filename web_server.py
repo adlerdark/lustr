@@ -154,6 +154,23 @@ def theme_css(name: str):
     return Response(status_code=404)
 
 
+@app.get("/favicon.ico")
+def favicon():
+    """The browser tab / bookmark icon (static/icons; the logo's cursive l)."""
+    from fastapi.responses import FileResponse
+    return FileResponse(os.path.join(STATIC_DIR, 'icons', 'favicon.ico'), media_type='image/x-icon')
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    """Name and icons for "Add to Home Screen" / installed shortcuts."""
+    return JSONResponse({'name': 'lustr', 'short_name': 'lustr', 'start_url': '/', 'display': 'standalone',
+                         'background_color': '#111827', 'theme_color': '#111827',
+                         'icons': [{'src': '/static/icons/icon-192.png', 'sizes': '192x192', 'type': 'image/png'},
+                                   {'src': '/static/icons/icon-512.png', 'sizes': '512x512', 'type': 'image/png'}]},
+                        media_type='application/manifest+json')
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Media file serving
@@ -193,6 +210,7 @@ async def auth_middleware(request: Request, call_next):
         "/api/tv/pair/start",                        # a TV that isn't logged in yet (routes/tv.py)
         "/api/tv/pair/poll",
         "/favicon.ico",
+        "/manifest.webmanifest",
         "/install_vlc_link.bat"
     ]
     

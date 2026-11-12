@@ -214,6 +214,19 @@ def find_apply(body: ApplyBody, model=Depends(get_model)):
         return _err(e)
 
 
+class SuggestBody(BaseModel):
+    paths: List[str] = []
+
+
+@router.post('/suggest')
+def suggest(body: SuggestBody, model=Depends(get_model)):
+    """Add to Movie: a movie name for each video, from its title."""
+    try:
+        return {'success': True, 'videos': movies.suggest_for(_conn(), body.paths[:2000])}
+    except Exception as e:
+        return _err(e)
+
+
 class FavoriteBody(BaseModel):
     ids: List[int]
     favorite: bool = True

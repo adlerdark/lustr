@@ -11,7 +11,12 @@ In **Edit Metadata** (General tab):
 - **Part #**: which part, when the movie, or one long scene, is split over several files.
 - **Whole movie in this file**: the file is the complete movie.
 
-To put many videos in one movie at once, select them and right-click → **Add to movie...**.
+Right-click a video → **Add to movie...** to put it in a movie. Under the name box it suggests the movie its title names, the way **Find movies…** (on the Movies tab) reads titles: "Road Trip 3 Scene 2" suggests **Road Trip 3**, scene 2. Click the suggestion to use it.
+
+With several videos selected, **Add to movie...** has two tabs:
+
+- **One movie for all**: every selected video goes into the movie you type or pick.
+- **By title**: the videos are grouped by the movie their titles name, each group with its scene numbers. Change a name if it's wrong, untick a group to leave it out, and click **Add**. A name that matches a movie you have adds to it; otherwise a new movie is made.
 
 > Note: the same name is the same movie. "Jane's Diary 5" and "jane-s-diary-5" count as one. Two different movies that share a name can be told apart: right-click the videos of the second one → **Split into a new movie…**.
 
@@ -26,7 +31,7 @@ Each library has a **Movies** tab with the movies its videos belong to.
 ## A movie's page
 
 - **Front** and **Back** show the covers; **Change covers…** picks others. Right-click one of its videos → **Use as movie cover** to use that video's picture.
-- **★** marks a favorite.
+- **♥** marks a favorite.
 - Its own details: **Name**, **Year**, **Studio**, **Director**, **Description**, and the **Cast** from ThePornDB. They belong to the movie and aren't copied onto its scenes. Edit them with **Edit**. A new name renames the movie for all its videos; another movie's name joins the two. The **Edition label** tells apart different movies with the same name, shown as "Name (label)".
 - **Movie tags**: tags for the movie as a whole. The Movies tab's tag filter uses them, together with the tags of its scenes. **Tags → scenes…** copies some or all of them onto the movie's videos.
 - Its videos. Right-click → **Remove from** *(the movie)* takes one out.

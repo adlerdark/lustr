@@ -44,6 +44,16 @@ def _image_mime(data):
     return None
 
 
+
+def stars(value):
+    """A rating as stored: '0.5' - '5' in half stars, '' for none (0, blank, or not a number)."""
+    try:
+        v = round(float(value) * 2) / 2
+    except (TypeError, ValueError):
+        return ''
+    v = min(5.0, max(0.0, v))
+    return '' if v <= 0 else ('%g' % v)
+
 class Database:
     def __init__(self, db_path=None):
         if db_path is None:
@@ -362,6 +372,36 @@ class Database:
                 if col not in pcols:
                     cursor.execute(f'ALTER TABLE playlists ADD COLUMN {col} {typ}')
             conn.commit()
+            self._migrate_ratings_to_stars(conn)
+
+    def _migrate_ratings_to_stars(self, conn):
+        """Once: ratings become 0.5 - 5 stars. Ratings out of 10 (any above 5) are halved, to the nearest half star."""
+        if conn.execute("SELECT 1 FROM metadata WHERE key = 'rating_scale'").fetchone():
+            return
+        rows = []
+        for vid, r in conn.execute("SELECT video_id, rating FROM videos WHERE rating IS NOT NULL AND rating != ''"):
+            try:
+                rows.append((vid, float(r)))
+            except (TypeError, ValueError):
+                rows.append((vid, None))
+        ten = any(v is not None and v > 5 for _, v in rows)
+        if ten:
+            conn.commit()                             # the copy can't be taken inside an open transaction
+            try:
+                bdir = os.path.join(os.path.dirname(self.db_path), 'backups')
+                os.makedirs(bdir, exist_ok=True)
+                dest = sqlite3.connect(os.path.join(bdir, f"library_before_star_ratings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"))
+                conn.backup(dest)
+                dest.close()
+            except Exception as e:
+                print(f"[ratings] backup before migration failed: {e}")
+        for vid, v in rows:
+            new = stars(v / 2 if ten and v is not None else v)
+            conn.execute('UPDATE videos SET rating = ? WHERE video_id = ?', (new, vid))
+        conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('rating_scale', '5')")
+        conn.commit()
+        if rows:
+            print(f"[ratings] {len(rows)} rating(s) now in stars" + (' (halved from a 10-point scale)' if ten else ''))
     
     def _migrate_trans_genders(self, conn):
         """Once: 'trans' becomes 'trans_female' / 'trans_male'. The direction comes from the performer's

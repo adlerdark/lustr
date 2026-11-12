@@ -246,6 +246,13 @@ def update_cast_attributes(cast_name: str, attributes: dict, model = Depends(get
     with model.db.get_connection() as conn:
         cursor = conn.cursor()
         
+        import value_format                          # new values in the house format ('Big Tits' -> 'big.tits')
+        have = {t: value_format.known(conn, t) for t in attributes}
+        for attr_type, attr_list in attributes.items():
+            for attr_data in attr_list:
+                attr_data['value'] = value_format.house(attr_type, attr_data.get('value'), have[attr_type])
+            attr_list[:] = [a for a in attr_list if a['value']]
+
         # Delete existing attributes for this cast member
         cursor.execute('DELETE FROM cast_attributes WHERE cast_name = ?', (cast_name,))
         

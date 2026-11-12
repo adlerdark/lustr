@@ -10,13 +10,16 @@ Playlists (kind 'playlist') are unaffected: the playlist routes only list kind '
 No FastAPI imports (the /api/videos function is called for smart collections).
 """
 import json
+import threading
+import time
 
 import home
 import library_stats
 
 KINDS = ('collection', 'smart')
 RULE_KEYS = ('library', 'query', 'tags', 'tags_exclude', 'sites', 'sites_exclude', 'favorites_only', 'length_filter',
-             'sort_by', 'desc', 'hide_zero_length')
+             'sort_by', 'desc', 'hide_zero_length',
+             'show_in', 'show_in_found')   # where a smart one is listed: names (may hold 'All Videos') / wherever its videos are
 MANUAL_SORTS = ('position', 'Recently Added', 'Title', 'Most Played', 'Last Played')
 
 
@@ -29,7 +32,10 @@ class _NoAuth:                     # smart rows built outside a request (Home): 
 
 
 def clean_rules(rules):
-    r = {k: v for k, v in (rules or {}).items() if k in RULE_KEYS and v not in (None, '')}
+    rules = dict(rules or {})
+    if 'show_in_searched' in rules:                  # its name for a few days before 1.1.0
+        rules.setdefault('show_in_found', rules.pop('show_in_searched'))
+    r = {k: v for k, v in rules.items() if k in RULE_KEYS and v not in (None, '')}
     r.setdefault('library', 'All Videos')
     r['favorites_only'] = bool(r.get('favorites_only'))
     r['desc'] = bool(r.get('desc', True))
@@ -169,8 +175,15 @@ def _manual_paths(model, conn, c, library=None, username=None):
     return [r['path'] for r in rows]
 
 
-def items(model, conn, cid, request=None, username=None, watch_history=None, page=1, limit=100, seed=0, paths_only=False):
+def items(model, conn, cid, request=None, username=None, watch_history=None, page=1, limit=100, seed=0, paths_only=False, rules=None):
+    """rules: for a smart one, filters to use this time instead of its saved ones (the sidebar while it's open)."""
     c = get(conn, cid)
+    if rules and c['kind'] == 'smart':
+        keep = {k: v for k, v in (c['rules'] or {}).items() if k in ('show_in', 'show_in_found', 'show_in_searched')}
+        c = dict(c, rules=dict(clean_rules(rules), **keep), filtered=True)
+    if page == 1 and not paths_only:                 # the collection page lists where its videos are
+        libs = found_libraries(model, conn, c)
+        c['libraries'] = [{'name': k, 'count': v} for k, v in sorted(libs.items(), key=lambda x: (-x[1], x[0].lower()))]
     if c['kind'] == 'smart':
         d = _smart_query(model, request, c['rules'], page, limit, seed, paths_only)
         if paths_only:
@@ -214,12 +227,118 @@ def _in_library(model, rules_library, library):
     return library in groups and rules_library in (model.get_libraries_in_group(library) or [])
 
 
+def _under(model, name):
+    """The libraries a library / group stands for."""
+    groups = getattr(model, 'library_groups', None) or {}
+    return set(model.get_libraries_in_group(name) or []) if name in groups else {name}
+
+
+def _covers(model, tab, name):
+    """Is `name` (a library / group) shown on this library / group tab: the same one, or inside the tab's group."""
+    if tab == name:
+        return True
+    groups = getattr(model, 'library_groups', None) or {}
+    if tab not in groups:
+        return False
+    inside, libs = _under(model, tab), _under(model, name)
+    return bool(libs) and libs <= inside
+
+
+# ---------------------------------------------------------------------------
+# where a collection's videos are: which tabs list it, and the label on its card
+# ---------------------------------------------------------------------------
+FOUND_SECONDS = 60
+_found = {}
+_found_lock = threading.Lock()
+
+
+def _forget_found():
+    with _found_lock:
+        _found.clear()
+
+
+home.on_invalidate(_forget_found)
+
+
+def found_libraries(model, conn, c):
+    """{library: videos} for the videos a collection holds right now (cached a minute, and until metadata changes)."""
+    key = (c['id'], json.dumps(c.get('rules') or {}, sort_keys=True))
+    with _found_lock:
+        hit = _found.get(key)
+    if hit and time.time() - hit[0] < FOUND_SECONDS:
+        return hit[1]
+    try:
+        if c['kind'] == 'smart':
+            paths = [x['path'] if isinstance(x, dict) else x for x in
+                     _smart_query(model, None, c['rules'], 1, 1, paths_only=True).get('paths', [])]
+        else:
+            paths = _manual_paths(model, conn, c)
+    except Exception:
+        paths = []
+    out = {}
+    for k in range(0, len(paths), 500):
+        chunk = paths[k:k + 500]
+        for lib, n in conn.execute(f'SELECT library, COUNT(*) FROM file_versions WHERE path IN ({",".join("?" * len(chunk))}) '
+                                   'GROUP BY library', chunk):
+            if lib:
+                out[lib] = out.get(lib, 0) + n
+    with _found_lock:
+        _found[key] = (time.time(), out)
+    return out
+
+
+def _parents(model):
+    """{library / group: the group it sits in}."""
+    out = {}
+    for g, d in (getattr(model, 'library_groups', None) or {}).items():
+        for item in (d or {}).get('libraries', []) or []:
+            out.setdefault(item, g)
+    return out
+
+
+def _ancestors(parents, name):
+    chain, seen = [], set()
+    while name in parents and name not in seen:
+        seen.add(name)
+        name = parents[name]
+        chain.append(name)
+    return chain
+
+
+def source_label(model, libs, tab=None):
+    """What a collection card says it's from: its one library, else the lowest group holding all its libraries
+    ('Multiple libraries' when that's the tab you're on, or no group holds them all)."""
+    libs = [l for l in libs if l]
+    if not libs:
+        return ''
+    if len(libs) == 1:
+        return libs[0]
+    parents = _parents(model)
+    chains = [_ancestors(parents, l) for l in libs]
+    common = next((g for g in chains[0] if all(g in ch for ch in chains[1:])), None)
+    return common if common and common != tab else 'Multiple libraries'
+
+
+def _shows_in(model, conn, c, library):
+    """Is a collection listed on this library / group tab (Home and All Videos count as one)?
+    Saved without a choice: in All Videos and its own library (as it always was)."""
+    rules = clean_rules(c['rules'])
+    if 'show_in' not in rules and 'show_in_found' not in rules:
+        return _in_library(model, rules.get('library', 'All Videos'), library)
+    names = list(rules.get('show_in') or [])
+    if library in home.EVERYTHING:
+        return any(n in home.EVERYTHING for n in names)
+    if rules.get('show_in_found'):
+        names += list(found_libraries(model, conn, c))
+    return any(n not in home.EVERYTHING and _covers(model, library, n) for n in names)
+
+
 def listing(model, conn, library=None, request=None, username=None):
     """Collections for a library / group tab (all of them for All Videos / Home), with count and cover."""
     out = []
     for c in all_collections(conn):
         if c['kind'] == 'smart':
-            if not _in_library(model, (c['rules'] or {}).get('library', 'All Videos'), library):
+            if not _shows_in(model, conn, c, library):
                 continue
             try:
                 d = _smart_query(model, request, c['rules'], 1, 1)
@@ -231,7 +350,10 @@ def listing(model, conn, library=None, request=None, username=None):
             if library not in home.EVERYTHING and not paths:
                 continue
             count, first = len(paths), (paths[0] if paths else None)
-        out.append(dict(c, count=count, cover=_cover(model, conn, c, first)))
+        libs = found_libraries(model, conn, c)
+        out.append(dict(c, count=count, cover=_cover(model, conn, c, first),
+                        libraries=[{'name': k, 'count': v} for k, v in sorted(libs.items(), key=lambda x: (-x[1], x[0].lower()))],
+                        from_label=source_label(model, list(libs), library)))
     return out
 
 
@@ -244,7 +366,7 @@ def home_rows(conn, library, n, model=None):
         if not c['show_on_home']:
             continue
         if c['kind'] == 'smart':
-            if not _in_library(model, (c['rules'] or {}).get('library', 'All Videos'), library):
+            if not _shows_in(model, conn, c, library):
                 continue
             try:
                 paths = [i['path'] for i in _smart_query(model, None, c['rules'], 1, n).get('items', [])]

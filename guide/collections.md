@@ -21,9 +21,34 @@ Inside a collection, right-click a video → **Remove from** *(the collection)* 
 A smart collection is a saved view: its filters, search and sort. It keeps itself up to date, so new videos that fit appear in it by themselves.
 
 1. On the **Library** tab, set up what you want to see: the search, tags, sites, length, resolution, sort.
-2. Click **★ Save as smart collection** and give it a name.
+2. Click **★ Save as smart collection**, give it a name, and pick where it shows (below).
 
-Smart collections are marked **smart**. To change what one shows, set the filters on the Library tab, then open the collection and click **Use current Library filters**.
+You can also save an [Advanced Search](browsing.md#advanced-search) this way: its **★ Save as smart collection…** button runs the search and opens the same window.
+
+Smart collections are marked **smart**. When you open one, the sidebar and the filter buttons show how it was built: its tags and sites (included or excluded), length, resolution, rating and favorites. Its own search shows under its name. Change any of them to narrow the collection down further; nothing is saved. The filters go back to what they were in the Library when you leave the collection: **‹ Collections**, another tab, another library, or a search. Opening a video, Edit Metadata or Settings doesn't leave it.
+
+To keep the changes, click **Save current filters**: they become the collection's filters.
+
+#### Where it shows
+
+A smart collection saved from one library or group, or from several libraries or groups in the same group, places itself: it shows in **every library its videos are in**, and in the groups above those libraries. It follows the videos: if videos move, or their tags change, so that a library no longer has any of them, it stops showing there; a library that gains some starts showing it.
+
+Saved from **All Videos**, or from libraries in different groups, you choose where it shows. Tick as many as you like:
+
+- **Wherever its videos are**: the same automatic placement as above.
+- **All Videos**: it's listed in All Videos (and on Home, if you show it there).
+- Any library or group by name. A collection listed in a library also shows in the groups that hold that library.
+
+To change it later, open the collection and click **Show in…**. Smart collections saved before this option existed show in All Videos and in the library they were saved from.
+
+#### What a card says it's from
+
+On a group's (or All Videos') Collections tab, each card says where its videos are:
+
+- All in one library: that library's name, on every tab.
+- In several libraries: the smallest group that holds them all. On that group's own tab it says **Multiple libraries**. For example, a collection with videos in two libraries of one group says **Multiple libraries** on that group's tab and the group's name on the tab of the group above it.
+
+Hover over it for the libraries and how many videos are in each. The collection's own page lists them under **From**.
 
 ### Options
 

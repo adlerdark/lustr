@@ -242,7 +242,7 @@ class Images(unittest.TestCase):
         self.assertEqual(page['letters'], [{'letter': '#', 'index': 0}, {'letter': 'K', 'index': 1}, {'letter': 'Z', 'index': 2}])
         self.assertTrue(page['albums'][0]['cover_id'])
         self.assertEqual(images.listing(self.conn, ['Lib'], 'cast')['letters'], [{'letter': 'A', 'index': 0}, {'letter': 'Z', 'index': 1}])
-        self.assertEqual(images.filter_counts(self.conn, ['Lib']), {'tags': {'indoor': 1, 'outdoor': 1}, 'sites': {'SiteA': 1}})
+        self.assertEqual(images.filter_counts(self.conn, ['Lib']), {'tags': {'indoor': 1, 'outdoor': 1}, 'sites': {'sitea': 1}})   # new values: house format
 
     def _videos(self, *paths):
         self.conn.execute('CREATE TABLE IF NOT EXISTS file_versions (path TEXT PRIMARY KEY, video_id TEXT, is_preferred INTEGER, deleted_at TEXT)')

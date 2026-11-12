@@ -45,7 +45,7 @@ Later you can pick a better frame while watching: press **T** in the player to m
 **Top bar**
 
 - The **search box**. See [Browsing & search](browsing.md#searching).
-- **Sort**, ★ **favorites only**, **Select All**, and the view buttons (thumbnails, list, folders).
+- **Sort**, ♥ **favorites only**, **Select All**, and the view buttons (thumbnails, list, folders).
 - 👥 **Cast** for your performers, and 🔍 **Metadata** to browse every value of every field.
 - ⚙ **Settings**.
 - The **☰ menu** at the far right: **Help** (this guide), **Link a TV**, **Check for Updates** and **Log Out**. A green dot on it means a new version is out.

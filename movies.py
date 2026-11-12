@@ -388,6 +388,31 @@ def set_video_movie(conn, video_id, title=_KEEP, scene=_KEEP, part=_KEEP, whole=
     return mid
 
 
+def suggest_for(conn, paths):
+    """Add to Movie: the movie name each video's title points to, as Find Movies reads it ('Road Trip 3 Scene 2'
+    -> 'Road Trip 3', scene 2), else the title (or filename) itself; spelled like a movie you have, if any.
+    -> [{path, video_id, movie, scene, part}]"""
+    ensure_schema(conn)
+    out = []
+    for k in range(0, len(paths), 500):
+        chunk = list(paths[k:k + 500])
+        rows = {r[0]: r[1:] for r in conn.execute(
+            f'SELECT fv.path, v.video_id, v.title, v.filename_base FROM file_versions fv JOIN videos v ON v.video_id = fv.video_id '
+            f'WHERE fv.path IN ({",".join("?" * len(chunk))})', chunk)}
+        for p in chunk:
+            if p not in rows:
+                continue
+            vid, title, base = rows[p]
+            parsed = parse_video(title or '', base or '')
+            name = parsed['movie'] if parsed else clean_title(title or filename_text(base or ''))
+            mid, t, ed = resolve_name(conn, name) if title_key(name or '') else (None, name, '')
+            if mid:
+                t, ed = conn.execute('SELECT title, edition FROM movies WHERE id = ?', (mid,)).fetchone()
+            out.append({'path': p, 'video_id': vid, 'movie': display_name(t, ed or ''), 'existing': bool(mid),
+                        'scene': parsed.get('scene') if parsed else None, 'part': parsed.get('part') if parsed else None})
+    return out
+
+
 def apply_updates(conn, video_id, updates):
     """Edit Metadata: the movie / movie_scene / movie_part / movie_whole keys that were changed."""
     upd = {k: v for k, v in (updates or {}).items() if k in UPDATE_KEYS}
@@ -1655,7 +1680,8 @@ def _ext_proposals(conn, video_ids=None):
 
 def find(model, conn, library=None, whole=False):
     """Groups of videos (not in a movie yet) that look like one movie, for Find Movies to review.
-    whole=True: every video of the library is a whole movie unless its title says Part / Disc / Scene."""
+    whole=True: every video of the library is a whole movie unless its title says Part / Disc / Scene.
+    A video tagged full.movie is a whole movie too (named after its title) when nothing else says otherwise."""
     import home
     ensure_schema(conn)
     where, params = home.scope_sql(model, conn, library)
@@ -1663,6 +1689,7 @@ def find(model, conn, library=None, whole=False):
                         f'JOIN file_versions fv ON fv.video_id = v.video_id WHERE {where} '
                         f'AND v.video_id NOT IN (SELECT video_id FROM video_movie)', params).fetchall()
     ext = _ext_proposals(conn, {r[0] for r in rows})
+    tagged = _full_movie_tagged(conn, {r[0] for r in rows})
     groups = {}
     for vid, title, fbase, lib in rows:
         p = ext.get(vid)
@@ -1671,10 +1698,13 @@ def find(model, conn, library=None, whole=False):
             if own and title_key(own['movie']) == title_key(p['movie']):
                 p = dict(p, scene=own['scene'], part=own['part'])
         p = p or parse_video(title, fbase)
-        if not p and whole:
+        if not p and (whole or vid in tagged):
             name = _nice(clean_title(title) or filename_text(fbase))
             if title_key(name):
-                p = {'movie': name, 'scene': None, 'part': None, 'whole': True, 'sure': True, 'how': 'whole'}
+                p = {'movie': name, 'scene': None, 'part': None, 'whole': True, 'sure': True,
+                     'how': 'whole' if whole else 'tag'}
+        elif p and vid in tagged and p['scene'] is None and p['part'] is None:
+            p = dict(p, whole=True)
         if not p:
             continue
         if whole and p.get('how') != 'whole':
@@ -1696,7 +1726,7 @@ def find(model, conn, library=None, whole=False):
         if not whole and not any(x['sure'] or x['part'] or x['scene'] != 1 for x in vs):
             continue                    # only 'Name_s01_...' release names: single scenes, not a movie
         ext_names = [v for v, x in zip(g['names'], g['videos']) if x['how'] == 'ThePornDB']
-        title_names = [v for v, x in zip(g['names'], g['videos']) if x['how'] in ('title', 'whole')]
+        title_names = [v for v, x in zip(g['names'], g['videos']) if x['how'] in ('title', 'whole', 'tag')]
         name = best_spelling(ext_names) or best_spelling(title_names) or best_spelling(g['names'])
         ex = existing.get(k)
         g['videos'].sort(key=lambda x: _order(x['scene'], x['part'], x['whole'], x['title']))
@@ -1704,6 +1734,15 @@ def find(model, conn, library=None, whole=False):
                     'sure': any(x['sure'] for x in g['videos']), 'ext_id': g['ext_id'], 'videos': g['videos']})
     out.sort(key=lambda g: sort_key(g['name']))
     return out
+
+
+def _full_movie_tagged(conn, video_ids):
+    """The ones of these videos tagged full.movie."""
+    if not video_ids:
+        return set()
+    fk = _tags_fk(conn)
+    return {r[0] for r in conn.execute(f'SELECT DISTINCT j.video_id FROM video_tags_junction j JOIN video_tags t ON t.id = j.{fk} '
+                                       'WHERE LOWER(t.value) = ?', (FULL_MOVIE_TAG,)) if r[0] in video_ids}
 
 
 def apply_found(conn, groups):

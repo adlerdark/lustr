@@ -70,6 +70,16 @@ class UpdateMetadataRequest(BaseModel):
     remove_from_lists: Optional[Dict[str, List[str]]] = None
     replace_with: Optional[Dict[str, Dict[str, List[str]]]] = None
     removals: Optional[Dict[str, List[str]]] = None
+    clear_lists: Optional[List[str]] = None     # list fields emptied on every video ('*' in the editor);
+                                                # 'cast' keeps the Male Cast, 'male_cast' clears only them
+
+
+def _male_names(video_id):
+    try:
+        from ext_db import male_cast_for_video
+        return {str(n) for n in male_cast_for_video(video_id)}
+    except Exception:
+        return set()
 
 
 # --- ROUTES ---
@@ -99,6 +109,9 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
         
         count = 0
         target_files = set()
+        if req.add_to_lists and USE_SQLITE:          # new values in the house format ('Big Tits' -> 'big.tits'; value_format.py)
+            import value_format
+            req.add_to_lists = value_format.house_lists(model.db.get_connection(), req.add_to_lists)
         
         # Expand directories to files
         for path in req.paths:
@@ -134,7 +147,26 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
                 file_data = model.files[path]
             
             changed = False
-            
+
+            # Fields cleared on every video. Cast and Male Cast share one list: 'cast' empties
+            # the rest of the cast, 'male_cast' only the Male Cast, both empty it all.
+            clear = {f.lower() for f in (req.clear_lists or [])}
+            if clear & {'cast', 'male_cast'}:
+                current_vals = file_data.get('cast') or []
+                if {'cast', 'male_cast'} <= clear:
+                    new_vals = []
+                else:
+                    vrow = model.db.get_video_by_path(path) if USE_SQLITE else None
+                    male = _male_names(vrow['video_id']) if vrow else set()
+                    new_vals = [c for c in current_vals if (c in male) == ('cast' in clear)]
+                if new_vals != current_vals:
+                    file_data['cast'] = new_vals
+                    changed = True
+            for field_lower in clear - {'cast', 'male_cast'}:
+                if file_data.get(field_lower):
+                    file_data[field_lower] = []
+                    changed = True
+
             # Handle smart case replacements (NEW)
             if req.replace_with:
                 for field, replacements in req.replace_with.items():
@@ -210,6 +242,9 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
             if req.updates:
                 for field, val in req.updates.items():
                     field_lower = field.lower()
+                    if field_lower == 'rating':                   # half stars, 0.5 - 5 ('' / 0: no rating)
+                        from database import stars
+                        val = stars(val)
                     if file_data.get(field_lower) != val.strip():
                         file_data[field_lower] = val.strip()
                         changed = True
@@ -326,6 +361,12 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
                                     print(f"  Error: {e}")
                                     raise
                         
+                        if req.clear_lists and {'cast', 'male_cast'} & {f.lower() for f in req.clear_lists}:
+                            try:                   # Male Cast marks of people no longer in the cast
+                                cursor.execute('DELETE FROM video_cast_role WHERE video_id = ? AND cast_id NOT IN '
+                                               '(SELECT cast_id FROM video_cast_junction WHERE video_id = ?)', (video_id, video_id))
+                            except Exception:
+                                pass
                         if any(k in movies.UPDATE_KEYS for k in (req.updates or {})):
                             movies.apply_updates(conn, video_id, req.updates)   # Movie / Scene # / Part #
                         conn.commit()
@@ -338,6 +379,13 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
                 
                 count += 1
         
+        if req.clear_lists and {'cast', 'male_cast'} & {f.lower() for f in req.clear_lists}:
+            try:
+                from ext_db import _male_invalidate
+                _male_invalidate()
+            except Exception:
+                pass
+
         # Save JSON once at the end if using JSON
         if not USE_SQLITE and count > 0:
             model.save()

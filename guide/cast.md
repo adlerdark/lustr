@@ -13,7 +13,7 @@ Every name you put in a video's **Cast** becomes a performer with their own page
 ## A performer's page
 
 - **Photo**: **Set Photo** to upload one or give its web address (it's downloaded and kept in lustr), then **✂ Crop**. Click the photo to see it full size. You can also make any picture in the Images tab a performer's photo.
-- **★** marks a favorite. **Gender** and **Category** (Pro, Amateur, Celeb) are set here too.
+- **♥** marks a favorite. **Gender** and **Category** (Pro, Amateur, Celeb) are set here too.
 - **Also known as**: aliases and other spellings. Their page also shows videos filed under an alias. Add one with **Add alias / alternate spelling…**, click a name to make it the main name, or **×** to remove it.
 - **Appearance**: their attributes (see below).
 - **Total Videos**, **Libraries** and **Library Distribution**: click a library to see only their videos there.

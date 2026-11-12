@@ -151,6 +151,7 @@ hr { border-color: var(--border-default) !important; }
 .bg-purple-800 { background-color: var(--purple-dark) !important; }
 .bg-purple-900 { background-color: var(--purple-subtle) !important; }
 .bg-purple-900\/30 { background-color: color-mix(in srgb, var(--purple-subtle) 30%, transparent) !important; }
+.bg-red-500\/20 { background-color: color-mix(in srgb, var(--danger-light) 20%, transparent) !important; }
 .bg-red-600 { background-color: var(--danger-base) !important; }
 .bg-red-600\/20 { background-color: color-mix(in srgb, var(--danger-base) 20%, transparent) !important; }
 .bg-red-700 { background-color: var(--danger-dark) !important; }
@@ -158,8 +159,6 @@ hr { border-color: var(--border-default) !important; }
 .bg-red-900 { background-color: var(--danger-subtle) !important; }
 .bg-red-900\/80 { background-color: color-mix(in srgb, var(--danger-subtle) 80%, transparent) !important; }
 .bg-teal-700 { background-color: var(--info-dark) !important; }
-.bg-yellow-500 { background-color: var(--warning-light) !important; }
-.bg-yellow-500\/20 { background-color: color-mix(in srgb, var(--warning-light) 20%, transparent) !important; }
 .bg-yellow-600 { background-color: var(--warning-base) !important; }
 .bg-yellow-700 { background-color: var(--warning-dark) !important; }
 .bg-yellow-800 { background-color: var(--warning-dark) !important; }
@@ -193,7 +192,6 @@ hr { border-color: var(--border-default) !important; }
 .hover\:bg-red-800:hover { background-color: var(--danger-dark) !important; }
 .hover\:bg-yellow-500:hover { background-color: var(--warning-light) !important; }
 .hover\:bg-yellow-600:hover { background-color: var(--warning-base) !important; }
-.hover\:bg-yellow-700:hover { background-color: var(--warning-dark) !important; }
 .border-amber-700 { border-color: var(--warning-dark) !important; }
 .border-blue-400 { border-color: var(--primary-soft) !important; }
 .border-blue-500 { border-color: var(--primary-light) !important; }
@@ -217,8 +215,8 @@ hr { border-color: var(--border-default) !important; }
 .border-purple-700\/50 { border-color: color-mix(in srgb, var(--purple-dark) 50%, transparent) !important; }
 .border-purple-800 { border-color: var(--purple-dark) !important; }
 .border-red-500 { border-color: var(--danger-light) !important; }
+.border-red-500\/50 { border-color: color-mix(in srgb, var(--danger-light) 50%, transparent) !important; }
 .border-red-900\/50 { border-color: color-mix(in srgb, var(--danger-subtle) 50%, transparent) !important; }
-.border-yellow-500\/50 { border-color: color-mix(in srgb, var(--warning-light) 50%, transparent) !important; }
 .border-yellow-700 { border-color: var(--warning-dark) !important; }
 .focus\:border-blue-500:focus { border-color: var(--primary-light) !important; }
 .group:hover .group-hover\:border-blue-500 { border-color: var(--primary-light) !important; }
@@ -233,11 +231,12 @@ hr { border-color: var(--border-default) !important; }
 .ring-blue-500 { --tw-ring-color: var(--primary-light) !important; }
 .ring-gray-800 { --tw-ring-color: var(--border-subtle) !important; }
 .ring-green-500 { --tw-ring-color: var(--success-light) !important; }
-.ring-yellow-400\/60 { --tw-ring-color: color-mix(in srgb, var(--warning-soft) 60%, transparent) !important; }
+.ring-red-400\/60 { --tw-ring-color: color-mix(in srgb, var(--danger-soft) 60%, transparent) !important; }
 .hover\:ring-blue-500:hover { --tw-ring-color: var(--primary-light) !important; }
 .text-amber-100 { color: var(--warning-faintest) !important; }
 .text-amber-200 { color: var(--warning-faint) !important; }
 .text-amber-300 { color: var(--warning-softer) !important; }
+.text-amber-400 { color: var(--warning-soft) !important; }
 .text-blue-100 { color: var(--primary-faintest) !important; }
 .text-blue-200 { color: var(--primary-faint) !important; }
 .text-blue-300 { color: var(--primary-softer) !important; }
@@ -291,7 +290,6 @@ hr { border-color: var(--border-default) !important; }
 .hover\:text-red-300:hover { color: var(--danger-softer) !important; }
 .hover\:text-red-400:hover { color: var(--danger-soft) !important; }
 .hover\:text-red-500:hover { color: var(--danger-light) !important; }
-.hover\:text-yellow-300:hover { color: var(--warning-softer) !important; }
 .placeholder-gray-500::placeholder { color: var(--text-muted) !important; }
 /* text on coloured fills */
 .bg-indigo-600, .hover\:bg-indigo-700:hover, .bg-indigo-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-indigo-700:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]) { color: var(--on-cast) !important; }
@@ -301,7 +299,7 @@ hr { border-color: var(--border-default) !important; }
 .bg-blue-500, .bg-blue-600, .bg-blue-700, .bg-blue-800, .hover\:bg-blue-500:hover, .hover\:bg-blue-600:hover, .hover\:bg-blue-700:hover, .hover\:bg-blue-800:hover, .bg-blue-500 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-blue-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-blue-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-blue-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-blue-500:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-blue-600:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-blue-700:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-blue-800:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]) { color: var(--on-primary) !important; }
 .bg-purple-600, .bg-purple-700, .bg-purple-800, .hover\:bg-purple-600:hover, .bg-purple-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-purple-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-purple-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-purple-600:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]) { color: var(--on-purple) !important; }
 .bg-emerald-500, .bg-emerald-600, .bg-emerald-700, .bg-emerald-800, .bg-green-600, .bg-green-700, .bg-green-800, .hover\:bg-emerald-600:hover, .hover\:bg-green-600:hover, .hover\:bg-green-700:hover, .hover\:bg-green-800:hover, .bg-emerald-500 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-emerald-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-emerald-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-emerald-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-green-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-green-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-green-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-emerald-600:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-green-600:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-green-700:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-green-800:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]) { color: var(--on-success) !important; }
-.bg-amber-600, .bg-amber-700, .bg-amber-800, .bg-yellow-500, .bg-yellow-600, .bg-yellow-700, .bg-yellow-800, .hover\:bg-yellow-500:hover, .hover\:bg-yellow-600:hover, .hover\:bg-yellow-700:hover, .bg-amber-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-amber-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-amber-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-yellow-500 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-yellow-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-yellow-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-yellow-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-yellow-500:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-yellow-600:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-yellow-700:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]) { color: var(--on-warning) !important; }
+.bg-amber-600, .bg-amber-700, .bg-amber-800, .bg-yellow-600, .bg-yellow-700, .bg-yellow-800, .hover\:bg-yellow-500:hover, .hover\:bg-yellow-600:hover, .bg-amber-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-amber-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-amber-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-yellow-600 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-yellow-700 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .bg-yellow-800 *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-yellow-500:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]), .hover\:bg-yellow-600:hover *:not(input):not(select):not(textarea):not(option):not([class*="bg-gray"]) { color: var(--on-warning) !important; }
 /* always dark: players, viewers, overlays on pictures (light themes) */
 html[data-theme-mode="light"] :is(.lustr-dark, :is([class^="bg-black"], [class*=" bg-black"]):not(.fixed)) {
     --surface-deepest: #030712;

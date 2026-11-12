@@ -44,9 +44,33 @@ About twice a day the server asks GitHub for the list of lustr versions. When a 
 
 To check straight away, use **☰ → Check for Updates** in the top bar; the answer appears right in the menu. To turn the automatic check off, untick **Check GitHub for new versions** in **Settings → Maintenance → Overview**.
 
-## Import / Export
+## Import and export
 
-**Settings → Import / Export**:
+**Settings → Import / Export** lets you edit many videos' metadata in a spreadsheet (Excel, LibreOffice, Google Sheets), for example when you move over from a spreadsheet you kept before, or to fill in a column for a whole library at once.
 
-- **📤 Export Metadata** saves the metadata of the library you're in, or of a search in All Videos, as **CSV** (opens in a spreadsheet) or **JSON**.
-- **📥 Import Metadata** reads such a file back. Videos are matched by their file path.
+1. Go to **Settings → Import / Export**. **Library** is **All Videos** at first; click it to pick a library or group instead.
+2. Click **📤 Export CSV**. You get one row per video: its `path` and `filename`, then a column for each field.
+3. Change the cells you want in the spreadsheet, and save it as **CSV**.
+4. Click **📥 Import CSV…** and pick the file. Nothing is written yet: you see how many videos would change and what changes, for example `tags: +blonde, -brunette` or `title: Old → New`.
+5. Click **Apply**. lustr backs the database up first, then writes only those changes.
+
+**📄 Download template** gives you the same file with only the paths and filenames filled in, to start from empty columns.
+
+### How the cells are read
+
+- **A blank cell changes nothing.** You can delete every column you don't need; only `path` (or `filename`) has to stay.
+- **List fields** (Tags, Cast, Hair, Site, …) hold several values separated by `|`: `blonde|curly`. For each list column, the import window lets you choose:
+  - **add** (the default): the values are added; the video's other values stay.
+  - **replace**: the cell becomes the whole list; values not in the cell are removed.
+- **A lone `*`** clears the field.
+- **title**, **year**, **rating** and **movie** (plus **movie_scene**, **movie_part**, **movie_whole**) replace what's there. **favorite** is `yes` or `no`.
+- The technical columns (codec, length, resolution, …) are only there to help you sort; they're ignored on import, as are columns lustr doesn't know.
+- Column names don't care about capitals or spaces: `Male Cast` is `male_cast`. Excel's semicolon-separated CSV works too.
+
+Rows are matched to videos by `path`. If a path isn't found (the files moved, or you typed just a filename), a `filename` that only one video has is used instead; rows with a filename several videos share are skipped and listed.
+
+### Full backup
+
+**💾 Download full backup** (on the same page) downloads a zip with a fresh copy of the database (`library.db`: all your metadata, cast, movies, collections and settings) plus `quicktags.json`, `watch_history.json` and `metadata_schema.json`. Thumbnails, previews and clips aren't in it; lustr makes them again by itself. Logins (`users.json`) aren't in it either.
+
+To restore it: stop lustr, unzip it into lustr's data folder (replacing `library.db` and the other files), and start lustr again. Each backup on the **Backups** page can also be downloaded on its own.
