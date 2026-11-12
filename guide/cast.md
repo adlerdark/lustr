@@ -30,6 +30,7 @@ A performer's **attributes** describe them: ethnicity, hair, body, and so on. Op
 - Each value is **⭐ primary** or **☆ regular**. Primary is their stable or most common trait. Regular is one that only sometimes applies, like a hair colour they had for a while. Click the star to switch.
 - Fields like ethnicity and face should have one primary value. Fields like hair and body can have several when they really coexist.
 - The editor suggests values found on their videos. Tick the ones you want.
+- While you type a value, a list suggests the values your videos already use in that field. **Enter** or **Tab** puts one in; **Esc** closes the list.
 
 To put the primary attributes onto videos, select the videos and right-click → **Apply Cast Attributes**. Each performer's primary values are added to the videos they're in. Nothing is removed.
 

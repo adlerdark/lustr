@@ -704,7 +704,10 @@
                 quickFilters: { captions: '', chapters: '', markers: '' },   // header ⏷ Filters: '' | yes | no (sent as captions: / chapters: / markers:)
                 quickFilterNames: [['captions', 'Captions'], ['chapters', 'Chapters in the file'], ['markers', 'Markers']],
                 showFilterMenu: false,
-                userMenu: { open: false, checked: false },   // the header menu: Help, Link a TV, Check for Updates, Log Out
+                userMenu: { open: false, checked: false },
+                // suggestions as you type in the metadata / attribute editors: values already used in that field
+                ac: { open: false, el: null, field: '', items: [], idx: 0, start: 0, end: 0, multi: false, word: '', top: 0, left: 0, width: 0 },
+                acVocab: {},                                 // field -> [{value, count}] (/api/tools/values), until the next save   // the header menu: Help, Link a TV, Check for Updates, Log Out
                 // header buttons you can hide (Settings -> Appearance); search, ⚙, Edit Search and Log Out always show
                 headerItems: [['sort', 'Sort'], ['favorites', '★ Favorites only'], ['select', 'Select All'], ['view', 'View (thumbnails / list / folders)'],
                               ['notes', '📝 Notes'], ['playlists', '📋 Playlists'], ['cast', '👥 Cast'], ['metadata', '🔍 Metadata'],
@@ -1886,6 +1889,91 @@
                     // a check that just started (stale cache) answers in a few seconds: look once more
                     if (!this.upd.checked_at && !window._updRetry) window._updRetry = setTimeout(() => this.updLoad(), 15000);
                 },
+                // ----- suggestions as you type (Edit Metadata, cast attributes, album details) -----
+                acNorm(t) { return String(t || '').toLowerCase().replace(/[.\s_-]+/g, ' ').trim(); },
+                // the value under the caret: between the commas around it (multi), or the whole box
+                acToken(text, caret, multi) {
+                    if (!multi) return { start: 0, end: text.length, word: text.trim() };
+                    const start = text.lastIndexOf(',', caret - 1) + 1;
+                    let end = text.indexOf(',', caret);
+                    if (end < 0) end = text.length;
+                    return { start, end, word: text.slice(start, end).trim() };
+                },
+                // starts with what you typed, then a word in it does, then contains it; most-used first
+                acRank(list, word, exclude = []) {
+                    const q = this.acNorm(word);
+                    if (!q) return [];
+                    const skip = new Set(exclude.map(x => this.acNorm(x)));
+                    const out = [];
+                    for (const it of list || []) {
+                        const n = this.acNorm(it.value);
+                        if (n === q || skip.has(n)) continue;
+                        const rank = n.startsWith(q) ? 0 : n.split(' ').some(w => w.startsWith(q)) ? 1 : n.includes(q) ? 2 : -1;
+                        if (rank >= 0) out.push({ ...it, rank });
+                    }
+                    out.sort((a, b) => a.rank - b.rank || (b.count || 0) - (a.count || 0) || String(a.value).localeCompare(String(b.value)));
+                    return out.slice(0, 8);
+                },
+                async acLoad(field) {
+                    if (this.acVocab[field]) return this.acVocab[field];
+                    this.acVocab[field] = [];                    // one request per field
+                    try {
+                        const r = await fetch('/api/tools/values/' + encodeURIComponent(field));
+                        if (r.ok) this.acVocab[field] = (await r.json()).values || [];
+                    } catch (e) { /* no suggestions */ }
+                    return this.acVocab[field];
+                },
+                async acInput(e, field, multi) {
+                    if (this._acSetting) return;
+                    const el = e.target, vf = field === 'male_cast' ? 'cast' : field;
+                    const tok = this.acToken(el.value, el.selectionStart ?? el.value.length, multi);
+                    if (!tok.word) { this.acClose(); return; }
+                    const list = await this.acLoad(vf);
+                    if (document.activeElement !== el) return;
+                    const others = multi ? el.value.split(',').map(x => x.trim()).filter(Boolean) : [];
+                    const items = this.acRank(list, tok.word, others);
+                    if (!items.length) { this.acClose(); return; }
+                    const r = el.getBoundingClientRect();
+                    Object.assign(this.ac, { open: true, el, field: vf, items, idx: 0, multi, word: tok.word, start: tok.start, end: tok.end,
+                                             top: r.bottom + 2, left: r.left, width: Math.max(r.width, 200) });
+                },
+                acKey(e) {
+                    const A = this.ac;
+                    if (!A.open || e.target !== A.el) return;
+                    if (e.key === 'ArrowDown') { e.preventDefault(); A.idx = (A.idx + 1) % A.items.length; }
+                    else if (e.key === 'ArrowUp') { e.preventDefault(); A.idx = (A.idx - 1 + A.items.length) % A.items.length; }
+                    else if ((e.key === 'Enter' && !e.ctrlKey && !e.metaKey) || e.key === 'Tab') { e.preventDefault(); this.acPick(A.items[A.idx]); }
+                    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.acClose(); }
+                },
+                acPick(it) {
+                    const A = this.ac, el = A.el;
+                    if (!it || !el) return;
+                    const text = el.value;
+                    let before = text.slice(0, A.start), after = text.slice(A.end);
+                    let value;
+                    if (A.multi) {
+                        before = before.replace(/\s*$/, '') + (before.trim() ? ' ' : '');
+                        after = after.replace(/^\s*,?\s*/, '');
+                        value = before + it.value + ', ';
+                    } else {
+                        before = ''; after = ''; value = it.value;
+                    }
+                    this._acSetting = true;
+                    el.value = value + after;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));     // x-model follows
+                    this._acSetting = false;
+                    el.setSelectionRange(value.length, value.length);
+                    this.acClose();
+                },
+                acClose() { if (this.ac.open) Object.assign(this.ac, { open: false, items: [], el: null }); },
+                // the typed part of a suggestion, in bold (escaped)
+                acLabel(it) {
+                    const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const v = String(it.value), i = v.toLowerCase().indexOf(String(this.ac.word || '').toLowerCase());
+                    if (i < 0 || !this.ac.word) return esc(v);
+                    return esc(v.slice(0, i)) + '<b>' + esc(v.slice(i, i + this.ac.word.length)) + '</b>' + esc(v.slice(i + this.ac.word.length));
+                },
+
                 async userMenuCheck() {             // the menu's Check for Updates: ask GitHub now, answer in the menu
                     this.userMenu.checked = true;
                     if (this.upd.enabled) await this.updSet({ check_now: true });
@@ -2322,6 +2410,10 @@
                         }
                     });
                     
+                    // suggestions as you type: the list doesn't follow a scrolling box, so it closes
+                    window.addEventListener('scroll', (e) => { if (this.ac.open && e.target !== document && !e.target.closest?.('[role=listbox]')) this.acClose(); }, true);
+                    window.addEventListener('resize', () => this.acClose());
+
                     // Keyboard shortcuts
                     window.addEventListener('keydown', (e) => {
                         if (this.np.open && !this.modals.metadata) { this.npKey(e); return; }   // the new player has its own keys (not while editing)
@@ -6636,6 +6728,7 @@ No metadata is changed.`)) return;
                 },
                 
                 async saveCastAttributes() {
+                    this.acVocab = {};                       // suggestions: include what's saved now
                     if (!this.currentCastMember) return;
                     
                     try {
@@ -10139,6 +10232,7 @@ No metadata is changed.`)) return;
                 },
 
                 async saveMetadata() {
+                    this.acVocab = {};                       // suggestions: include what's saved now
                     if (!(await this.castResolveTyped())) return;          // 'which Jane Doe?' - cancelled
                     const updates = {};
                     const addTo = {};
@@ -14679,6 +14773,7 @@ No metadata is changed.`)) return;
                     if (!cur.some(t => t.toLowerCase() === tag.toLowerCase())) { cur.push(tag); d[field] = cur.join(', '); }
                 },
                 async imgEditSave() {
+                    this.acVocab = {};                       // suggestions: include what's saved now
                     const E = this.imgEdit;
                     if (E.busy) return;
                     if (!(await this.castResolveTyped(E.data, E.common))) return;     // 'which Jane Doe?' - cancelled
@@ -17448,7 +17543,7 @@ No metadata is changed.`)) return;
                                             <button @click="imgEditQuick(field, tag)" type="button" class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs" x-text="tag"></button>
                                         </template>
                                     </div>
-                                    <textarea x-model="imgEdit.data[field]" rows="1" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y"
+                                    <textarea x-model="imgEdit.data[field]" @input="acInput($event, field, true)" @keydown="acKey($event)" @blur="acClose()" autocomplete="off" rows="1" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y"
                                               style="min-height: 2.25rem; max-height: 20rem;" placeholder="comma-separated"></textarea>
                                 </div>
                             </template>
@@ -18413,6 +18508,18 @@ No metadata is changed.`)) return;
             </div>
         </div>
         
+        <!-- suggestions as you type (acInput): one list, under the box being typed in -->
+        <div x-show="ac.open" x-cloak role="listbox" class="fixed z-[200] bg-gray-800 border border-gray-600 rounded shadow-xl py-1 text-sm max-h-64 overflow-y-auto"
+             :style="`top: ${ac.top}px; left: ${ac.left}px; min-width: ${ac.width}px; max-width: min(28rem, calc(100vw - ${ac.left}px - 8px))`">
+            <template x-for="(it, i) in ac.items" :key="'ac' + it.value">
+                <div role="option" :aria-selected="i === ac.idx" @mousedown.prevent="acPick(it)" @mouseenter="ac.idx = i"
+                     class="px-3 py-1 cursor-pointer flex items-center justify-between gap-3" :class="i === ac.idx ? 'bg-blue-600' : ''">
+                    <span class="truncate" x-html="acLabel(it)"></span>
+                    <span class="text-xs shrink-0" :class="i === ac.idx ? '' : 'text-gray-500'" x-text="it.count"></span>
+                </div>
+            </template>
+        </div>
+
         <!-- Help: the user guide (guide/*.md). A full page over everything but the players; Esc closes it. -->
         <div x-show="help.open" x-cloak class="fixed inset-0 z-[90] bg-gray-900 flex flex-col md:flex-row text-gray-300">
             <!-- Contents (desktop) -->
@@ -21185,7 +21292,7 @@ No metadata is changed.`)) return;
                                         </button>
                                     </template>
                                 </div>
-                                <textarea x-model="editData[field]" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm h-16"></textarea>
+                                <textarea x-model="editData[field]" @input="acInput($event, field, true)" @keydown="acKey($event)" @blur="acClose()" autocomplete="off" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm h-16"></textarea>
                             </div>
                         </template>
                     </div>
@@ -21204,8 +21311,8 @@ No metadata is changed.`)) return;
                                     </template>
                                 </div>
                                 <textarea 
-                                    x-model="editData[field]" 
-                                    @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
+                                    x-model="editData[field]" autocomplete="off" @keydown="acKey($event)" @blur="acClose()"
+                                    @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; acInput($event, field, true)"
                                     x-init="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
                                     class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y overflow-hidden"
                                     style="min-height: 2.25rem; max-height: 20rem;"
@@ -21229,8 +21336,8 @@ No metadata is changed.`)) return;
                                     </template>
                                 </div>
                                 <textarea 
-                                    x-model="editData[field]" 
-                                    @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
+                                    x-model="editData[field]" autocomplete="off" @keydown="acKey($event)" @blur="acClose()"
+                                    @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; acInput($event, field, true)"
                                     x-init="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
                                     class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y overflow-hidden"
                                     style="min-height: 2.25rem; max-height: 20rem;"
@@ -24027,7 +24134,8 @@ No metadata is changed.`)) return;
                                             <!-- Value Input -->
                                             <input 
                                                 type="text"
-                                                x-model="attr.value"
+                                                x-model="attr.value" autocomplete="off"
+                                                @input="acInput($event, field, false)" @keydown="acKey($event)" @blur="acClose()"
                                                 class="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm"
                                                 placeholder="Enter value...">
 

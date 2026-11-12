@@ -14,6 +14,8 @@ The window has three tabs:
 
 Fields that hold several values (cast, tags and the rest) take a **comma-separated list**, for example `Jane Doe, Ann Roe`. The buttons above a field are your [quick tags](quick-tags.md): click one to add it.
 
+As you type, a list suggests the values that field already has in your library: values that start with what you typed first, then the rest, most-used first ("big t" finds `big.tits`). **↑** / **↓** pick one, **Enter** or **Tab** puts it in, and **Esc** closes the list. You can still type a new value. It works for each value in the list, not just the first.
+
 **Save (Ctrl+Enter)** saves, and **Cancel (Esc)** closes without saving. Drag the bottom-right corner to make the window bigger; it remembers the size.
 
 > Note: if you type a performer's name and several performers share it, lustr asks which one you mean.

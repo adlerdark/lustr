@@ -11,7 +11,7 @@ lustr also shows the pictures in your library folders. Each library has an **Ima
 
 ## Album details
 
-An album can have what a video has: a title, cast, site, tags and the other fields, plus the **videos** it goes with (say, the photo set from the same shoot). Click **Edit details…** in an open album, or select several albums (**Ctrl+click** / **Shift+click**) and click **Edit details…** to edit them together.
+An album can have what a video has: a title, cast, site, tags and the other fields, plus the **videos** it goes with (say, the photo set from the same shoot). Click **Edit details…** in an open album, or select several albums (**Ctrl+click** / **Shift+click**) and click **Edit details…** to edit them together. As in Edit Metadata, a list suggests existing values as you type.
 
 The album's performers appear on it. Click one to open their page, which in turn lists their **Photo albums**. The videos you linked appear under **Videos** in the album.
 
