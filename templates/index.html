@@ -7897,10 +7897,10 @@ No metadata is changed.`)) return;
                 },
                 // what the titles say: one video -> a suggestion; several -> groups by movie name ("By title")
                 async mvPickSuggest(paths) {
-                    const P = this.mvPick;
+                    const P = this.mvPick, ask = P.ask = (P.ask || 0) + 1;     // a number: Alpine's proxy makes the array never === paths
                     try {
                         const d = await this.extDbPost('/api/movies/suggest', { paths });
-                        if (P.paths !== paths) return;
+                        if (P.ask !== ask) return;                                   // a newer Add to movie… opened meanwhile
                         P.sug = (d.videos || []).filter(v => v.movie);
                         const by = new Map();
                         for (const v of P.sug) {
