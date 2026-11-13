@@ -63,6 +63,8 @@ class Database:
         self._local = threading.local()
         self._init_lock = threading.Lock()
         self.initialized = False
+        import fields
+        fields.bind(self)                # the metadata fields (and their editor layout) come from this database
         self.init_db()
     
     def get_connection(self):
@@ -203,11 +205,10 @@ class Database:
             # ALL attributes are video-level since different file versions
             # represent the same video content with different encodings
             # (codec, bitrate, resolution may differ but content is identical)
-            video_level_fields = [
-                'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 
-                'ass', 'face', 'cock', 'outfit', 'tags',
-                'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants'
-            ]
+            # every field's tables, hidden ones too (fields.py; a hidden field keeps its values)
+            import fields
+            fields.forget(conn)
+            video_level_fields = fields.all_fields(conn)
             
             # Create video-level junction tables
             for field in video_level_fields:
@@ -721,11 +722,8 @@ class Database:
         
         # ALL junction fields are now video-level (use video_id as key)
         # Files with same content but different encodings share all metadata
-        video_junction_fields = [
-            'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 
-            'ass', 'face', 'cock', 'outfit', 'tags',
-            'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants'
-        ]
+        import fields
+        video_junction_fields = fields.list_fields(conn)
         
         # Update video-level junction tables
         for field in video_junction_fields:
@@ -920,11 +918,7 @@ class Database:
             
             # Fetch ALL list fields from video-level junction tables
             # (all metadata is at video level since files are just different encodings)
-            all_list_fields = [
-                'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 
-                'ass', 'face', 'cock', 'outfit', 'tags',
-                'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants'
-            ]
+            all_list_fields = __import__('fields').list_fields()
             
             for field in all_list_fields:
                 field_lower = field.lower()
@@ -949,8 +943,11 @@ class Database:
     FILE_SCALAR_COLUMNS = '''fv.path, fv.filename, v.title, v.year, v.rating, v.favorite, fv.resolution, fv.codec,
                    fv.extension, fv.length, fv.total_bitrate, fv.file_size, fv.date_created, fv.date_modified,
                    v.date_added, v.date_last_edited, fv.cache_id, v.created_at, v.updated_at, v.video_id, fv.library AS file_library'''
-    FILE_LIST_FIELDS = ('cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock', 'outfit',
-                        'tags', 'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants')
+    @property
+    def FILE_LIST_FIELDS(self):
+        """The active list fields (fields.py)."""
+        import fields
+        return tuple(fields.list_fields(self.get_connection()))
 
     def list_values_by_video(self, field, video_ids=None):
         """{video_id: [values sorted as in get_file]} for one list field (all videos, or these)."""
@@ -1157,11 +1154,7 @@ class Database:
             video_data_list = []
             
             # All list fields are video-level now
-            all_list_fields = [
-                'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 
-                'ass', 'face', 'cock', 'outfit', 'tags',
-                'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants'
-            ]
+            all_list_fields = __import__('fields').list_fields()
             
             for video in videos:
                 video_dict = dict(video)
@@ -1190,9 +1183,7 @@ class Database:
                 'codec', 'extension', 'length', 'total_bitrate', 'file_size',
                 'date_created', 'date_modified', 'favorite', 'date_added', 'date_last_edited',
                 'cache_id', 'video_id', 'filename_base', 'library',
-                'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock', 'outfit', 'tags',
-                'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants'
-            ]
+            ] + __import__('fields').list_fields()
             
             with open(csv_path, 'w', encoding='utf-8', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
@@ -1224,11 +1215,7 @@ class Database:
             export_data = []
             
             # All list fields are video-level now
-            all_list_fields = [
-                'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 
-                'ass', 'face', 'cock', 'outfit', 'tags',
-                'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants'
-            ]
+            all_list_fields = __import__('fields').list_fields()
             
             for video_row in videos:
                 video = dict(video_row)
@@ -1327,10 +1314,7 @@ class Database:
                         metadata['favorite'] = val in ('1', 'true', 'yes', 'y')
                     
                     # List fields (pipe-separated in CSV)
-                    list_fields = [
-                        'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants',
-                        'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock', 'outfit', 'tags'
-                    ]
+                    list_fields = __import__('fields').list_fields()
                     
                     for field in list_fields:
                         if row.get(field) and row[field].strip():

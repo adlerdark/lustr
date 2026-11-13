@@ -117,6 +117,23 @@ class Import(unittest.TestCase):
         text = mi.export_csv(self.c, self.m.db.get_file, [self.one], template=True)
         self.assertEqual(text.splitlines()[1].split(',')[:3], [self.one, 'one.mp4', ''])
 
+    def test_your_own_field(self):
+        import fields
+        fields.bind(self.m.db)
+        fields.forget()
+        if 'mood' not in fields.all_fields(self.c):
+            fields.add_field(self.c, 'Mood', words_=False)
+        fields.restore(self.c, 'mood') if 'mood' in fields.hidden_fields(self.c) else None
+        self.addCleanup(fields.hide, self.c, 'mood')
+        self.assertIn('mood', mi.export_columns())
+        self.run_import(f'path,Mood\n{self.one},Very Calm|happy\n')                 # its name as a column header
+        self.assertEqual(sorted(self.get(self.one, 'mood')), ['Very Calm', 'happy'])    # spaces allowed: kept as typed
+        text = mi.export_csv(self.c, self.m.db.get_file, [self.one])
+        self.assertIn('Very Calm', text)
+        fields.hide(self.c, 'mood')
+        self.assertNotIn('mood', mi.export_columns())                                   # hidden: not exported
+        self.assertEqual(mi.column_kinds(['path', 'mood'])['ignored'], ['mood'])       # nor imported
+
     def test_full_backup_zip(self):
         import tools_api
         tools_api._model = self.m

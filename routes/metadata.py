@@ -30,28 +30,6 @@ def set_model(model):
     _model = model
 
 
-# Schema file location
-SCHEMA_FILE = os.path.join(os.path.dirname(DATA_FILE), 'metadata_schema.json')
-
-# Global metadata schema (loaded at startup)
-metadata_schema = None
-
-
-def load_metadata_schema():
-    """Load metadata schema from file."""
-    if os.path.exists(SCHEMA_FILE):
-        try:
-            with open(SCHEMA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return None
-    return None
-
-
-# Load schema on module import
-metadata_schema = load_metadata_schema()
-
-
 # --- REQUEST MODELS ---
 
 class RefreshMetadataRequest(BaseModel):
@@ -285,11 +263,8 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
                         
                         # ALL list fields now use video-level junction tables
                         # (files are just different encodings of the same content)
-                        video_junction_fields = [
-                            'cast', 'ethnicity', 'nationality', 'hair', 'body', 'tits', 
-                            'ass', 'face', 'cock', 'outfit', 'tags',
-                            'orientation', 'site', 'theme', 'feature', 'cumshot', 'participants'
-                        ]
+                        import fields
+                        video_junction_fields = fields.list_fields(conn)
                         
                         # Update videos table fields (non-list only)
                         updates = []
@@ -403,21 +378,94 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/schema")
-def get_metadata_schema():
-    """Get current metadata schema."""
-    return metadata_schema if metadata_schema else {}
+# --- FIELDS & EDITOR LAYOUT (fields.py; Settings -> Metadata) ---
+
+def _fields_conn():
+    return _model.db.get_connection()
 
 
-@router.post("/schema")
-async def update_metadata_schema(request: Request):
-    """Update metadata schema."""
-    global metadata_schema
+def _fields_reply(fn):
+    import fields
     try:
-        new_schema = await request.json()
-        with open(SCHEMA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(new_schema, f, indent=4, ensure_ascii=False)
-        metadata_schema = new_schema
-        return {"status": "ok"}
-    except Exception as e:
-        raise HTTPException(400, str(e))
+        out = fn()
+        return {'success': True, 'layout': fields.public(_fields_conn()), **(out or {})}
+    except fields.FieldError as e:
+        return {'success': False, 'error': str(e)}
+
+
+@router.get("/fields")
+def get_fields():
+    import fields
+    return {'success': True, 'layout': fields.public(_fields_conn())}
+
+
+class FieldLayoutBody(BaseModel):
+    tabs: List[dict]
+    fields: Dict[str, dict] = {}
+
+
+@router.post("/fields/layout")
+def save_field_layout(body: FieldLayoutBody):
+    import fields
+    return _fields_reply(lambda: fields.save_layout(_fields_conn(), body.dict()) and None)
+
+
+class FieldAddBody(BaseModel):
+    label: str
+    tab: Optional[str] = None
+    words: bool = True
+    performer: bool = False
+
+
+@router.post("/fields/add")
+def add_field(body: FieldAddBody):
+    import fields
+    return _fields_reply(lambda: {'key': fields.add_field(_fields_conn(), body.label, body.tab, body.words, body.performer)})
+
+
+class FieldKeyBody(BaseModel):
+    key: str
+    confirm: Optional[str] = None
+
+
+@router.post("/fields/hide")
+def hide_field(body: FieldKeyBody):
+    import fields
+    return _fields_reply(lambda: fields.hide(_fields_conn(), body.key))
+
+
+@router.post("/fields/restore")
+def restore_field(body: FieldKeyBody):
+    import fields
+    return _fields_reply(lambda: fields.restore(_fields_conn(), body.key))
+
+
+@router.get("/fields/usage")
+def field_usage(key: str):
+    """What Delete permanently would erase."""
+    import fields
+    return {'success': True, 'usage': fields.usage(_fields_conn(), key)}
+
+
+@router.get("/fields/check")
+def field_check(key: str):
+    """Before turning on single-word values: how many of the field's values have spaces or capitals."""
+    import fields
+    import value_format
+    if key not in fields.all_fields(_fields_conn()):
+        return {'success': False, 'error': 'Unknown field'}
+    vals = [r[0] for r in _fields_conn().execute(f'SELECT value FROM video_{key}')]
+    odd = [v for v in vals if v and value_format.fmt(v) != v]
+    return {'success': True, 'values': len(vals), 'not_single_word': len(odd), 'examples': odd[:5]}
+
+
+@router.post("/fields/delete")
+def delete_field(body: FieldKeyBody):
+    import fields
+    return _fields_reply(lambda: {'backup': fields.delete_permanently(_fields_conn(), body.key, body.confirm)})
+
+
+@router.post("/fields/reset")
+def reset_fields():
+    import fields
+    return _fields_reply(lambda: fields.reset_default(_fields_conn()))

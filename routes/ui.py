@@ -207,6 +207,7 @@ def get_initial_data(model = Depends(get_model)):
         "tags": model.get_all_tags(),
         "sites": model.get_all_sites(),
         "list_fields": [f.lower() for f in LIST_FIELDS],
+        "field_layout": __import__('fields').public(),     # Settings -> Fields & editor layout (fields.py)
         "config": ui_config,
         "all_columns": ["Fav", "Title", "Cast", "Date Created", "File Size", "Length", "Rating", "Site", "Tags", "Path", "Resolution", "Codec", "Extension", "Date Added", "Date Edited"],
         "hide_zero_length_default": HIDE_ZERO_LENGTH_DEFAULT,

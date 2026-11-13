@@ -441,11 +441,8 @@ def suggest_cast_attributes_from_videos(cast_name: str, model = Depends(get_mode
         return {"error": "SQLite only"}
 
     # Fields to scan on videos (excludes Cast and Site)
-    SCAN_FIELDS = [
-        'ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face',
-        'cock', 'outfit', 'theme', 'feature', 'cumshot',
-        'participants', 'orientation', 'tags',
-    ]
+    import fields
+    SCAN_FIELDS = [f for f in fields.list_fields() if f not in ('cast', 'site')]
 
     try:
         with model.db.get_connection() as conn:
@@ -964,7 +961,7 @@ def get_cast_bio(cast_name: str, model = Depends(get_model)):
                             break
 
             # Appearance attributes
-            appearance_attrs = ['ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock']
+            appearance_attrs = __import__('fields').performer_fields()
             appearance_summary = {}
             try:
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cast_attributes'")

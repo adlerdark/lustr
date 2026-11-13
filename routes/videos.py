@@ -668,6 +668,9 @@ def _bool_sql(conn, model, node):
         csql, p = _cast_match_sql(_unwrap_values(values))
         return (f'v.video_id IN (SELECT vcj.video_id FROM video_cast_junction vcj JOIN video_cast vc ON vcj.cast_id = vc.id '
                 f'WHERE {csql})'), p
+    import fields
+    if name in fields.hidden_fields():                               # hidden in Settings: its values aren't searched
+        return '0', []
     match_sql, p = _value_match_sql('vt.value', values)
     sql = _junction_sql(conn, name, match_sql)
     return (sql, p) if sql else ('0', [])                           # a field lustr doesn't have: nothing matches
@@ -713,11 +716,16 @@ def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.vide
     # Flat fields not covered by or_groups (date, resolution, etc.) are
     # handled by their own dedicated blocks — we only deal with LIST_FIELDS here.
     list_fields_lower = [f.lower() for f in LIST_FIELDS]
+    import fields as _fields
+    hidden = set(_fields.hidden_fields())          # a hidden field's values aren't searched: nothing matches
 
     if or_groups is None:
         # Legacy path: AND all junction fields
         for field, values in field_filters.items():
             if field in skip_fields:
+                continue
+            if field.lower() in hidden:
+                conditions.append('0')
                 continue
             if field.lower() not in list_fields_lower:
                 continue
@@ -745,6 +753,9 @@ def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.vide
         group_params = []
         for field, values in group.items():
             if field in skip_fields:
+                continue
+            if field.lower() in hidden:
+                group_subqueries.append('0')
                 continue
             if field.lower() not in list_fields_lower:
                 continue
@@ -797,7 +808,8 @@ def _get_videos_sql_fast(
     movie_filter = _pop_movie_filter(field_filters)
     res_min = _pop_resolution_filter(field_filters)
     stars_min = _pop_rating_filter(field_filters)
-    tag_fields = [f.lower() for f in LIST_FIELDS if f.lower() not in ['site', 'cast']]
+    import fields
+    tag_fields = fields.sidebar_fields()          # the sidebar's Tags tab: single-word fields but Site and Cast
     
     conn = model.db.get_connection()
     cursor = conn.cursor()
@@ -1605,7 +1617,8 @@ def _get_available_filters_uncached(
     
     # Define which fields are "tags" vs "sites"
     # "tags" = all LIST_FIELDS except 'site' and 'cast'
-    tag_fields = [f.lower() for f in LIST_FIELDS if f.lower() not in ['site', 'cast']]
+    import fields
+    tag_fields = fields.sidebar_fields()          # the sidebar's Tags tab: single-word fields but Site and Cast
     
     # ===== Build base video filter =====
     base_conditions = []

@@ -71,6 +71,6 @@ Rows are matched to videos by `path`. If a path isn't found (the files moved, or
 
 ### Full backup
 
-**💾 Download full backup** (on the same page) downloads a zip with a fresh copy of the database (`library.db`: all your metadata, cast, movies, collections and settings) plus `quicktags.json`, `watch_history.json` and `metadata_schema.json`. Thumbnails, previews and clips aren't in it; lustr makes them again by itself. Logins (`users.json`) aren't in it either.
+**💾 Download full backup** (on the same page) downloads a zip with a fresh copy of the database (`library.db`: all your metadata, cast, movies, collections and settings) plus `quicktags.json` and `watch_history.json`. Your fields and their layout are in the database. Thumbnails, previews and clips aren't in it; lustr makes them again by itself. Logins (`users.json`) aren't in it either.
 
 To restore it: stop lustr, unzip it into lustr's data folder (replacing `library.db` and the other files), and start lustr again. Each backup on the **Backups** page can also be downloaded on its own.

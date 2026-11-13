@@ -112,12 +112,14 @@ def apply_cast_attributes_to_video(conn, video_id, names):
     """Add the starred (primary) attributes of these performers to one video.
     Add-only. Returns the number of values added. Does not commit."""
     added = 0
+    import fields
+    performer = set(fields.performer_fields(conn))          # the fields used as performer attributes (fields.py)
     for name in names or []:
         prim = _primary(conn, name)
         rows = conn.execute('SELECT attribute_type, attribute_value FROM cast_attributes '
                             'WHERE cast_name = ? AND is_primary = 1', (prim,)).fetchall()
         for field, value in rows:
-            if field not in CAST_ATTRIBUTE_FIELDS or not value:
+            if field not in performer or not value:
                 continue
             table, junction = f'video_{field}', f'video_{field}_junction'
             try:

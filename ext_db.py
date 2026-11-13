@@ -2125,6 +2125,9 @@ def build_suggestions(conn, primary, ctx=None):
             else:
                 add('ethnicity', 'eastern.european', f'{country} is in Eastern Europe (you use eastern.european for {_usage(conn, "ethnicity", "eastern.european")} performers)')
 
+    import fields as _fields                              # a field you've hidden or don't use as a performer attribute: not suggested
+    use = set(_fields.performer_fields())
+    items = [i for i in items if i['field'] in use]
     order = {f: i for i, f in enumerate(SUGGEST_FIELDS)}
     items.sort(key=lambda i: (order[i['field']], not i['pre_tick'], -(i['confidence'] or 0)))
     return {'items': items, 'hints': hints, 'calibration_size': len(cal),
@@ -2146,7 +2149,7 @@ def _apply_attributes(conn, primary, items):
     for it in items:
         field = str((it or {}).get('field', '')).strip().lower()
         value = str((it or {}).get('value', '')).strip().lower()
-        if field not in SUGGEST_FIELDS or not _VALUE_RE.match(value):
+        if field not in SUGGEST_FIELDS or field not in __import__('fields').performer_fields() or not _VALUE_RE.match(value):
             raise ExtDBError(f'Invalid attribute {field}={value}')
         clean.append((field, value))
     added = []
@@ -2220,14 +2223,16 @@ def suggest_bulk(genders: str = 'female', categories: str = 'pro', status: str =
         ctx = suggestion_context(conn)
         stats = Counter()
         out = []
+        perf = set(__import__('fields').performer_fields())        # required ones you still use (fields.py)
         for (name,) in _rows(conn, 'SELECT cast_name FROM cast_ext_link ORDER BY cast_name COLLATE NOCASE'):
             if name in aliases or _gender_bucket(gmap.get(name)) not in g or cmap.get(name, 'pro') not in c:
                 continue
             if needle and needle not in name.lower():
                 continue
             have = attrs.get(name, set())
-            n_req = sum(1 for f in ATTR_REQUIRED if f in have)
-            st = 'complete' if n_req == len(ATTR_REQUIRED) else ('none' if n_req == 0 else 'partial')
+            req = [f for f in ATTR_REQUIRED if f in perf] or list(ATTR_REQUIRED)
+            n_req = sum(1 for f in req if f in have)
+            st = 'complete' if n_req == len(req) else ('none' if n_req == 0 else 'partial')
             if status in ('none', 'partial', 'complete') and st != status:
                 continue
             stats['matched'] += 1

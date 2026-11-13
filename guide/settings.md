@@ -36,7 +36,22 @@ Each tab has the same four ways to page: **Pages** (Previous / Next, only the cu
 
 **Thumbnails**: **Preview Frames** and **WebP Quality** for thumbnails.
 
-**Metadata**: **Edit Quick Tags**. See [Quick tags](quick-tags.md).
+**Metadata**: **Fields & editor layout** (below) and **Edit Quick Tags** (see [Quick tags](quick-tags.md)).
+
+### Fields & editor layout
+
+**Settings → Metadata → Fields & editor layout** lets you shape the fields to your library instead of the ones lustr comes with. Everything follows what you set: Edit Metadata, album details, search and Advanced Search, the sidebar, list-view columns and sorting, import / export, quick tags, performer attributes and tag mappings.
+
+- **Arrange**: each tab is a column. Drag a field to reorder it or move it to another tab. **+ New tab** adds a tab; ✎ renames one, ‹ › move it, ✕ removes an empty one. General always comes first, and its 🔒 fields (Orientation, Site, Cast, Male Cast, Tags) always stay on it. Title, Year, Rating, Resolution and Movie are at the top of General and aren't in the list.
+- **Rename**: click a field and change its **Name**. Only the name you see changes, never the values. A field also keeps its original key, so a search like `hair:red` keeps working after you rename Hair.
+- **Single-word values**: on, new values are saved lowercase with periods (`Big Tits` → `big.tits`) and the field is one of the sidebar's filters. Off, spaces are allowed (good for free text, like notes) and the field isn't a sidebar filter. Turning it on doesn't change the values already there; lustr tells you how many don't match.
+- **Performer attribute**: offered in a performer's attributes, so their primary values can be added to their videos (see [Cast & performers](cast.md)).
+- **New field**: give it a name, pick its tab and whether it takes single words. It's a list field like Tags: several values per video.
+- **Hide field**: the field disappears from everywhere above, but **its values are kept**. It's listed under **Hidden fields**; **Restore** brings it back with all its values. Searching a hidden field finds nothing.
+- **Revert to default**: tabs, order, names and options go back to how lustr comes, and hidden built-in fields come back. Fields you added are hidden, not deleted.
+- **Advanced → Delete…** (fields you added only): erases the field's values from every video and album, its performer attributes, quick tags and tag mappings. lustr shows how much would go, makes a backup of the database first, and asks you to type the field's name. lustr's own fields can only be hidden.
+
+Your fields and their layout are stored in the database, so restoring a backup brings back the fields that go with it.
 
 **Play History**: the log of everything played, and the **Minimum play length** that counts as a play. See [Watching videos](player.md#play-history).
 

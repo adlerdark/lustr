@@ -60,17 +60,17 @@ class SearchParser:
                 remaining_parts.append(before_text)
             
             if match.group(1):  # Parenthesized format: field:(value1,value2)
-                field_name = match.group(1).lower()
+                field_name = SearchParser._field(match.group(1))
                 values_str = match.group(2)
                 if values_str.startswith('"') and values_str.endswith('"'):
                     values = [('EXACT', values_str.strip('"'))]
                 else:
                     values = [v.strip() for v in values_str.split(',') if v.strip()]
             elif match.group(3):  # Quoted format: field:"exact value"
-                field_name = match.group(3).lower()
+                field_name = SearchParser._field(match.group(3))
                 values = [('EXACT', match.group(4))]
             else:  # Simple format: field:value
-                field_name = match.group(5).lower()
+                field_name = SearchParser._field(match.group(5))
                 value = match.group(6).strip()
                 if value.startswith('"') and value.endswith('"'):
                     values = [('EXACT', value.strip('"'))]
@@ -168,6 +168,18 @@ class SearchParser:
                         r'|(?P<paren>[()])|(?P<word>[^\s()"]+)')
 
     @staticmethod
+    def _field(name):
+        """A field as typed (its key, or its name in Settings with _ for spaces: hair_colour) -> its key."""
+        n = (name or '').lower()
+        if n in SearchParser.SPECIAL_FIELDS:
+            return n
+        try:
+            import fields
+            return fields.resolve(n)
+        except Exception:
+            return n
+
+    @staticmethod
     def _tokens(query):
         out = []
         for m in SearchParser._TOKEN.finditer(query):
@@ -183,11 +195,11 @@ class SearchParser:
                     values = [('EXACT', vs.strip('"'))]
                 else:
                     values = [v.strip() for v in vs.split(',') if v.strip()]
-                out.append(('field', m.group('fp').lower(), values))
+                out.append(('field', SearchParser._field(m.group('fp')), values))
             elif m.group('fq'):
-                out.append(('field', m.group('fq').lower(), [('EXACT', m.group('fqv'))]))
+                out.append(('field', SearchParser._field(m.group('fq')), [('EXACT', m.group('fqv'))]))
             elif m.group('fs'):
-                out.append(('field', m.group('fs').lower(), [m.group('fsv')]))
+                out.append(('field', SearchParser._field(m.group('fs')), [m.group('fsv')]))
             elif m.group('q') is not None:
                 if m.group('q').strip():
                     out.append(('text', m.group('q').strip(), True))

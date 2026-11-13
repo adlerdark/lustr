@@ -1101,6 +1101,9 @@
                           cache: null, overview: null, busy: false, types: [],
                           links: { rows: [], total: 0, page: 1, per_page: 100, q: '', source: '', library: '', libraries: [], loading: false } },
                 // Quick Tags editor (data/quicktags.json)
+                // Settings -> Fields & editor layout (fields.py); work = the draft being edited
+                fe: { open: false, work: null, orig: '', hidden: [], sel: null, busy: false, error: '', drag: null, over: null,
+                      add: { name: '', tab: '', words: true }, del: null, check: null },
                 qt: { work: {}, orig: '{}', extra: [], sel: null, add: '', exact: false, dragIdx: null, overIdx: null,
                       saving: false, error: '' },
                  activeTheme: localStorage.getItem('lustr_theme') || 'default',
@@ -1172,11 +1175,12 @@
                 scanningDuplicates: false,
                 duplicatesTab: 'conflicts', // 'conflicts' or 'fixed'
 
-                fieldGroups: {
-                    General: ['orientation', 'site', 'cast', 'male_cast', 'tags'],
-                    Appearance: ['ethnicity', 'nationality', 'hair', 'face', 'body', 'tits', 'ass', 'cock', 'outfit'],
-                    Attributes: ['participants', 'theme', 'feature', 'cumshot']
-                },
+                // Settings -> Fields & editor layout (fields.py): tabs, fields, names and options
+                fieldLayout: { tabs: [{ name: 'General', fields: ['orientation', 'site', 'cast', 'male_cast', 'tags'] },
+                                      { name: 'Appearance', fields: ['ethnicity', 'nationality', 'hair', 'face', 'body', 'tits', 'ass', 'cock', 'outfit'] },
+                                      { name: 'Attributes', fields: ['participants', 'theme', 'feature', 'cumshot'] }],
+                               fields: {}, performer: ['ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock'],
+                               sidebar: [], hidden: [], list_fields: [] },
                 
                 quickTags: {}, // Will be loaded from /api/quicktags
                 quickTagOrder: 'custom',   // how the quick-pick buttons are ordered when editing: 'custom' (as in Settings) or 'alpha'
@@ -1196,6 +1200,18 @@
                 get selectionCount() {
                     const sc = this.selScope();
                     return sc === 'movies' ? this.mvSelIds.length : sc === 'collections' ? this.collSelIds.length : this.selectedPaths.size;
+                },
+                // list view columns: the fixed ones plus a column per field (named 'Hair', 'Studio_code': the key, capitalised)
+                refreshColumns() {
+                    const dynamicCols = this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1));
+                    const baseCols = ["Fav", "CC", "Chapters", "Markers", "Versions", "Filename", "Title", "Movie", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
+                    this.availableColumns = [...new Set([...baseCols, ...dynamicCols])];
+                },
+                // the chosen columns that exist now (a hidden field's column is kept in your choice, just not shown)
+                get shownColumns() { return this.visibleColumns.filter(c => this.availableColumns.includes(c)); },
+                colLabel(col) {
+                    const k = String(col || '').toLowerCase();
+                    return (this.fieldLayout.fields || {})[k] ? this.fieldLabel(k) : col;
                 },
                 get unusedColumns() { return this.availableColumns.filter(c => !this.visibleColumns.includes(c)); },
                 get currentFolderName() {
@@ -1412,6 +1428,25 @@
                     const L = this.libPick;
                     L.open = false;
                     if (L.done) L.done([...L.picked]);
+                },
+                get editorTabs() { return (this.fieldLayout.tabs || []).filter(t => t.name === 'General' || (t.fields || []).length); },
+                get fieldGroups() { const o = {}; for (const t of this.fieldLayout.tabs || []) o[t.name] = t.fields || []; return o; },
+                // a field's name as Settings has it ('studio_code' -> 'Studio code')
+                fieldLabel(key) {
+                    const k = String(key || '').toLowerCase();
+                    const f = (this.fieldLayout.fields || {})[k];
+                    return f ? f.label : (k === 'male_cast' ? 'Male Cast' : k.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()));
+                },
+                applyFieldLayout(lay) {
+                    if (!lay) return;
+                    this.fieldLayout = lay;
+                    this.castAttributeFields = [...(lay.performer || [])];
+                    const list = [...(lay.list_fields || [])];
+                    const castIdx = list.indexOf('cast');          // Male Cast is edited as its own field; stored inside Cast
+                    if (castIdx >= 0) list.splice(castIdx + 1, 0, 'male_cast');
+                    this.editFields = list;
+                    if (this.availableColumns?.length) this.refreshColumns();
+                    if (!this.editorTabs.some(t => t.name === this.metadataTab)) this.metadataTab = 'General';
                 },
                 get isAllVideosMode() { return this.currentLibrary === 'All Videos'; },
                 get totalPages() {
@@ -3171,6 +3206,7 @@
                         // Male Cast is edited as its own field; it's stored inside Cast (see saveMetadata)
                         const castIdx = this.editFields.indexOf('cast');
                         if (castIdx >= 0 && !this.editFields.includes('male_cast')) this.editFields.splice(castIdx + 1, 0, 'male_cast');
+                        this.applyFieldLayout(initData.field_layout);
                         this.loadMaleCast();
                         this.extSceneBulkRefreshStatus(true);
                         this.allTags = initData.tags || {};
@@ -3251,9 +3287,7 @@
                             })
                             .catch(e => console.error('Failed to load favorite cast:', e));
 
-                        const dynamicCols = this.editFields.map(f => f.charAt(0).toUpperCase() + f.slice(1)); 
-                        const baseCols = ["Fav", "CC", "Chapters", "Markers", "Versions", "Filename", "Title", "Movie", "Year", "Rating", "Resolution", "Codec", "Extension", "Date Created", "Date Modified", "Date Added", "Date Edited", "File Size", "Length", "Total Bitrate", "Path", "Plays", "Time Watched", "Last Played"];
-                        this.availableColumns = [...new Set([...baseCols, ...dynamicCols])];
+                        this.refreshColumns();
 
                         // --- STARTUP FIX: Check for hidden 'All Videos' ---
                         if (this.hiddenLibraries.includes('All Videos') && this.currentLibrary === 'All Videos') {
@@ -4397,7 +4431,7 @@
                     try {
                         const d = await this.extDbPost('/api/extdb/suggest/apply', { cast_name: this.castBioData.name, items });
                         // Refresh the bio's Appearance box and the cast browser list
-                        const shown = ['ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock'];
+                        const shown = this.castAttributeFields;                   // performer attributes (Settings -> Fields)
                         const appearance = {};
                         for (const [f, vals] of Object.entries(d.attributes || {})) if (shown.includes(f)) appearance[f] = vals;
                         if (this.castBioData) this.castBioData.appearance = appearance;
@@ -4439,7 +4473,7 @@
                 // ===== Browse Cast Members: extra filters =====
                 // Complete = ethnicity, face, body and tits each have at least one value
                 castAttrStatus(c) {
-                    const required = ['ethnicity', 'face', 'body', 'tits'];
+                    const required = ['ethnicity', 'face', 'body', 'tits'].filter(f => this.castAttributeFields.includes(f));
                     const a = c.attributes || {};
                     const n = required.filter(f => Array.isArray(a[f]) && a[f].length > 0).length;
                     return n === required.length ? 'complete' : (n === 0 ? 'none' : 'partial');
@@ -5068,7 +5102,7 @@
 
                 extSceneFieldLabel(f) {
                     const fixed = { title: 'Title', year: 'Year', site: 'Site', cast: 'Cast', male_cast: 'Male Cast' };
-                    return fixed[f] || (f.charAt(0).toUpperCase() + f.slice(1));
+                    return fixed[f] || this.fieldLabel(f);
                 },
 
                 extSceneSuggestGroups() {
@@ -6094,7 +6128,7 @@ No metadata is changed.`)) return;
                 extSugHoverHide() { this.extSug.hover = { row: null, x: 0, y: 0 }; },
 
                 extSugExistingGroups(r) {
-                    const order = ['ethnicity', 'nationality', 'hair', 'body', 'tits', 'ass', 'face', 'cock'];
+                    const order = this.castAttributeFields;
                     const ex = r?.existing || {};
                     const rank = f => { const i = order.indexOf(f); return i < 0 ? order.length : i; };
                     return Object.keys(ex).sort((a, b) => rank(a) - rank(b)).map(f => ({ field: f, values: ex[f] }));
@@ -9631,7 +9665,135 @@ No metadata is changed.`)) return;
                     this.modals.quickTags = true;
                 },
 
-                qtFields() { return [...Object.keys(this.qt.work), ...this.qt.extra.filter(f => !(f in this.qt.work))]; },
+                // ===== Fields & editor layout (Settings -> Metadata) =====
+                async feOpen() {
+                    const F = this.fe;
+                    Object.assign(F, { open: true, busy: true, error: '', sel: null, del: null, check: null, add: { name: '', tab: '', words: true } });
+                    if (this.settingsLayout !== 'page') this.modals.settings = false;
+                    try { const d = await (await fetch('/api/fields')).json(); this.feLoad(d.layout); }
+                    catch (e) { F.error = 'Could not load the fields: ' + e.message; }
+                    F.busy = false;
+                },
+                feLoad(lay) {
+                    const F = this.fe;
+                    F.work = JSON.parse(JSON.stringify({ tabs: lay.all_tabs, fields: lay.fields }));
+                    F.hidden = [...(lay.hidden || [])];
+                    F.fixed = lay.fixed || [];
+                    F.builtin = lay.builtin || [];
+                    F.orig = JSON.stringify(F.work);
+                    if (!F.add.tab) F.add.tab = (F.work.tabs[F.work.tabs.length - 1] || {}).name || 'General';
+                    this.applyFieldLayout(lay);
+                },
+                feDirty() { return !!this.fe.work && JSON.stringify(this.fe.work) !== this.fe.orig; },
+                feClose() {
+                    if (this.feDirty() && !confirm('Close without saving your changes to the fields?')) return;
+                    this.fe.open = false;
+                },
+                feShown(tab) { return (tab.fields || []).filter(k => !this.fe.work.fields[k]?.hidden); },
+                feFixed(k) { return (this.fe.fixed || []).includes(k); },
+                feDragStart(k, ev) {
+                    if (this.feFixed(k)) { ev.preventDefault(); return; }
+                    this.fe.drag = k;
+                    try { ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', k); } catch (_) { /* */ }
+                },
+                // drop the dragged field into tab ti, before field `before` (or at the end)
+                feDrop(ti, before = null) {
+                    const F = this.fe, k = F.drag;
+                    F.drag = null; F.over = null;
+                    if (!k || k === before) return;
+                    const tabs = F.work.tabs;
+                    for (const t of tabs) t.fields = t.fields.filter(x => x !== k);
+                    const list = tabs[ti].fields;
+                    let at = before ? list.indexOf(before) : list.length;
+                    if (ti === 0) at = Math.max(at < 0 ? list.length : at, list.filter(x => this.feFixed(x)).length);   // below General's fixed ones
+                    list.splice(at < 0 ? list.length : at, 0, k);
+                },
+                feAddTab() {
+                    const name = (prompt('Name of the new tab:') || '').trim();
+                    if (!name) return;
+                    if (this.fe.work.tabs.some(t => t.name.toLowerCase() === name.toLowerCase())) { alert('There is already a tab called "' + name + '".'); return; }
+                    this.fe.work.tabs.push({ name, fields: [] });
+                },
+                feRenameTab(i) {
+                    const t = this.fe.work.tabs[i];
+                    const name = (prompt('New name for the tab "' + t.name + '":', t.name) || '').trim();
+                    if (!name || name === t.name) return;
+                    if (this.fe.work.tabs.some((x, j) => j !== i && x.name.toLowerCase() === name.toLowerCase())) { alert('There is already a tab called "' + name + '".'); return; }
+                    if (this.fe.add.tab === t.name) this.fe.add.tab = name;
+                    t.name = name;
+                },
+                feRemoveTab(i) {
+                    const tabs = this.fe.work.tabs, t = tabs[i];
+                    if (this.feShown(t).length) { alert('Move its fields to another tab first.'); return; }
+                    tabs[i - 1].fields.push(...t.fields);                      // hidden fields go along to the tab before it
+                    tabs.splice(i, 1);
+                },
+                feMoveTab(i, d) {
+                    const tabs = this.fe.work.tabs, j = i + d;
+                    if (i === 0 || j < 1 || j >= tabs.length) return;
+                    [tabs[i], tabs[j]] = [tabs[j], tabs[i]];
+                },
+                async feWordsChanged(k) {
+                    const f = this.fe.work.fields[k];
+                    this.fe.check = null;
+                    if (!f.words) return;
+                    try {
+                        const d = await (await fetch('/api/fields/check?key=' + encodeURIComponent(k))).json();
+                        if (d.success && d.not_single_word) this.fe.check = { key: k, ...d };
+                    } catch (e) { /* no check */ }
+                },
+                async _fePost(url, body) {
+                    const F = this.fe;
+                    F.busy = true; F.error = '';
+                    try {
+                        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+                        const d = await r.json();
+                        if (!d.success) throw new Error(d.error || d.detail || 'Not saved');
+                        this.feLoad(d.layout);
+                        if (this.currentView === 'library' && this.currentLibrary !== 'Home') this.fetchAvailableFilters();
+                        return d;
+                    } catch (e) { F.error = e.message; return null; }
+                    finally { F.busy = false; }
+                },
+                async feSave() { return this._fePost('/api/fields/layout', this.fe.work); },
+                // add / hide / restore work on the saved layout: your unsaved changes are saved first
+                async _feSavedFirst() { return !this.feDirty() || !!(await this.feSave()); },
+                async feAddField() {
+                    const A = this.fe.add, name = (A.name || '').trim();
+                    if (!name) { this.fe.error = 'Give the new field a name.'; return; }
+                    if (!(await this._feSavedFirst())) return;
+                    const d = await this._fePost('/api/fields/add', { label: name, tab: A.tab, words: !!A.words });
+                    if (d) { A.name = ''; this.fe.sel = d.key; }
+                },
+                async feHide(k) {
+                    const f = this.fe.work.fields[k];
+                    if (!confirm(`Hide "${f.label}"?\n\nIt disappears from Edit Metadata, search, the sidebar, columns and export. Its values are kept: restore it any time from Hidden fields.`)) return;
+                    if (!(await this._feSavedFirst())) return;
+                    if (await this._fePost('/api/fields/hide', { key: k })) this.fe.sel = null;
+                },
+                async feRestore(k) {
+                    if (!(await this._feSavedFirst())) return;
+                    await this._fePost('/api/fields/restore', { key: k });
+                },
+                async feDelOpen(k) {
+                    const F = this.fe;
+                    F.del = { key: k, label: F.work.fields[k].label, usage: null, confirm: '' };
+                    try { F.del.usage = (await (await fetch('/api/fields/usage?key=' + encodeURIComponent(k))).json()).usage; } catch (e) { /* counts unknown */ }
+                },
+                async feDelete() {
+                    const D = this.fe.del;
+                    const d = await this._fePost('/api/fields/delete', { key: D.key, confirm: D.confirm });
+                    if (d) { this.fe.del = null; alert(`"${D.label}" is deleted. A backup was made first: ${d.backup}`); }
+                },
+                async feReset() {
+                    if (!confirm('Put the fields back the way lustr comes?\n\nTabs, order, names and options go back to the defaults, and hidden built-in fields come back. Fields you added are hidden, not deleted: their values are kept.')) return;
+                    await this._fePost('/api/fields/reset');
+                },
+
+                qtFields() {             // a hidden field's quick tags are kept, just not listed
+                    const hid = this.fieldLayout.hidden || [];
+                    return [...Object.keys(this.qt.work).filter(f => !hid.includes(f)), ...this.qt.extra.filter(f => !(f in this.qt.work))];
+                },
                 qtList() { return this.qt.work[this.qt.sel] || []; },
                 qtDirty() { return JSON.stringify(this.qt.work) !== this.qt.orig; },
                 qtNorm(v) {
@@ -15852,7 +16014,7 @@ No metadata is changed.`)) return;
                     <select :value="sortField" @change="sortBy($event.target.value)" class="bg-gray-800 text-sm text-white outline-none w-20 md:w-24">
                         <template x-for="[g, cols] in sortGroups()" :key="'sg-' + g">
                             <optgroup :label="g">
-                                <template x-for="col in cols" :key="'so-' + col"><option :value="col" x-text="col" :selected="sortField === col"></option></template>
+                                <template x-for="col in cols" :key="'so-' + col"><option :value="col" x-text="colLabel(col)" :selected="sortField === col"></option></template>
                             </optgroup>
                         </template>
                     </select>
@@ -16401,7 +16563,7 @@ No metadata is changed.`)) return;
                                                 <div class="mt-2 space-y-1 text-xs">
                                                     <template x-for="d in mvSug.details" :key="'sd' + d.field">
                                                         <div class="flex items-baseline gap-2">
-                                                            <span class="w-20 shrink-0 text-gray-400 capitalize" x-text="d.field === 'title' ? 'Name' : d.field"></span>
+                                                            <span class="w-20 shrink-0 text-gray-400" x-text="d.field === 'title' ? 'Name' : fieldLabel(d.field)"></span>
                                                             <span class="flex-1 text-gray-200 line-clamp-2" :title="d.value">
                                                                 <span x-text="d.value"></span>
                                                                 <span x-show="d.field === 'title'" class="text-gray-500" x-text="' (yours: ' + d.current + ')'"></span></span>
@@ -16933,11 +17095,11 @@ No metadata is changed.`)) return;
                             <thead class="bg-gray-800 text-gray-400">
                                 <tr>
                                     <th class="p-2 w-14 border-b border-gray-700" :style="{ top: jumpTabsOffset() + 'px' }"><input type="checkbox" @click="selectAll" :checked="selectionCount > 0 && selectionCount === videos.length"></th>
-                                    <template x-for="col in visibleColumns" :key="col">
+                                    <template x-for="col in shownColumns" :key="col">
                                         <th class="p-2 cursor-pointer hover:text-white border-b border-gray-700 relative group th-hover" 
                                             @click="sortBy(col)" :style="{ width: getColWidth(col), top: jumpTabsOffset() + 'px' }">
                                             <div class="flex items-center overflow-hidden">
-                                                <span x-text="col" class="truncate"></span>
+                                                <span x-text="colLabel(col)" class="truncate"></span>
                                                 <span x-show="sortField === col" x-text="sortDesc ? '&#9660;' : '&#9650;'" class="text-xs ml-1 text-blue-400 flex-shrink-0"></span>
                                             </div>
                                             <div class="resizer" @click.stop @mousedown.stop="startResize(col, $event)" @dblclick.stop="autoResize(col)"></div>
@@ -16958,7 +17120,7 @@ No metadata is changed.`)) return;
                                             </div>
                                         </td>
                                         
-                                        <template x-for="col in visibleColumns" :key="col">
+                                        <template x-for="col in shownColumns" :key="col">
                                             <td class="p-2 truncate" :style="{ maxWidth: getColWidth(col) }">
                                                 <template x-if="col.toLowerCase() === 'cast' && Array.isArray(video.cast)">
                                                     <span><template x-for="(member, idx) in video.cast" :key="idx"><span><span
@@ -17379,7 +17541,7 @@ No metadata is changed.`)) return;
                                              :class="extDbSideBySide() ? 'lg:flex-col lg:flex-nowrap lg:gap-1' : ''">
                                             <template x-for="[attr, values] in Object.entries(castBioData?.appearance || {})" :key="attr">
                                                 <div class="inline-flex items-center gap-1">
-                                                    <span class="text-gray-400 capitalize font-medium" x-text="attr + ':'"></span>
+                                                    <span class="text-gray-400 font-medium" x-text="fieldLabel(attr) + ':'"></span>
                                                     <template x-for="(value, idx) in values.slice(0, 3)" :key="value">
                                                         <span>
                                                             <span class="text-gray-200" x-text="value"></span>
@@ -17933,7 +18095,7 @@ No metadata is changed.`)) return;
                             class="text-gray-500 hover:text-white text-sm" title="Reset the size and place">↺</button>
                 </div>
                 <div class="flex border-b border-gray-700 overflow-x-auto shrink-0">
-                    <template x-for="tab in ['General', 'Appearance', 'Attributes'].concat(imgEdit.folders.length === 1 ? ['Videos'] : [])" :key="'ie' + tab">
+                    <template x-for="tab in editorTabs.map(t => t.name).concat(imgEdit.folders.length === 1 ? ['Videos'] : [])" :key="'ie' + tab">
                         <button @click="imgEdit.tab = tab" class="px-6 py-3 text-sm font-medium border-b-2 whitespace-nowrap"
                                 :class="imgEdit.tab === tab ? 'border-blue-500 text-white bg-gray-700' : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-700'"
                                 x-text="tab === 'Videos' ? 'Videos (' + imgEdit.videos.length + ')' : tab"></button>
@@ -17951,12 +18113,11 @@ No metadata is changed.`)) return;
                                         class="absolute left-0 top-0 overflow-hidden text-yellow-400" :style="'width:' + fill(i) * 100 + '%'">★</span></span></template>
                                 </div></div>
                     </div>
-                    <template x-for="grp in ['General', 'Appearance', 'Attributes']" :key="'ieg' + grp">
+                    <template x-for="grp in editorTabs.map(t => t.name)" :key="'ieg' + grp">
                         <div x-show="imgEdit.tab === grp" class="space-y-4">
                             <template x-for="field in (fieldGroups[grp] || []).filter(f => imgEditFields().includes(f))" :key="'ief' + field">
                                 <div>
-                                    <label class="block text-xs text-gray-400 mb-1" :class="field === 'male_cast' ? '' : 'capitalize'"
-                                           x-text="field === 'male_cast' ? 'Male Cast' : field"></label>
+                                    <label class="block text-xs text-gray-400 mb-1" x-text="fieldLabel(field)"></label>
                                     <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
                                         <template x-for="tag in qtButtons(field)" :key="tag">
                                             <button @click="imgEditQuick(field, tag)" type="button" class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs" x-text="tag"></button>
@@ -19304,7 +19465,7 @@ No metadata is changed.`)) return;
                                         <select @change="setLibDefault(name, 'sort', $event.target.value)" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5" title="Sort">
                                             <option value="" :selected="!libraryDefaults[name]?.sort" x-text="'Sort: default (' + libDefaults.sort + ')'"></option>
                                             <template x-for="[g, cols] in sortGroups()" :key="name + '-g-' + g">
-                                                <optgroup :label="g"><template x-for="col in cols" :key="name + '-s-' + col"><option :value="col" x-text="col" :selected="libraryDefaults[name]?.sort === col"></option></template></optgroup>
+                                                <optgroup :label="g"><template x-for="col in cols" :key="name + '-s-' + col"><option :value="col" x-text="colLabel(col)" :selected="libraryDefaults[name]?.sort === col"></option></template></optgroup>
                                             </template>
                                         </select>
                                         <button x-show="libraryDefaults[name]?.sort" @click="setLibDefault(name, 'desc', !libraryDefaults[name].desc)"
@@ -19521,7 +19682,7 @@ No metadata is changed.`)) return;
                                 <div class="flex items-center gap-1">
                                     <select :value="libDefaults.sort" @change="libDefaults.sort = $event.target.value; saveConfig(true)" class="flex-1 min-w-0 bg-gray-800 border border-gray-600 rounded px-2 py-1">
                                         <template x-for="[g, cols] in sortGroups()" :key="'dsg-' + g">
-                                            <optgroup :label="g"><template x-for="col in cols" :key="'dso-' + col"><option :value="col" x-text="col" :selected="libDefaults.sort === col"></option></template></optgroup>
+                                            <optgroup :label="g"><template x-for="col in cols" :key="'dso-' + col"><option :value="col" x-text="colLabel(col)" :selected="libDefaults.sort === col"></option></template></optgroup>
                                         </template>
                                     </select>
                                     <button @click="libDefaults.desc = !libDefaults.desc; saveConfig(true)" class="px-2 py-1 rounded bg-gray-800 border border-gray-600 text-gray-300"
@@ -19613,6 +19774,10 @@ No metadata is changed.`)) return;
 
 
 
+
+                        <button x-show="sPage('metadata')" @click="feOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
+                            <span>Fields &amp; editor layout <span class="text-xs text-gray-500">- add, rename, hide and arrange the fields and tabs of Edit Metadata</span></span><span>🧩</span>
+                        </button>
 
                         <button x-show="sPage('metadata')" @click="qtOpen()" class="w-full text-left bg-gray-900 p-3 rounded hover:bg-gray-700 flex justify-between items-center">
                             <span>Edit Quick Tags <span class="text-xs text-gray-500">- the quick-pick buttons in Edit Metadata</span></span><span>🏷️</span>
@@ -20606,7 +20771,7 @@ No metadata is changed.`)) return;
                             <div class="bg-gray-900 p-4 rounded">
                                 <h4 class="font-bold mb-2 text-blue-400">Backup</h4>
                                 <p class="text-xs text-gray-400 mb-3">Everything you've added: a fresh copy of the database (metadata, cast, movies, collections, settings) plus
-                                    quick tags, watch history and the metadata layout, in one zip. Thumbnails aren't included; they're made again by themselves.</p>
+                                    quick tags and watch history, in one zip (your fields and their layout are in the database). Thumbnails aren't included; they're made again by themselves.</p>
                                 <a href="/api/tools/maintenance/backups/full" class="block w-full bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded text-left">💾 Download full backup</a>
                                 </div>
                             </div>
@@ -21684,6 +21849,138 @@ No metadata is changed.`)) return;
         </div>
 
         <!-- Quick Tags editor (data/quicktags.json) -->
+        <!-- FIELDS & EDITOR LAYOUT (fields.py) -->
+        <div x-show="fe.open" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4" @keydown.escape.window="if (fe.open && !fe.del) feClose()">
+            <div class="bg-gray-800 rounded-lg w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl">
+                <div class="p-4 border-b border-gray-700 flex items-center gap-3">
+                    <div class="flex-1"><div class="font-bold">Fields &amp; editor layout</div>
+                        <div class="text-xs text-gray-400">Drag fields between tabs and into order. Click a field to rename it or change its options. 🔒 fields stay on General.
+                            Search, the sidebar, columns, import / export and the cast attributes follow what you set here.</div></div>
+                    <button @click="feClose()" class="text-gray-400 hover:text-white text-xl">✕</button>
+                </div>
+                <div x-show="fe.busy && !fe.work" class="p-6 text-gray-400">Loading…</div>
+                <template x-if="fe.work">
+                    <div class="flex-1 min-h-0 flex flex-col lg:flex-row">
+                        <!-- tabs as columns -->
+                        <div class="flex-1 min-w-0 overflow-auto scroller p-4">
+                            <div class="flex gap-3 items-start">
+                                <template x-for="(tab, ti) in fe.work.tabs" :key="'fet' + ti">
+                                    <div class="w-48 shrink-0 bg-gray-900 rounded border border-gray-700 flex flex-col"
+                                         @dragover.prevent="fe.over = ti" @dragleave="fe.over = null" @drop.prevent="feDrop(ti)"
+                                         :class="fe.over === ti ? 'border-blue-500' : ''">
+                                        <div class="flex items-center gap-1 px-2 py-1.5 border-b border-gray-700">
+                                            <span class="flex-1 font-semibold text-sm truncate" x-text="tab.name"></span>
+                                            <template x-if="ti > 0">
+                                                <span class="flex items-center gap-0.5 text-xs text-gray-400">
+                                                    <button @click="feMoveTab(ti, -1)" :disabled="ti <= 1" class="px-1 hover:text-white disabled:opacity-30" title="Move left">‹</button>
+                                                    <button @click="feMoveTab(ti, 1)" :disabled="ti >= fe.work.tabs.length - 1" class="px-1 hover:text-white disabled:opacity-30" title="Move right">›</button>
+                                                    <button @click="feRenameTab(ti)" class="px-1 hover:text-white" title="Rename">✎</button>
+                                                    <button @click="feRemoveTab(ti)" class="px-1 hover:text-red-400" title="Remove the tab (it has to be empty)">✕</button>
+                                                </span>
+                                            </template>
+                                            <span x-show="ti === 0" class="text-xs text-gray-500" title="General always comes first">🔒</span>
+                                        </div>
+                                        <div class="p-1.5 space-y-1 min-h-[3rem]">
+                                            <template x-for="k in feShown(tab)" :key="'fef' + k">
+                                                <div :draggable="!feFixed(k)" @dragstart="feDragStart(k, $event)" @dragover.prevent.stop="fe.over = ti" @drop.prevent.stop="feDrop(ti, k)"
+                                                     @click="fe.sel = k; fe.check = null" class="px-2 py-1 rounded text-sm flex items-center gap-1 select-none"
+                                                     :class="(fe.sel === k ? 'bg-blue-600 text-white ' : 'bg-gray-700 hover:bg-gray-600 ') + (feFixed(k) ? 'cursor-pointer' : 'cursor-grab')">
+                                                    <span x-show="feFixed(k)" class="text-xs opacity-70">🔒</span>
+                                                    <span class="flex-1 truncate" x-text="fe.work.fields[k]?.label"></span>
+                                                    <span x-show="!fe.work.fields[k]?.words" class="text-[10px] opacity-70" title="Spaces allowed: not in the sidebar filters">abc</span>
+                                                    <span x-show="fe.work.fields[k]?.performer" class="text-[10px] opacity-70" title="Performer attribute">👤</span>
+                                                </div>
+                                            </template>
+                                            <div x-show="!feShown(tab).length" class="text-xs text-gray-500 px-1 py-2">Drag fields here</div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <button @click="feAddTab()" class="w-32 shrink-0 py-3 rounded border border-dashed border-gray-600 text-sm text-gray-400 hover:text-white hover:border-gray-400">+ New tab</button>
+                            </div>
+                            <div class="mt-3 text-xs text-gray-500">On General, Title, Year, Rating, Resolution and Movie come first; the fields below them follow.
+                                <span class="ml-2">abc = spaces allowed (not a sidebar filter) · 👤 = performer attribute</span></div>
+                        </div>
+                        <!-- side panel -->
+                        <div class="lg:w-80 shrink-0 border-t lg:border-t-0 lg:border-l border-gray-700 overflow-y-auto scroller p-4 space-y-4 text-sm">
+                            <template x-if="fe.sel && fe.work.fields[fe.sel]">
+                                <div class="space-y-2">
+                                    <div class="text-xs font-bold uppercase text-gray-400">Field</div>
+                                    <label class="block text-xs text-gray-400">Name
+                                        <input type="text" x-model="fe.work.fields[fe.sel].label" maxlength="40" class="mt-0.5 w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-gray-100"></label>
+                                    <div class="text-[11px] text-gray-500">Search with <code x-text="fe.sel + ':value'"></code> or by its name with _ for spaces. Renaming never changes the saved values.</div>
+                                    <label x-show="fe.sel !== 'male_cast' && fe.sel !== 'cast'" class="flex items-start gap-2 cursor-pointer">
+                                        <input type="checkbox" class="rounded mt-0.5" x-model="fe.work.fields[fe.sel].words" @change="feWordsChanged(fe.sel)">
+                                        <span>Single-word values <span class="block text-xs text-gray-500">New values are saved lowercase with periods (big.tits), and the field is listed in the sidebar's filters. Off: spaces are allowed and it isn't a sidebar filter.</span></span></label>
+                                    <p x-show="fe.check && fe.check.key === fe.sel" class="text-xs text-amber-400"
+                                       x-text="fe.check ? fe.check.not_single_word + ' of its ' + fe.check.values + ' values have spaces or capitals (e.g. ' + fe.check.examples.join(', ') + '). They stay as they are; only new values get the format.' : ''"></p>
+                                    <label x-show="fe.sel !== 'male_cast' && fe.sel !== 'cast'" class="flex items-start gap-2 cursor-pointer">
+                                        <input type="checkbox" class="rounded mt-0.5" x-model="fe.work.fields[fe.sel].performer">
+                                        <span>Performer attribute <span class="block text-xs text-gray-500">Offered in a performer's attributes, so their primary values can be added to their videos.</span></span></label>
+                                    <div class="flex gap-2 pt-1">
+                                        <button x-show="!feFixed(fe.sel)" @click="feHide(fe.sel)" :disabled="fe.busy" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">Hide field</button>
+                                        <span x-show="feFixed(fe.sel)" class="text-xs text-gray-500">🔒 This field is always on General.</span>
+                                    </div>
+                                </div>
+                            </template>
+                            <div class="space-y-2 border-t border-gray-700 pt-3">
+                                <div class="text-xs font-bold uppercase text-gray-400">New field</div>
+                                <input type="text" x-model="fe.add.name" placeholder="Name, e.g. Studio code" maxlength="40" @keydown.enter="feAddField()"
+                                       class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm">
+                                <div class="flex items-center gap-2 text-xs text-gray-400">On tab
+                                    <select x-model="fe.add.tab" class="flex-1 bg-gray-900 border border-gray-600 rounded px-1 py-1 text-sm">
+                                        <template x-for="t in fe.work.tabs" :key="'fat' + t.name"><option :value="t.name" x-text="t.name" :selected="fe.add.tab === t.name"></option></template>
+                                    </select></div>
+                                <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer"><input type="checkbox" class="rounded" x-model="fe.add.words"> Single-word values (a sidebar filter)</label>
+                                <button @click="feAddField()" :disabled="fe.busy" class="px-3 py-1 rounded bg-green-700 hover:bg-green-600 text-xs">+ Add field</button>
+                            </div>
+                            <div x-show="fe.hidden.length" class="space-y-1 border-t border-gray-700 pt-3">
+                                <div class="text-xs font-bold uppercase text-gray-400">Hidden fields <span class="normal-case font-normal">(values kept)</span></div>
+                                <template x-for="k in fe.hidden" :key="'feh' + k">
+                                    <div class="flex items-center gap-2">
+                                        <span class="flex-1 truncate text-gray-300" x-text="fe.work.fields[k]?.label"></span>
+                                        <button @click="feRestore(k)" :disabled="fe.busy" class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-xs">Restore</button>
+                                    </div>
+                                </template>
+                            </div>
+                            <details class="border-t border-gray-700 pt-3">
+                                <summary class="text-xs font-bold uppercase text-gray-400 cursor-pointer">Advanced</summary>
+                                <div class="mt-2 space-y-2 text-xs text-gray-400">
+                                    <p class="text-amber-400">Deleting a field erases its values from every video and album, its performer attributes, quick tags and tag-map rows. A backup of the database is made first. Only fields you added can be deleted; lustr's own fields can only be hidden.</p>
+                                    <template x-for="k in Object.keys(fe.work.fields).filter(k => fe.work.fields[k].custom)" :key="'fed' + k">
+                                        <div class="flex items-center gap-2"><span class="flex-1 truncate text-gray-300" x-text="fe.work.fields[k].label + (fe.work.fields[k].hidden ? ' (hidden)' : '')"></span>
+                                            <button @click="feDelOpen(k)" class="px-2 py-0.5 rounded bg-red-900 hover:bg-red-800 text-red-200">Delete…</button></div>
+                                    </template>
+                                    <p x-show="!Object.values(fe.work.fields).some(f => f.custom)">You haven't added any fields.</p>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </template>
+                <div x-show="fe.error" class="px-4 pb-2 text-sm text-red-400" x-text="fe.error"></div>
+                <div class="p-4 border-t border-gray-700 flex items-center gap-2">
+                    <button @click="feReset()" :disabled="fe.busy" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm mr-auto">Revert to default</button>
+                    <span x-show="feDirty()" class="text-xs text-amber-400">Unsaved changes</span>
+                    <button @click="feClose()" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Close</button>
+                    <button @click="feSave()" :disabled="fe.busy || !feDirty()" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-sm">Save</button>
+                </div>
+            </div>
+            <!-- delete permanently -->
+            <div x-show="fe.del" x-cloak class="fixed inset-0 z-[85] bg-black/70 flex items-center justify-center p-4" @keydown.escape.window.stop="fe.del = null">
+                <div class="bg-gray-800 rounded-lg w-full max-w-md shadow-2xl p-4 space-y-3 text-sm" @click.outside="fe.del = null">
+                    <div class="font-bold text-red-300" x-text="'Delete “' + (fe.del?.label || '') + '” permanently?'"></div>
+                    <p class="text-gray-300" x-show="fe.del?.usage" x-text="fe.del?.usage ? 'This erases ' + fe.del.usage.values + ' values on ' + fe.del.usage.videos + ' videos, ' + fe.del.usage.albums + ' albums, attributes of ' + fe.del.usage.performers + ' performers, ' + fe.del.usage.quick_tags + ' quick tags and ' + fe.del.usage.tag_maps + ' tag-map rows.' : ''"></p>
+                    <p class="text-gray-400">A backup of the database is made first (Settings → Maintenance → Backups). To keep the values, hide the field instead.</p>
+                    <label class="block text-xs text-gray-400">Type <b class="text-gray-200" x-text="fe.del?.label"></b> to confirm
+                        <input type="text" x-model="fe.del.confirm" class="mt-1 w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm" x-show="fe.del"></label>
+                    <div class="flex justify-end gap-2">
+                        <button @click="fe.del = null" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600">Cancel</button>
+                        <button @click="feDelete()" :disabled="fe.busy || (fe.del?.confirm || '').trim().toLowerCase() !== (fe.del?.label || '').toLowerCase()"
+                                class="px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 disabled:opacity-40">Delete permanently</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div x-show="modals.quickTags" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4"
              @keydown.escape.window="if (modals.quickTags) qtClose()">
             <div x-init="$nextTick(() => makeDraggable($el))" class="bg-gray-800 rounded-lg w-[95%] max-w-4xl shadow-2xl flex flex-col" style="max-height: 85vh;">
@@ -21706,7 +22003,7 @@ No metadata is changed.`)) return;
                         <template x-for="f in qtFields()" :key="f">
                             <button @click="qtSelect(f)" class="w-full text-left px-3 py-1.5 text-sm flex justify-between items-center"
                                     :class="[qt.sel === f ? 'bg-blue-600 text-white' : 'hover:bg-gray-700', (f in qt.work) ? '' : 'text-gray-500 italic']">
-                                <span class="truncate" x-text="f"></span>
+                                <span class="truncate" x-text="fieldLabel(f)"></span>
                                 <span class="text-xs opacity-70" x-text="(f in qt.work) ? qt.work[f].length : ''"></span>
                             </button>
                         </template>
@@ -21779,11 +22076,11 @@ No metadata is changed.`)) return;
                 <div class="max-h-[60vh] overflow-y-auto scroller space-y-4">
                     <div>
                         <h4 class="text-xs font-bold text-gray-500 uppercase mb-2">Active</h4>
-                        <div class="space-y-1"><template x-for="col in visibleColumns" :key="col"><div class="flex items-center justify-between bg-gray-900 p-2 rounded group"><span x-text="col" class="text-sm"></span><div class="flex items-center gap-1 opacity-50 group-hover:opacity-100 transition"><button @click="moveColumnTop(col)" title="Move to Top" class="hover:text-blue-400">&#8648;</button><button @click="moveColumnUp(col)" title="Move Up" class="hover:text-blue-400">&#8593;</button><button @click="moveColumnDown(col)" title="Move Down" class="hover:text-blue-400">&#8595;</button><button @click="moveColumnBottom(col)" title="Move to Bottom" class="hover:text-blue-400">&#8650;</button><button @click="removeColumn(col)" title="Remove" class="text-red-500 hover:text-red-400 ml-1">&times;</button></div></div></template></div>
+                        <div class="space-y-1"><template x-for="col in shownColumns" :key="col"><div class="flex items-center justify-between bg-gray-900 p-2 rounded group"><span x-text="colLabel(col)" class="text-sm"></span><div class="flex items-center gap-1 opacity-50 group-hover:opacity-100 transition"><button @click="moveColumnTop(col)" title="Move to Top" class="hover:text-blue-400">&#8648;</button><button @click="moveColumnUp(col)" title="Move Up" class="hover:text-blue-400">&#8593;</button><button @click="moveColumnDown(col)" title="Move Down" class="hover:text-blue-400">&#8595;</button><button @click="moveColumnBottom(col)" title="Move to Bottom" class="hover:text-blue-400">&#8650;</button><button @click="removeColumn(col)" title="Remove" class="text-red-500 hover:text-red-400 ml-1">&times;</button></div></div></template></div>
                     </div>
                     <div x-show="unusedColumns.length > 0">
                         <h4 class="text-xs font-bold text-gray-500 uppercase mb-2">Available</h4>
-                        <div class="space-y-1"><template x-for="col in unusedColumns" :key="col"><div class="flex items-center justify-between bg-gray-900 p-2 rounded group cursor-pointer hover:bg-gray-700" @click="addColumn(col)"><span x-text="col" class="text-sm text-gray-400 group-hover:text-white"></span><span class="text-green-500 text-lg leading-none">+</span></div></template></div>
+                        <div class="space-y-1"><template x-for="col in unusedColumns" :key="col"><div class="flex items-center justify-between bg-gray-900 p-2 rounded group cursor-pointer hover:bg-gray-700" @click="addColumn(col)"><span x-text="colLabel(col)" class="text-sm text-gray-400 group-hover:text-white"></span><span class="text-green-500 text-lg leading-none">+</span></div></template></div>
                     </div>
                 </div>
                 <div class="mt-4 flex justify-end"><button @click="modals.columns = false" class="bg-blue-600 px-4 py-2 rounded">Done</button></div>
@@ -21802,7 +22099,7 @@ No metadata is changed.`)) return;
                         <span x-show="metaFilesLine()" x-text="(editPaths.length === 1 ? ' · ' : '') + metaFilesLine()"></span>
                     </span></span><span class="text-xs text-gray-500">Ctrl+Enter to Save · drag the corner to resize</span>
                     <button @click.stop="metaSizeReset($el.closest('[data-drag-handle]').parentElement)" class="text-gray-500 hover:text-white text-sm" title="Reset the size">↺</button></div>
-                <div class="flex border-b border-gray-700 overflow-x-auto shrink-0"><template x-for="tab in ['General', 'Appearance', 'Attributes']" :key="tab"><button @click="metadataTab = tab" class="px-6 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap" :class="metadataTab === tab ? 'border-blue-500 text-white bg-gray-700' : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-700'" x-text="tab"></button></template></div>
+                <div class="flex border-b border-gray-700 overflow-x-auto shrink-0"><template x-for="tab in editorTabs.map(t => t.name)" :key="tab"><button @click="metadataTab = tab" class="px-6 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap" :class="metadataTab === tab ? 'border-blue-500 text-white bg-gray-700' : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-700'" x-text="tab"></button></template></div>
                 <div class="p-6 overflow-y-auto space-y-4 scroller flex-1">
                     <div x-show="metadataTab === 'General'" class="space-y-4">
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -21814,6 +22111,7 @@ No metadata is changed.`)) return;
                                     <template x-for="i in 5" :key="'er' + i"><span class="relative inline-block"><span class="text-gray-600">★</span><span
                                         class="absolute left-0 top-0 overflow-hidden text-yellow-400" :style="'width:' + fill(i) * 100 + '%'">★</span></span></template>
                                 </div></div>
+                            <div><label class="block text-xs text-gray-400 mb-1">Resolution <span class="text-gray-500">(manual override)</span></label><input type="text" x-model="editData.resolution" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
                         </div>
                         <div class="grid grid-cols-2 sm:grid-cols-[minmax(0,1fr)_6rem_6rem_auto] gap-4 items-end">
                             <div class="col-span-2 sm:col-span-1"><label class="block text-xs text-gray-400 mb-1">Movie <span class="text-gray-500">(a scene, part or the whole movie)</span></label>
@@ -21826,10 +22124,10 @@ No metadata is changed.`)) return;
                                 <input type="checkbox" class="rounded" :checked="editData.movie_whole === '1'" @change="editData.movie_whole = $event.target.checked ? '1' : ''"> Whole movie in this file</label>
                         </div>
                         <datalist id="mv-titles"><template x-for="t in mvTitles" :key="t"><option :value="t"></option></template></datalist>
-                        <template x-for="field in fieldGroups.General" :key="field">
+                        <template x-for="field in (fieldGroups.General || [])" :key="field">
                             <div x-show="editFields.includes(field)">
-                                <label class="block text-xs text-gray-400 mb-1" :class="field === 'male_cast' ? '' : 'capitalize'"
-                                       x-text="field === 'male_cast' ? 'Male Cast (men in straight scenes)' : field"></label>
+                                <label class="block text-xs text-gray-400 mb-1"
+                                       x-text="field === 'male_cast' ? fieldLabel(field) + ' (men in straight scenes)' : fieldLabel(field)"></label>
                                 <!-- Quick tag buttons if available -->
                                 <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
                                     <template x-for="tag in qtButtons(field)" :key="tag">
@@ -21844,55 +22142,29 @@ No metadata is changed.`)) return;
                             </div>
                         </template>
                     </div>
-                    <div x-show="metadataTab === 'Appearance'" class="space-y-4">
-                        <template x-for="field in fieldGroups.Appearance" :key="field">
-                            <div x-show="editFields.includes(field)">
-                                <label class="block text-xs text-gray-400 mb-1 capitalize" x-text="field"></label>
-                                <!-- Quick tag buttons if available -->
-                                <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
-                                    <template x-for="tag in qtButtons(field)" :key="tag">
-                                        <button @click="addQuickTag(field, tag)" 
-                                                type="button"
-                                                class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
-                                                x-text="tag">
-                                        </button>
-                                    </template>
+                    <template x-for="tab in editorTabs.slice(1)" :key="'mt' + tab.name">
+                        <div x-show="metadataTab === tab.name" class="space-y-4">
+                            <template x-for="field in tab.fields" :key="field">
+                                <div x-show="editFields.includes(field)">
+                                    <label class="block text-xs text-gray-400 mb-1" x-text="fieldLabel(field)"></label>
+                                    <!-- Quick tag buttons if available -->
+                                    <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
+                                        <template x-for="tag in qtButtons(field)" :key="tag">
+                                            <button @click="addQuickTag(field, tag)" type="button"
+                                                    class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors" x-text="tag"></button>
+                                        </template>
+                                    </div>
+                                    <textarea
+                                        x-model="editData[field]" autocomplete="off" @keydown="acKey($event)" @blur="acClose()"
+                                        @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; acInput($event, field, true)"
+                                        x-init="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
+                                        class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y overflow-hidden"
+                                        style="min-height: 2.25rem; max-height: 20rem;"
+                                        rows="1"></textarea>
                                 </div>
-                                <textarea 
-                                    x-model="editData[field]" autocomplete="off" @keydown="acKey($event)" @blur="acClose()"
-                                    @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; acInput($event, field, true)"
-                                    x-init="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
-                                    class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y overflow-hidden"
-                                    style="min-height: 2.25rem; max-height: 20rem;"
-                                    rows="1"></textarea>
-                            </div>
-                        </template>
-                    </div>
-                    <div x-show="metadataTab === 'Attributes'" class="space-y-4">
-                        <div><label class="block text-xs text-gray-400 mb-1">Resolution (Manual Override)</label><input type="text" x-model="editData.resolution" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1"></div>
-                        <template x-for="field in fieldGroups.Attributes" :key="field">
-                            <div x-show="editFields.includes(field)">
-                                <label class="block text-xs text-gray-400 mb-1 capitalize" x-text="field"></label>
-                                <!-- Quick tag buttons if available -->
-                                <div x-show="quickTags[field]" class="flex flex-wrap gap-1 mb-2">
-                                    <template x-for="tag in qtButtons(field)" :key="tag">
-                                        <button @click="addQuickTag(field, tag)" 
-                                                type="button"
-                                                class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors"
-                                                x-text="tag">
-                                        </button>
-                                    </template>
-                                </div>
-                                <textarea 
-                                    x-model="editData[field]" autocomplete="off" @keydown="acKey($event)" @blur="acClose()"
-                                    @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; acInput($event, field, true)"
-                                    x-init="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
-                                    class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-y overflow-hidden"
-                                    style="min-height: 2.25rem; max-height: 20rem;"
-                                    rows="1"></textarea>
-                            </div>
-                        </template>
-                    </div>
+                            </template>
+                        </div>
+                    </template>
                 </div>
                 <div class="p-4 border-t border-gray-700 flex justify-end gap-2"><button @click="closeMetadata" class="px-4 py-2 text-gray-400 hover:text-white">Cancel (Esc)</button><button @click="saveMetadata" class="bg-blue-600 px-4 py-2 rounded hover:bg-blue-500">Save (Ctrl+Enter)</button></div>
             </div>
@@ -22107,7 +22379,7 @@ No metadata is changed.`)) return;
                             <template x-for="[field, values] in Object.entries(advancedSelectedValues)" :key="field">
                                 <template x-for="[value, selected] in Object.entries(values)" :key="value">
                                     <div class="inline-flex items-center gap-1 px-2 py-1 bg-blue-600 rounded text-xs">
-                                        <span class="capitalize" x-text="field"></span>:
+                                        <span x-text="fieldLabel(field)"></span>:
                                         <span x-text="value"></span>
                                         <button @click="toggleAdvancedValue(field, value)" class="ml-1 hover:text-red-400">×</button>
                                     </div>
@@ -22118,32 +22390,16 @@ No metadata is changed.`)) return;
                     
                     <!-- Metadata Fields Grid -->
                     <div class="grid grid-cols-4 gap-3 mb-6">
-                        <button @click="loadToolsFieldValues('ethnicity')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Ethnicity</button>
-                        <button @click="loadToolsFieldValues('nationality')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Nationality</button>
-                        <button @click="loadToolsFieldValues('hair')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Hair</button>
-                        <button @click="loadToolsFieldValues('body')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Body</button>
-                        <button @click="loadToolsFieldValues('tits')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Tits</button>
-                        
-                        <button @click="loadToolsFieldValues('ass')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Ass</button>
-                        <button @click="loadToolsFieldValues('face')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Face</button>
-                        <button @click="loadToolsFieldValues('cock')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Cock</button>
-                        <button @click="loadToolsFieldValues('outfit')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Outfit</button>
-                        
-                        <button @click="loadToolsFieldValues('theme')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Theme</button>
-                        <button @click="loadToolsFieldValues('feature')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Feature</button>
-                        <button @click="loadToolsFieldValues('cumshot')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Cumshot</button>
-                        <button @click="loadToolsFieldValues('participants')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Participants</button>
-                        
-                        <button @click="loadToolsFieldValues('orientation')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Orientation</button>
-                        <button @click="loadToolsFieldValues('tags')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Tags</button>
-                        <button @click="loadToolsFieldValues('cast')" class="bg-blue-700 hover:bg-blue-600 px-4 py-3 rounded transition-colors">Cast</button>
-                        <button @click="loadToolsFieldValues('site')" class="bg-blue-700 hover:bg-blue-600 px-4 py-3 rounded transition-colors">Site</button>
+                        <template x-for="f in [...fieldLayout.list_fields.filter(x => x !== 'cast' && x !== 'site'), 'cast', 'site']" :key="'tfv' + f">
+                            <button @click="loadToolsFieldValues(f)" class="px-4 py-3 rounded transition-colors"
+                                    :class="f === 'cast' || f === 'site' ? 'bg-blue-700 hover:bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'" x-text="fieldLabel(f)"></button>
+                        </template>
                     </div>
                     
                     <!-- Values List for Advanced Mode -->
                     <div x-show="toolsSelectedField">
                         <div class="flex items-center justify-between mb-3">
-                            <h4 class="text-lg font-bold capitalize" x-text="toolsSelectedField"></h4>
+                            <h4 class="text-lg font-bold" x-text="fieldLabel(toolsSelectedField)"></h4>
                             <span class="text-sm text-gray-500" x-text="`${toolsFieldValues.length} values`"></span>
                         </div>
                         <div class="bg-gray-900 rounded border border-gray-700 p-2 max-h-64 overflow-y-auto">
@@ -22189,32 +22445,16 @@ No metadata is changed.`)) return;
                     
                     <!-- Field Buttons (4x4 grid) -->
                     <div class="grid grid-cols-4 gap-3 mb-6">
-                        <button @click="loadToolsFieldValues('ethnicity')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Ethnicity</button>
-                        <button @click="loadToolsFieldValues('nationality')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Nationality</button>
-                        <button @click="loadToolsFieldValues('hair')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Hair</button>
-                        <button @click="loadToolsFieldValues('body')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Body</button>
-                        <button @click="loadToolsFieldValues('tits')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Tits</button>
-                        
-                        <button @click="loadToolsFieldValues('ass')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Ass</button>
-                        <button @click="loadToolsFieldValues('face')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Face</button>
-                        <button @click="loadToolsFieldValues('cock')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Cock</button>
-                        <button @click="loadToolsFieldValues('outfit')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Outfit</button>
-                        
-                        <button @click="loadToolsFieldValues('theme')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Theme</button>
-                        <button @click="loadToolsFieldValues('feature')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Feature</button>
-                        <button @click="loadToolsFieldValues('cumshot')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Cumshot</button>
-                        <button @click="loadToolsFieldValues('participants')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Participants</button>
-                        
-                        <button @click="loadToolsFieldValues('orientation')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Orientation</button>
-                        <button @click="loadToolsFieldValues('tags')" class="bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded transition-colors">Tags</button>
-                        <button @click="loadToolsFieldValues('cast')" class="bg-blue-700 hover:bg-blue-600 px-4 py-3 rounded transition-colors">Cast</button>
-                        <button @click="loadToolsFieldValues('site')" class="bg-blue-700 hover:bg-blue-600 px-4 py-3 rounded transition-colors">Site</button>
+                        <template x-for="f in [...fieldLayout.list_fields.filter(x => x !== 'cast' && x !== 'site'), 'cast', 'site']" :key="'tfv' + f">
+                            <button @click="loadToolsFieldValues(f)" class="px-4 py-3 rounded transition-colors"
+                                    :class="f === 'cast' || f === 'site' ? 'bg-blue-700 hover:bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'" x-text="fieldLabel(f)"></button>
+                        </template>
                     </div>
                     
                     <!-- Values List -->
                     <div x-show="toolsSelectedField">
                         <div class="flex items-center justify-between mb-3">
-                            <h4 class="text-lg font-bold capitalize" x-text="toolsSelectedField"></h4>
+                            <h4 class="text-lg font-bold" x-text="fieldLabel(toolsSelectedField)"></h4>
                             <span class="text-sm text-gray-500" x-text="`${toolsFieldValues.length} values`"></span>
                         </div>
                         <div class="bg-gray-900 rounded border border-gray-700 p-2 max-h-96 overflow-y-auto">
@@ -22245,23 +22485,9 @@ No metadata is changed.`)) return;
                         <select @change="loadToolsFieldValues($event.target.value)" 
                                 class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm">
                             <option value="">-- Choose Field --</option>
-                            <option value="ethnicity">Ethnicity</option>
-                            <option value="nationality">Nationality</option>
-                            <option value="hair">Hair</option>
-                            <option value="body">Body</option>
-                            <option value="tits">Tits</option>
-                            <option value="ass">Ass</option>
-                            <option value="face">Face</option>
-                            <option value="cock">Cock</option>
-                            <option value="outfit">Outfit</option>
-                            <option value="theme">Theme</option>
-                            <option value="feature">Feature</option>
-                            <option value="cumshot">Cumshot</option>
-                            <option value="participants">Participants</option>
-                            <option value="orientation">Orientation</option>
-                            <option value="tags">Tags</option>
-                            <option value="cast">Cast</option>
-                            <option value="site">Site</option>
+                            <template x-for="f in [...fieldLayout.list_fields.filter(x => x !== 'cast' && x !== 'site'), 'cast', 'site']" :key="'tfo' + f">
+                                <option :value="f" x-text="fieldLabel(f)"></option>
+                            </template>
                         </select>
                     </div>
                     
@@ -22272,7 +22498,7 @@ No metadata is changed.`)) return;
                         </div>
                         <div x-show="toolsSelectedField">
                             <div class="flex items-center justify-between mb-3">
-                                <h4 class="text-lg font-bold capitalize" x-text="toolsSelectedField"></h4>
+                                <h4 class="text-lg font-bold" x-text="fieldLabel(toolsSelectedField)"></h4>
                                 <span class="text-sm text-gray-500" x-text="`${toolsFieldValues.length} values`"></span>
                             </div>
                             <template x-if="toolsLoading">
@@ -22320,7 +22546,7 @@ No metadata is changed.`)) return;
                                 <div class="grid grid-cols-2 sm:grid-cols-3 gap-1">
                                     <template x-for="f in imp.s.columns.list" :key="f">
                                         <label class="flex items-center gap-2 text-xs">
-                                            <span class="w-24 truncate capitalize" x-text="f.replace('_', ' ')"></span>
+                                            <span class="w-24 truncate" x-text="fieldLabel(f)"></span>
                                             <select x-model="imp.modes[f]" @change="importPreview()" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5">
                                                 <option value="add">add</option><option value="replace">replace</option>
                                             </select>
@@ -24692,7 +24918,7 @@ No metadata is changed.`)) return;
                 <template x-for="field in castAttributeFields" :key="field">
                     <div class="bg-gray-900 rounded-lg p-4">
                         <div class="flex items-center justify-between mb-3">
-                            <h3 class="font-semibold capitalize" x-text="field"></h3>
+                            <h3 class="font-semibold" x-text="fieldLabel(field)"></h3>
                             <button 
                                 @click="addCastAttribute(field)"
                                 class="px-3 py-1 bg-green-700 hover:bg-green-600 rounded text-sm">

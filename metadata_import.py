@@ -27,18 +27,26 @@ import secrets
 import threading
 import time
 
-from config import LIST_FIELDS
+import fields
 
 SEP = '|'
 CLEAR = '*'
-LIST = [f.lower() for f in LIST_FIELDS]
 SCALAR = ('title', 'year', 'rating')
 MOVIE = ('movie', 'movie_scene', 'movie_part', 'movie_whole')
 FAVORITE = 'favorite'
 KEY_COLUMNS = ('path', 'filename')
 TECHNICAL = ('resolution', 'codec', 'extension', 'length', 'total_bitrate', 'file_size', 'date_created',
              'date_modified', 'date_added', 'date_last_edited')
-EXPORT_COLUMNS = list(KEY_COLUMNS) + list(SCALAR) + [FAVORITE] + list(MOVIE) + LIST + list(TECHNICAL)
+
+
+def _list():
+    """The list fields, as Settings has them now (hidden ones aren't exported or imported)."""
+    return fields.list_fields()
+
+
+def export_columns():
+    return list(KEY_COLUMNS) + list(SCALAR) + [FAVORITE] + list(MOVIE) + _list() + list(TECHNICAL)
+
 MODES = ('add', 'replace')
 YES = ('1', 'yes', 'y', 'true', 'x', '✓')
 NO = ('0', 'no', 'n', 'false')
@@ -57,7 +65,7 @@ def export_csv(conn, get_file, paths, template=False):
         f'SELECT path, video_id FROM file_versions WHERE path IN ({",".join("?" * len(paths[k:k + 500]))})', paths[k:k + 500])}
     minfo = _movie_info(conn, list(ids.values())) if not template else {}
     out = io.StringIO()
-    w = csv.DictWriter(out, fieldnames=EXPORT_COLUMNS, extrasaction='ignore')
+    w = csv.DictWriter(out, fieldnames=export_columns(), extrasaction='ignore')
     w.writeheader()
     for p in paths:
         row = {'path': p, 'filename': os.path.basename(p)}
@@ -67,7 +75,7 @@ def export_csv(conn, get_file, paths, template=False):
                 val = v.get(f)
                 row[f] = '' if val in (None, False) else str(val)
             row[FAVORITE] = 'yes' if v.get('favorite') else ''
-            for f in LIST:
+            for f in _list():
                 row[f] = SEP.join(str(x) for x in (v.get(f) or []) if x)
             m = minfo.get(ids.get(p))
             if m:
@@ -107,6 +115,7 @@ def read_csv(data):
     except StopIteration:
         raise ImportError_('The file is empty')
     cols = [h.strip().lower().replace(' ', '_') for h in header]
+    cols = [fields.resolve(c) for c in cols]                    # a field's name as Settings shows it -> its key
     if 'path' not in cols and 'filename' not in cols:
         raise ImportError_('The file needs a "path" or a "filename" column (the first row holds the column names)')
     rows = [dict(zip(cols, r)) for r in reader if any((c or '').strip() for c in r)]
@@ -114,9 +123,10 @@ def read_csv(data):
 
 
 def column_kinds(cols):
-    known = set(LIST) | set(SCALAR) | set(MOVIE) | {FAVORITE}
-    return {'list': [c for c in cols if c in LIST],
-            'single': [c for c in cols if c in known and c not in LIST],
+    lst = _list()
+    known = set(lst) | set(SCALAR) | set(MOVIE) | {FAVORITE}
+    return {'list': [c for c in cols if c in lst],
+            'single': [c for c in cols if c in known and c not in lst],
             'ignored': [c for c in cols if c not in known and c not in KEY_COLUMNS]}
 
 

@@ -6,9 +6,9 @@ Metadata is everything lustr knows about a video besides the file itself: its ti
 
 Right-click a video → **Edit Metadata**. You can also click **Edit** in the player's top bar, which pauses the video.
 
-The window has three tabs:
+The window has three tabs (you can change them, and add your own fields, in **Settings → Metadata → Fields & editor layout**; see [Settings](settings.md#fields--editor-layout)):
 
-- **General**: Title, Year, Rating, Movie, Orientation, Site, Cast, Male Cast and Tags.
+- **General**: Title, Year, Rating, Resolution (to override what the file says), Movie, Orientation, Site, Cast, Male Cast and Tags.
 - **Appearance**: Ethnicity, Nationality, Hair, Face, Body, Tits, Ass, Cock and Outfit.
 - **Attributes**: Participants, Theme, Feature and Cumshot.
 

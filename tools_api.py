@@ -496,7 +496,7 @@ def maintenance_backups_create():
 
 # Settings files that go with the database in a full backup. users.json (password hashes) and the
 # cache (thumbnails, previews: made again by themselves) stay out.
-BACKUP_SETTINGS_FILES = ('metadata_schema.json', 'quicktags.json', 'watch_history.json', 'captions_queue.json')
+BACKUP_SETTINGS_FILES = ('quicktags.json', 'watch_history.json', 'captions_queue.json')
 
 
 @router.get("/maintenance/backups/download")

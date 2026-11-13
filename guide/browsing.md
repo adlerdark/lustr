@@ -80,6 +80,8 @@ Put the field name, a colon and the value, with no spaces around the colon:
 
 Values are not case-sensitive. A field value has to match the whole value, so either type the full name or use a wildcard.
 
+Fields you added or renamed in **Settings → Metadata → Fields & editor layout** work the same way: type the field's name with `_` for spaces (`studio_code:abc`, `hair_colour:red`), or its original key, which never changes (`hair:red` still works after renaming Hair). A hidden field finds nothing.
+
 ### Wildcards
 
 `*` stands for any characters (`%` works too):
