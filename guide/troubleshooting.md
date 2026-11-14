@@ -56,6 +56,10 @@ A newer lustr is out. Click the notice to see it on GitHub; the [README](https:/
 
 ## Something else
 
-The server log often says what went wrong: run `docker logs lustr` on the server.
+Make a problem report: **Settings → Maintenance → Problem report**. It has lustr's version, your setup, recent errors and the end of the log, with names and paths hidden. Download it and attach it to an [issue on GitHub](https://github.com/adlerdark/lustr/issues/new); **Open a GitHub issue** on that page starts one for you. See [Problem report](maintenance.md#problem-report).
+
+If an error message shows an **error ID**, mention it in the issue.
+
+The log is also in lustr's data folder (`logs/lustr.log`) and in `docker logs lustr`.
 
 If you think you found a bug, please open an issue on [GitHub](https://github.com/adlerdark/lustr/issues).

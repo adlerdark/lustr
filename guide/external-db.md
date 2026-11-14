@@ -26,7 +26,7 @@ For many performers at once, use **🌐 Bulk link…** in the cast browser. Sure
 
 Right-click a video → **🌐 Find scene…**.
 
-1. lustr searches with what it knows: the title, performers, site and file name. You can also type a search, or paste a StashDB scene link.
+1. lustr first looks the file itself up on StashDB by its fingerprint (the same OSHash Stash uses, read from the start and end of the file). When StashDB users have that exact file, the scene shows as **same file (fingerprint)** and is almost certainly right. Otherwise it searches with what it knows: the title, performers, site and file name. You can also type a search, or paste a StashDB scene link.
 2. Pick the right result (**Best match** marks the likeliest; hover a thumbnail to preview) and click **Link selected**.
 3. **Suggest metadata** shows what the scene could add: title, date, site, performers, tags. Each is ticked or not according to your [tag mappings](tag-mappings.md). Change anything for this video only, add your own values under **Add your own**, then save.
 
@@ -38,7 +38,7 @@ Select videos and right-click → **🌐 Match scenes (n)…**, or click **🌐 
 
 Before it starts, it shows how many videos there are, how many are already linked, how many have a linked performer or site, and roughly how long it will take. You can skip videos that are already linked or were checked before. It runs in the background; the top bar shows its progress.
 
-- **Strong matches are linked automatically.** They get only safe values: the year and site (only when the video has none) and performers linked to your cast. Never tags, and nothing is removed. Auto-linked videos also take the scene's title.
+- **Strong matches are linked automatically**: a file whose fingerprint matches one StashDB scene, or a close match that several clues agree on (performers, studio, date, length, title). They get only safe values: the year and site (only when the video has none) and performers linked to your cast. Never tags, and nothing is removed. Auto-linked videos also take the scene's title.
 - **Everything else goes to a review list.** Open it from the results, or with **🌐 Needs review** in the top bar's scene filter, and finish each one with Find scene.
 
 ## Sites

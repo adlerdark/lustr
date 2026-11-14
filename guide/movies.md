@@ -40,7 +40,7 @@ Each library has a **Movies** tab with the movies its videos belong to.
 
 With a ThePornDB API key (see the [README](https://github.com/adlerdark/lustr#external-databases-optional)), lustr can fill in a movie's covers, details, cast and tags:
 
-- **Link to ThePornDB…** looks up every unlinked movie in the library. Sure matches are linked; the rest go to **Needs review** for you to check.
+- **Link to ThePornDB…** looks up every unlinked movie in the library. Sure matches are linked; the rest go to **Needs review** for you to check. ThePornDB often lists one movie twice (a re-release, or under its distributor); when every result with the name has mostly the same performers, lustr treats them as one movie and takes the most complete listing. To have it look at the movies already in **Needs review** again, run it with **Skip movies checked before** off.
 - **Find movies…** looks through your video titles, file names and scene links for movies you haven't set up yet, and lets you review them before anything is changed.
 - On a linked movie, **open on ThePornDB ↗** opens its page there.
 

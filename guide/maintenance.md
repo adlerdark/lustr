@@ -23,6 +23,7 @@ The **Overview** shows the state of the database: how many videos and files, del
 | **Tag cleanup** | Malformed values, nationality words stored as ethnicities, and sites spelled several ways. Everything is ticked; untick what you want to keep, then apply. |
 | **Corrupt files** | Videos marked as corrupt. See [Corrupt files](corrupt.md). |
 | **Backups** | See below. |
+| **Problem report** | Everything needed to look into a problem, ready to attach to a GitHub issue. See [Problem report](#problem-report). |
 
 ## Backups
 
@@ -34,15 +35,26 @@ lustr backs up its database:
 
 The **Backups** page lists them all with their date and size. **Keep the newest** *n* → **Delete the older** clears out old ones, or tick some and **Delete selected**.
 
-The backups are in the `backups` folder inside lustr's data folder. To go back to one, stop lustr, copy it over `library.db`, and start lustr again.
+The backups are in the `backups` folder inside lustr's data folder. To go back to one, stop lustr, copy it over `library.db`, delete `library.db-wal` and `library.db-shm` if they're there (they belong to the old database), and start lustr again.
 
-> Note: a backup of the database holds all your metadata, but not thumbnails, previews or clips. To back up everything, stop lustr and copy the whole data folder. See the [README](https://github.com/adlerdark/lustr#your-data-and-backups).
+> Note: a backup of the database holds all your metadata, but not movie covers and performer photos (they're files in the `photos` folder), thumbnails, previews or clips. **💾 Download full backup** includes the covers and photos. To back up everything, stop lustr and copy the whole data folder. See the [README](https://github.com/adlerdark/lustr#your-data-and-backups).
 
 ## Updates
 
 About twice a day the server asks GitHub for the list of lustr versions. When a newer one is out, an **Update available** notice appears at the bottom of the sidebar, under 🎞 Clips. Click it to open the new version on GitHub, then upgrade as the [README](https://github.com/adlerdark/lustr#upgrading) describes. Once you're running it, the notice goes away.
 
 To check straight away, use **☰ → Check for Updates** in the top bar; the answer appears right in the menu. To turn the automatic check off, untick **Check GitHub for new versions** in **Settings → Maintenance → Overview**.
+
+## Problem report
+
+When something doesn't work, **Settings → Maintenance → Problem report** makes a text file to attach to an [issue on GitHub](https://github.com/adlerdark/lustr/issues/new): lustr's version, the system it runs on (ffmpeg, GPU encoding, free space, whether the video folders are mounted), the database's health, how big the library is, background jobs that are running, recent warnings and errors, JavaScript errors from your browser, and the end of the log.
+
+- **Hide names, titles and paths** (on by default) replaces every file name, path, title, performer, site, studio, movie, library and user name with a placeholder like `«file-3»` or `«name-12»`. The same name always gets the same placeholder, so the report still shows which lines belong together. Read the report before you share it all the same.
+- **⬇ Download** saves it as a `.txt` file; **📋 Copy** puts it on the clipboard; **Open a GitHub issue** starts an issue with the version and the latest error IDs filled in. Drag the downloaded file into it.
+- **Error IDs**: when something goes wrong on the server, the message on screen ends with an error ID such as `(error ID 3fa91c)`. The same ID is in the report, next to the details.
+- **Logging**: *Normal* is the default. *Detailed* adds the small steps (each file a scan looks at, playback progress, transcoder output); turn it on, make the problem happen again, make the report, then switch back. *Problems only* logs just warnings and errors. You can also set it with the `LUSTR_LOG_LEVEL` environment variable.
+
+The log itself is `logs/lustr.log` in lustr's data folder (kept to about 25 MB), and `docker logs lustr` shows the same lines.
 
 ## Import and export
 
@@ -71,6 +83,6 @@ Rows are matched to videos by `path`. If a path isn't found (the files moved, or
 
 ### Full backup
 
-**💾 Download full backup** (on the same page) downloads a zip with a fresh copy of the database (`library.db`: all your metadata, cast, movies, collections and settings) plus `quicktags.json` and `watch_history.json`. Your fields and their layout are in the database. Thumbnails, previews and clips aren't in it; lustr makes them again by itself. Logins (`users.json`) aren't in it either.
+**💾 Download full backup** (on the same page) downloads a zip with a fresh copy of the database (`library.db`: all your metadata, cast, movies, collections and settings), the movie covers and performer photos (`photos/`), plus `quicktags.json` and `watch_history.json`. Your fields and their layout are in the database. Thumbnails, previews and clips aren't in it; lustr makes them again by itself. Logins (`users.json`) aren't in it either.
 
-To restore it: stop lustr, unzip it into lustr's data folder (replacing `library.db` and the other files), and start lustr again. Each backup on the **Backups** page can also be downloaded on its own.
+To restore it: stop lustr, unzip it into lustr's data folder (replacing `library.db` and the other files), delete `library.db-wal` and `library.db-shm` if they're there, and start lustr again. Each backup on the **Backups** page can also be downloaded on its own.

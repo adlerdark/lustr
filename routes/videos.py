@@ -4,6 +4,7 @@
 Video listing and search routes.
 """
 
+import functools
 import os
 import re
 import urllib.parse
@@ -203,8 +204,12 @@ def _prepare_sort(conn, rows, field):
             r['_movie_sort'] = movies.sort_label(r)
 
 
+@functools.lru_cache(maxsize=200000)
 def _fold(text):
-    """Lowercase without accents, so 'Émilie' sorts with the E's (not after Z)."""
+    """Lowercase without accents, so 'Émilie' sorts with the E's (not after Z). Cached: the same
+    titles are sorted on every page load."""
+    if text.isascii():
+        return text.lower()
     import unicodedata
     t = unicodedata.normalize('NFKD', text.lower())
     return ''.join(ch for ch in t if not unicodedata.combining(ch))
@@ -232,6 +237,20 @@ def _sort_key(field):
 
 
 _LETTER_FIELDS = ('title', 'cast', 'filename')
+
+# Sorts done by SQLite (ORDER BY ... LIMIT): plain ASCII text, where LOWER() sorts like _fold
+_SQL_SORTS = {'date_created': 'fv.date_created', 'date_modified': 'fv.date_modified',
+              'date_added': 'v.date_added', 'date_last_edited': 'v.date_last_edited'}
+
+
+def _scalar_sort_column(db, field):
+    """'fv.title AS title'-style select item for a sort field that is one of get_file's plain columns, or None."""
+    for item in db.FILE_SCALAR_COLUMNS.split(','):
+        expr = item.strip()
+        name = expr.split(' AS ')[-1].split('.')[-1].strip()
+        if name == field and name not in ('path', 'video_id'):
+            return expr
+    return None
 
 
 def _letter_of(k):
@@ -781,7 +800,8 @@ def _build_or_groups_sql(field_filters, conditions, params, video_id_col='v.vide
 
 def _get_videos_sql_fast(
     query, sort_by, desc, library, tags, tags_exclude, sites, sites_exclude,
-    favorites_only, page, limit, hide_zero_length, length_filter, model, username, watch_history, seed=0, paths_only=False
+    favorites_only, page, limit, hide_zero_length, length_filter, model, username, watch_history, seed=0, paths_only=False,
+    parsed=None
 ):
     """
     SQL-optimized video list - uses same fast pattern as cast bio.
@@ -801,7 +821,8 @@ def _get_videos_sql_fast(
     required_sites = set(s.strip().lower() for s in sites.split(',') if s.strip()) if sites else set()
     excluded_sites_set = set(s.strip().lower() for s in sites_exclude.split(',') if s.strip()) if sites_exclude else set()
     
-    base_query, field_filters, library_filters = SearchParser.parse_query(query)
+    # parsed: what get_videos already worked out (a bare date is a date_added filter there)
+    base_query, field_filters, library_filters = parsed or SearchParser.parse_query(query)
     scene_kind = _pop_scene_filter(field_filters)
     cc_filter = _pop_captions_filter(field_filters)
     ch_filters = _pop_chapters_filter(field_filters)
@@ -822,10 +843,19 @@ def _get_videos_sql_fast(
     conditions.append("fv.is_preferred = 1")
     conditions.append("fv.deleted_at IS NULL")
     _add_display_condition(conditions, params, model)
+    if base_query:                                # words in the search box: the full-text index (search_index.py)
+        import search_index
+        text_sql, text_params = search_index.video_condition(base_query)
+        if text_sql:
+            conditions.append(text_sql)
+            params.extend(text_params)
     
     if favorites_only:
         conditions.append("v.favorite = 1")
     
+    if hide_zero_length not in ("hide", "show"):     # not given: the library's setting, else the default (as the slow path)
+        lib_setting = model.library_settings.get(library, {}).get('hide_zero_length')
+        hide_zero_length = lib_setting or HIDE_ZERO_LENGTH_DEFAULT
     if hide_zero_length == "hide":
         import library_stats
         conditions.append(library_stats.nonzero_length_sql('fv'))
@@ -976,47 +1006,61 @@ def _get_videos_sql_fast(
         params.append(req_site)
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
-    
-    # 1. The matching rows with the scalar fields get_file returns (enough to sort on);
-    #    a list field is only loaded when it is the sort column
     db = model.db
-    cursor.execute(f"""
-        SELECT DISTINCT {db.FILE_SCALAR_COLUMNS}
-        FROM file_versions fv
-        JOIN videos v ON fv.video_id = v.video_id
-        WHERE {where_clause}
-    """, params)
-    rows = [dict(r) for r in cursor.fetchall()]
     sort_field = _sort_field_of(sort_by)
-    if sort_field in db.FILE_LIST_FIELDS and rows:
-        vids = {r['video_id'] for r in rows}
-        values = db.list_values_by_video(sort_field, None if len(vids) > 5000 else vids)
-        for r in rows:
-            r[sort_field] = list(values.get(r['video_id'], []))
-    _prepare_sort(cursor.connection, rows, sort_field)
-    sort_key = _sort_key(sort_field)
-
-    # 2. Sort and page
-
     import library_stats
     special = library_stats.sort_field(sort_by)
-    if special:                                  # Recently Added / Most Played / Last Played / Random
-        library_stats.special_sort(cursor.connection, rows, special, username, seed, desc)
-    else:
-        rows.sort(key=lambda r: r['path'])       # ties keep a stable order (by path) across pages
-        rows.sort(key=sort_key, reverse=desc)
-    if paths_only:                               # "select all N": every matching video, no records
-        return {'paths': [{'path': r['path'], 'video_id': r.get('video_id')} for r in rows]}
-    letters = [] if special else _letter_index(rows, sort_field)
-    total = len(rows)
     start = (page - 1) * limit
-    page_rows = rows[start:start + limit]
 
-    # 3. Full records for this page only
+    if not special and not paths_only and sort_field in _SQL_SORTS:
+        # Date sorts: sorted and paged by SQLite, so only this page's rows come back (the cost no
+        # longer grows with the library). Same order as the Python sort below: empty values first
+        # (last when descending), then the value, ties by path.
+        col, d = _SQL_SORTS[sort_field], 'DESC' if desc else 'ASC'
+        frm = f"FROM file_versions fv JOIN videos v ON fv.video_id = v.video_id WHERE {where_clause}"
+        # (no DISTINCT needed: path is file_versions' key and each file joins one video)
+        total = cursor.execute(f"SELECT COUNT(*) {frm}", params).fetchone()[0]
+        page_rows = [{'path': r[0]} for r in cursor.execute(
+            f"SELECT fv.path, ({col} IS NOT NULL AND {col} != '') AS has, LOWER({col}) AS k {frm} "
+            f"ORDER BY has {d}, k {d}, fv.path LIMIT ? OFFSET ?", params + [limit, max(0, start)])]
+        letters = []
+    else:
+        # 1. The matching rows with just what sorting needs (the sort column; a list field is only
+        #    loaded when it is the sort column)
+        sort_col = _scalar_sort_column(db, sort_field)
+        cursor.execute(f"""
+            SELECT DISTINCT fv.path, v.video_id{', ' + sort_col if sort_col else ''}
+            FROM file_versions fv
+            JOIN videos v ON fv.video_id = v.video_id
+            WHERE {where_clause}
+        """, params)
+        rows = [dict(r) for r in cursor.fetchall()]
+        if sort_field in db.FILE_LIST_FIELDS and rows:
+            vids = {r['video_id'] for r in rows}
+            values = db.list_values_by_video(sort_field, None if len(vids) > 5000 else vids)
+            for r in rows:
+                r[sort_field] = list(values.get(r['video_id'], []))
+        _prepare_sort(cursor.connection, rows, sort_field)
+        sort_key = _sort_key(sort_field)
+
+        # 2. Sort and page
+        if special:                                  # Recently Added / Most Played / Last Played / Random
+            library_stats.special_sort(cursor.connection, rows, special, username, seed, desc)
+        else:
+            rows.sort(key=lambda r: r['path'])       # ties keep a stable order (by path) across pages
+            rows.sort(key=sort_key, reverse=desc)
+        if paths_only:                               # "select all N": every matching video, no records
+            return {'paths': [{'path': r['path'], 'video_id': r.get('video_id')} for r in rows]}
+        letters = [] if special else _letter_index(rows, sort_field)
+        total = len(rows)
+        page_rows = rows[start:start + limit]
+
+    # 3. Full records for this page only (in one go: a few queries for the page, not ~19 per video)
     paginated_items = []
+    records = db.get_files_bulk([row['path'] for row in page_rows]) if page_rows else {}
     for row in page_rows:
         path = row['path']
-        file_data = db.get_file(path)
+        file_data = records.get(path)
         if not file_data:
             continue
         
@@ -1098,6 +1142,20 @@ def list_corrupt(request: Request, model = Depends(get_model)):
     import corrupt
     return {'items': corrupt.listing(model.db.get_connection()), 'tag': corrupt.TAG}
 
+def _search_index_ready(model):
+    """Bring the full-text index up to date for a search -> False while it isn't built yet (first start),
+    so the search falls back to reading every record."""
+    import search_index
+    try:
+        if not search_index.is_ready(model.db):
+            return False
+        search_index.refresh(model.db)
+        return True
+    except Exception as e:
+        print(f"search index unavailable, using the slow search: {e}")
+        return False
+
+
 @router.get("/videos")
 def get_videos(
     request: Request,
@@ -1144,11 +1202,11 @@ def get_videos(
             field_filters['date_added'] = [date_only.group(1)]
             base_query = ''  # consumed — don't also do text search
 
-    if USE_SQLITE and not folder_mode and not base_query:
+    if USE_SQLITE and not folder_mode and (not base_query or _search_index_ready(model)):
         return _get_videos_sql_fast(
             query, sort_by, desc, library, tags, tags_exclude, sites, sites_exclude,
             favorites_only, page, limit, hide_zero_length, length_filter, model, username, watch_history, seed=seed,
-            paths_only=paths_only
+            paths_only=paths_only, parsed=(base_query, field_filters, library_filters)
         )
     
     # ===== LEGACY PYTHON PATH =====
@@ -1627,6 +1685,18 @@ def _get_available_filters_uncached(
     _add_library_condition(base_conditions, base_params, model, library, library_filters)
     base_conditions.append("fv.deleted_at IS NULL")
     _add_display_condition(base_conditions, base_params, model)
+    if base_query and USE_SQLITE and _search_index_ready(model):
+        # the sidebar counts the videos the search box finds (a bare date is a Date Added filter, as in get_videos)
+        if re.match(r'^\d{4}(?:-\d{2}(?:-\d{2})?)?$', base_query.strip()) and not field_filters.get('date_added'):
+            base_conditions.append("v.date_added LIKE ?")
+            base_params.append(base_query.strip() + '%')
+        else:
+            import search_index
+            text_sql, text_params = search_index.video_condition(base_query)
+            if text_sql:
+                base_conditions.append("fv.is_preferred = 1")
+                base_conditions.append(text_sql)
+                base_params.extend(text_params)
     
     if favorites_only:
         base_conditions.append("v.favorite = 1")

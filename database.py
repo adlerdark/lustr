@@ -13,6 +13,9 @@ import json
 import threading
 from datetime import datetime, timedelta
 from config import DATA_FILE, LIST_FIELDS
+import logging as _logging
+_log = _logging.getLogger('lustr.database')
+import photo_store
 
 GENDERS = ('female', 'male', 'trans_female', 'trans_male')
 
@@ -54,6 +57,33 @@ def stars(value):
     v = min(5.0, max(0.0, v))
     return '' if v <= 0 else ('%g' % v)
 
+def tune_connection(conn):
+    """Per-connection settings: foreign keys, a bigger page cache and memory-mapped reads.
+    synchronous=NORMAL is safe with WAL (a power cut can lose the last commit, never corrupt)."""
+    for pragma in ('foreign_keys = ON', 'synchronous = NORMAL', 'cache_size = -32000',
+                   'mmap_size = 268435456', 'temp_store = MEMORY'):
+        try:
+            conn.execute('PRAGMA ' + pragma)
+        except sqlite3.DatabaseError:
+            pass
+    return conn
+
+
+def enable_wal(conn):
+    """Write-ahead logging: readers no longer wait for a writer (scans, bulk links and captions
+    can write while you browse). The setting is stored in the file, so this only changes it once.
+    -> the journal mode now in use."""
+    try:
+        mode = conn.execute('PRAGMA journal_mode').fetchone()[0]
+        if str(mode).lower() != 'wal':
+            mode = conn.execute('PRAGMA journal_mode = WAL').fetchone()[0]
+            print(f"Database journal mode: {mode}")
+        return str(mode).lower()
+    except sqlite3.DatabaseError as e:
+        print(f"Could not turn on WAL (keeping the current journal mode): {e}")
+        return None
+
+
 class Database:
     def __init__(self, db_path=None):
         if db_path is None:
@@ -72,8 +102,7 @@ class Database:
         if not hasattr(self._local, 'connection') or self._local.connection is None:
             self._local.connection = sqlite3.connect(self.db_path, timeout=30.0)
             self._local.connection.row_factory = sqlite3.Row
-            # Enable foreign keys
-            self._local.connection.execute('PRAGMA foreign_keys = ON')
+            tune_connection(self._local.connection)
         return self._local.connection
     
     def safe_commit(self, conn, max_retries=5):
@@ -100,6 +129,7 @@ class Database:
         
         with self._init_lock:
             conn = self.get_connection()
+            enable_wal(conn)
             cursor = conn.cursor()
             
             # ============================================
@@ -1328,7 +1358,7 @@ class Database:
                     count += 1
                     
                     if count % 100 == 0:
-                        print(f"Imported {count} videos...", flush=True)
+                        _log.debug(f"Imported {count} videos...")
                         conn.commit()
                 
                 conn.commit()
@@ -1397,7 +1427,7 @@ class Database:
                 if existing:
                     # Found exact path match - update it
                     target_path = export_path
-                    print(f"✓ Exact match: {filename}", flush=True)
+                    _log.debug(f"✓ Exact match: {filename}")
                 else:
                     # Strategy 2: Try to find by filename
                     cursor.execute('SELECT path FROM file_versions WHERE deleted_at IS NULL AND path LIKE ?', (f'%/{filename}',))
@@ -1406,7 +1436,7 @@ class Database:
                     if len(matches) == 1:
                         # Found exactly one file with this filename - use it
                         target_path = matches[0][0]
-                        print(f"✓ Filename match: {filename} → {target_path}", flush=True)
+                        _log.debug(f"✓ Filename match: {filename} → {target_path}")
                     elif len(matches) > 1:
                         # Multiple files with same filename - skip (ambiguous)
                         print(f"✗ Skipping {filename}: {len(matches)} files with same name found", flush=True)
@@ -1609,7 +1639,7 @@ class Database:
                 INSERT OR REPLACE INTO cast_photos 
                 (cast_name, photo_data, photo_mime_type, thumbnail_data, source_type, source_url, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (cast_name, photo_data, mime_type, thumbnail_data, source_type, source_url))
+            ''', (cast_name, photo_store.put(photo_data, mime_type), mime_type, thumbnail_data, source_type, source_url))
             conn.commit()
             return True
         except Exception as e:
@@ -1625,11 +1655,12 @@ class Database:
             SELECT {field}, photo_mime_type, original_data IS NOT NULL FROM cast_photos WHERE cast_name = ?
         ''', (cast_name,))
         row = cursor.fetchone()
-        if row and row[0]:
+        data = (row[0] if thumbnail else photo_store.read(row[0])) if row else None    # the photo is a file (photo_store.py)
+        if data:
             mime = row[1]
             if original and row[2]:
-                mime = _image_mime(row[0]) or mime
-            return {'data': row[0], 'mime_type': mime, 'cropped': bool(row[2])}
+                mime = _image_mime(data) or mime
+            return {'data': data, 'mime_type': mime, 'cropped': bool(row[2])}
         return None
 
     def crop_cast_photo(self, cast_name, box=None, reset=False):
@@ -1640,9 +1671,10 @@ class Database:
         conn = self.get_connection()
         row = conn.execute('SELECT photo_data, original_data, photo_mime_type, source_type, source_url FROM cast_photos '
                            'WHERE cast_name = ?', (cast_name,)).fetchone()
-        if not row or not row[0]:
+        current = photo_store.read(row[0]) if row else None
+        if not current:
             raise ValueError('No photo to crop')
-        original = row[1] or row[0]
+        original = photo_store.read(row[1]) or current
         if reset:
             photo, keep_original, mime = original, None, _image_mime(original) or row[2]
         else:
@@ -1662,7 +1694,7 @@ class Database:
             photo, keep_original, mime = out.getvalue(), original, 'image/jpeg'
         if not self.save_cast_photo(cast_name, photo, mime, row[3] or 'upload', row[4]):
             raise ValueError('Could not save the photo')
-        conn.execute('UPDATE cast_photos SET original_data = ? WHERE cast_name = ?', (keep_original, cast_name))
+        conn.execute('UPDATE cast_photos SET original_data = ? WHERE cast_name = ?', (photo_store.put(keep_original), cast_name))
         conn.commit()
         return {'cropped': keep_original is not None}
 
@@ -1786,7 +1818,7 @@ class Database:
             # Debug: show bitrates
             for v in h264_versions:
                 br = get_bitrate_value(v.get('total_bitrate'))
-                print(f"  h264 version: {v.get('filename')} - bitrate: {v.get('total_bitrate')} -> {br}")
+                _log.debug(f"  h264 version: {v.get('filename')} - bitrate: {v.get('total_bitrate')} -> {br}")
             
             h264_versions.sort(key=lambda x: get_bitrate_value(x.get('total_bitrate')), reverse=True)
             return h264_versions[0]
@@ -1849,9 +1881,9 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        print(f"=== SET_PREFERRED_VERSION ===")
-        print(f"video_id: {video_id}")
-        print(f"path: {path}")
+        _log.debug(f"=== SET_PREFERRED_VERSION ===")
+        _log.debug(f"video_id: {video_id}")
+        _log.debug(f"path: {path}")
         
         # Clear all preferred flags for this video
         cursor.execute('''
@@ -1868,7 +1900,7 @@ class Database:
         ''', (video_id, path))
         
         rows_affected = cursor.rowcount
-        print(f"Rows updated: {rows_affected}")
+        _log.debug(f"Rows updated: {rows_affected}")
         # the video is labelled with its primary file's library (it is listed under all of them)
         cursor.execute('UPDATE videos SET library = (SELECT library FROM file_versions WHERE path = ?) '
                        'WHERE video_id = ? AND (SELECT library FROM file_versions WHERE path = ?) IS NOT NULL',
@@ -1879,29 +1911,29 @@ class Database:
         # Verify it was set
         cursor.execute('SELECT path, is_preferred FROM file_versions WHERE video_id = ?', (video_id,))
         for row in cursor.fetchall():
-            print(f"  {row['path']}: is_preferred={row['is_preferred']}")
+            _log.debug(f"  {row['path']}: is_preferred={row['is_preferred']}")
         
-        print(f"=== END SET_PREFERRED_VERSION ===")
+        _log.debug(f"=== END SET_PREFERRED_VERSION ===")
         return True
 
     def auto_set_preferred(self, video_id):
         """Automatically set preferred version based on codec and bitrate."""
-        print(f"=== AUTO_SET_PREFERRED called for {video_id} ===")
+        _log.debug(f"=== AUTO_SET_PREFERRED called for {video_id} ===")
         versions = self.get_file_versions(video_id)
         if not versions:
-            print("  No versions found!")
+            _log.debug("  No versions found!")
             return False
         
-        print(f"  Found {len(versions)} versions")
+        _log.debug(f"  Found {len(versions)} versions")
         parts = sorted((v for v in versions if v.get('part') is not None), key=lambda v: v['part'])
         preferred = parts[0] if parts else self._select_preferred_version(versions)   # multi-part: part 1 leads
         if preferred:
-            print(f"  Selected: {preferred['path']}")
-            print(f"  Bitrate: {preferred.get('total_bitrate')}")
+            _log.debug(f"  Selected: {preferred['path']}")
+            _log.debug(f"  Bitrate: {preferred.get('total_bitrate')}")
             self.set_preferred_version(video_id, preferred['path'])
             return True
         
-        print("  Could not select preferred version")
+        _log.debug("  Could not select preferred version")
         return False
     
     def _parse_length_to_seconds(self, length_str):

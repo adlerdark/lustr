@@ -168,15 +168,18 @@ TPDB_API_KEY=...
 | `LUSTR_DRI_DEVICE` | `/dev/dri/renderD128` | GPU render device for VAAPI |
 | `LIBVA_DRIVER_NAME` | auto | Force a VA driver (`iHD` for Intel, `radeonsi` for AMD) |
 | `LUSTR_UPDATE_REPO` | `adlerdark/lustr` | GitHub repo the update check compares with (owner/name) |
+| `LUSTR_LOG_LEVEL` | `INFO` | `DEBUG` for detailed logs, `WARNING` for problems only (the setting in Settings → Maintenance wins) |
 
 ## Your data and backups
 
 The data folder holds:
 
 - `library.db` - the database (libraries, metadata, collections, playlists, settings,
-  login sessions)
+  login sessions), with `library.db-wal` / `library.db-shm` next to it while lustr runs
 - `users.json`, `watch_history.json`, `quicktags.json`, `metadata_schema.json`
+- `photos/` - movie covers and performer photos (back these up with the database)
 - `cache/` - thumbnails and seek-bar previews (can be regenerated)
+- `logs/` - lustr's log (`lustr.log`, kept to 25 MB) and the transcoder's (`ffmpeg.log`)
 - `backups/` - automatic database copies (one per start, plus the ones made by
   **Settings → Tools → DB Maintenance**)
 

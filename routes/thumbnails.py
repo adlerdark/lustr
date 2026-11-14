@@ -33,6 +33,8 @@ from typing import List
 from helpers import get_file_data
 from media_handler import MediaHandler, COVER, COVER_JSON, FRAMES_JSON
 from config import USE_SQLITE, CACHE_DIR, THUMBNAIL_FRAMES
+import logging as _logging
+_log = _logging.getLogger('lustr.thumbnails')
 
 router = APIRouter(prefix="/api", tags=["thumbnails"])
 
@@ -146,15 +148,15 @@ def _generate_thumbnail_background(jobs):
     """
     for (source_path, force, video_id, cache_id) in jobs:
         try:
-            print(f"[thumb-bg] Generating: {os.path.basename(source_path)} (force={force}, cache_id={cache_id})")
+            _log.debug(f"[thumb-bg] Generating: {os.path.basename(source_path)} (force={force}, cache_id={cache_id})")
             result = MediaHandler.generate_thumbnails(
                 source_path, force=force, video_id=video_id, cache_id=cache_id
             )
 
             if result and len(result) > 0:
-                print(f"[thumb-bg] Done: {os.path.basename(source_path)} - {len(result)} thumbnails")
+                _log.debug(f"[thumb-bg] Done: {os.path.basename(source_path)} - {len(result)} thumbnails")
             else:
-                print(f"[thumb-bg] No thumbnails generated for: {os.path.basename(source_path)}")
+                _log.debug(f"[thumb-bg] No thumbnails generated for: {os.path.basename(source_path)}")
         except Exception as e:
             print(f"[thumb-bg] Error for {source_path}: {e}")
 
@@ -196,7 +198,7 @@ def generate_thumbnails(req: GenThumbsRequest, model = Depends(get_model)):
                         primary = versions[0]
                     thumbnail_source_path = primary['path']
                     cache_id = primary['cache_id']
-                    print(f"[thumb] Multi-file video {video_id}, using: {thumbnail_source_path}")
+                    _log.debug(f"[thumb] Multi-file video {video_id}, using: {thumbnail_source_path}")
 
         if os.path.exists(thumbnail_source_path):
             jobs.append((thumbnail_source_path, req.force, video_id, cache_id))
@@ -212,7 +214,7 @@ def generate_thumbnails(req: GenThumbsRequest, model = Depends(get_model)):
             name=f"thumb-gen-{int(time.time())}"
         )
         t.start()
-        print(f"[thumb] Queued {len(jobs)} job(s) in background thread")
+        _log.debug(f"[thumb] Queued {len(jobs)} job(s) in background thread")
 
     # Return immediately - don't wait for FFmpeg
     return {"generated": len(jobs), "queued": True}
@@ -481,7 +483,7 @@ async def regenerate_cache(request: Request, model = Depends(get_model)):
         # cache_id of its own). This file's captions move to the new folder first.
         if old_cache_dir != new_cache_dir and os.path.exists(old_cache_dir):
             if _cache_key_in_use(model, old_cache_key, primary_path):
-                print(f"[thumb] Kept {old_cache_key}: another file still uses it")
+                _log.debug(f"[thumb] Kept {old_cache_key}: another file still uses it")
             else:
                 _move_captions(old_cache_dir, new_cache_dir)
                 shutil.rmtree(old_cache_dir, ignore_errors=True)

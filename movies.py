@@ -18,6 +18,7 @@ are dropped by prune().
 No FastAPI imports.
 """
 import json
+import logging
 import re
 import unicodedata
 from collections import Counter
@@ -96,6 +97,8 @@ def ensure_schema(conn):
         outcome TEXT NOT NULL,                     -- linked | review | not_found | error
         detail TEXT, candidates_json TEXT, run_id TEXT,
         checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    if 'context_json' not in {r[1] for r in conn.execute('PRAGMA table_info(movie_ext_check)')}:
+        conn.execute('ALTER TABLE movie_ext_check ADD COLUMN context_json TEXT')
     conn.commit()
     _schema_ready.add(id(conn))
 
@@ -705,23 +708,27 @@ def set_cover_from_url(conn, mid, url, back=False):
 
 
 def set_cover(conn, mid, data, mime, source='user'):
+    import photo_store                                  # the picture is a file; the column keeps its reference
     ensure_schema(conn)
     conn.execute('UPDATE movies SET cover = ?, cover_mime = ?, cover_source = ?, cover_video_id = NULL, '
-                 'updated_at = CURRENT_TIMESTAMP WHERE id = ?', (data, mime, source if data else None, mid))
+                 'updated_at = CURRENT_TIMESTAMP WHERE id = ?', (photo_store.put(data, mime), mime, source if data else None, mid))
     conn.commit()
 
 
 def set_back_cover(conn, mid, data, mime, source='user'):
     ensure_schema(conn)
+    import photo_store
     conn.execute('UPDATE movies SET back_cover = ?, back_cover_mime = ?, back_cover_source = ?, updated_at = CURRENT_TIMESTAMP '
-                 'WHERE id = ?', (data, mime if data else None, source if data else None, mid))
+                 'WHERE id = ?', (photo_store.put(data, mime), mime if data else None, source if data else None, mid))
     conn.commit()
 
 
 def cover(conn, mid, back=False):
     ensure_schema(conn)
+    import photo_store
     r = conn.execute(f"SELECT {'back_cover, back_cover_mime' if back else 'cover, cover_mime'} FROM movies WHERE id = ?", (mid,)).fetchone()
-    return (r[0], r[1] or 'image/jpeg') if r and r[0] else None
+    data = photo_store.read(r[0]) if r else None
+    return (data, r[1] or 'image/jpeg') if data else None
 
 
 # ---------------------------------------------------------------------------
@@ -1287,19 +1294,24 @@ def tpdb_search_with_cast(conn, mid, title, ctx=None, per_page=10):
     return found
 
 
-def _duplicate_records(top, cands):
-    """The candidates (with details) that are the same movie as top: same title (already), same year,
-    and the same performers - or, when neither lists performers, the same release date."""
+def _same_movie(a, b):
+    """Two ThePornDB records of one name (with details) that are the same movie listed twice: mostly the
+    same performers (at least 60% shared) and the same studio, or the same year, or exactly the same
+    performers (a re-release under its distributor's name, dated years later). Without performer lists:
+    the same release date."""
     import ext_db
     perf = lambda c: {ext_db.norm_name(n) for n in (c.get('details') or {}).get('performers') or []} - {''}
-    out = []
-    for c in cands:
-        if not c.get('details') or (top.get('date') or '')[:4] != (c.get('date') or '')[:4]:
-            continue
-        p1, p2 = perf(top), perf(c)
-        if (p1 and p1 == p2) or (not p1 and not p2 and (top.get('date') or '') == (c.get('date') or '')):
-            out.append(c)
-    return out
+    p1, p2 = perf(a), perf(b)
+    if p1 and p2:
+        s1, s2 = ext_db.norm_name(a.get('studio')), ext_db.norm_name(b.get('studio'))
+        same_year = (a.get('date') or '')[:4] == (b.get('date') or '')[:4] != ''
+        return len(p1 & p2) / len(p1 | p2) >= 0.6 and (not s1 or not s2 or s1 == s2 or same_year or p1 == p2)
+    return not p1 and not p2 and (a.get('date') or '') == (b.get('date') or '') != ''
+
+
+def _duplicate_records(top, cands):
+    """The candidates (with details) that are the same movie as top (same title already checked)."""
+    return [c for c in cands if c.get('details') and (c is top or _same_movie(top, c))]
 
 
 def _record_fullness(c):
@@ -1316,6 +1328,8 @@ def bulk_one(conn, mid, add_tags=True):
     """Check one movie on ThePornDB -> (outcome, detail, candidates). Links it when the match is sure."""
     import ext_db
     ctx = _movie_context(conn, mid)
+    _check_context[mid] = {'year': ctx['year'], 'studios': sorted(ctx['studios']), 'cast': len(ctx['cast']),
+                           'top_scene': ctx['top_scene']}      # what was known before linking fills in more (_log_check)
     found = tpdb_search_with_cast(conn, mid, ctx['title'], ctx)
     scored = []
     for c in found:
@@ -1346,9 +1360,10 @@ def bulk_one(conn, mid, add_tags=True):
             top = win
             picked_note = (f" · picked the one with {win['details']['scenes']} scenes, {win['details']['matched']} matching yours")
         elif not win:
-            # the same movie listed more than once (same title, year and cast): take the best-filled record
+            # the same movie listed more than once (same title and cast): take the best-filled record -
+            # only when every record with this title is a copy (a different movie among them: you choose)
             dupes = _duplicate_records(top, same[:3])
-            if len(dupes) > 1:
+            if len(same) <= 3 and len(dupes) == len(same) > 1:
                 win = max(dupes, key=_record_fullness)
                 if win['details']['matched'] or agrees(win):
                     top = win
@@ -1377,10 +1392,17 @@ def bulk_one(conn, mid, add_tags=True):
     return 'review', f"{top['title']} ({top['score']}) - {'; '.join(why)}", top5
 
 
+# movie id -> what bulk_one knew about the movie when it checked it (year, studios, ...), saved with the
+# check so the matching rules can later be tuned on your choices without linking's own fill-ins in the way
+_check_context = {}
+
+
 def _log_check(conn, mid, outcome, detail, cands, run_id=None):
-    conn.execute('INSERT OR REPLACE INTO movie_ext_check (movie_id, outcome, detail, candidates_json, run_id, checked_at) '
-                 'VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
-                 (mid, outcome, detail, json.dumps(cands or [], ensure_ascii=False), run_id))
+    ctx = _check_context.pop(mid, None)
+    conn.execute('INSERT OR REPLACE INTO movie_ext_check (movie_id, outcome, detail, candidates_json, run_id, checked_at, context_json) '
+                 'VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)',
+                 (mid, outcome, detail, json.dumps(cands or [], ensure_ascii=False), run_id,
+                  json.dumps(ctx, ensure_ascii=False) if ctx else None))
     conn.commit()
 
 
@@ -1515,7 +1537,7 @@ def _bulk_worker(model, targets, add_tags, delay):
     finally:
         ext_db._pace_interval = 0.0
         st.update(running=False, current=None, note='', finished_at=time.time())
-        print(f"[movies] bulk link {st['run_id']} finished: {st['done']}/{st['total']} {st['counts']}")
+        logging.getLogger('lustr.movies').info(f"[movies] bulk link {st['run_id']} finished: {st['done']}/{st['total']} {st['counts']}")
 
 
 def _tpdb_tag_info(conn, raw, vocab):

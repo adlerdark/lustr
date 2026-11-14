@@ -9,6 +9,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any, List, Dict, Optional
 from helpers import check_auth
+import logging as _logging
+_log = _logging.getLogger('lustr.ui')
 
 # Two routers: one for root paths, one for /api paths
 router = APIRouter(tags=["ui"])  # No prefix for root routes
@@ -358,7 +360,7 @@ def save_config_key(request: Request, data: dict, model = Depends(get_model)):
             VALUES (?, ?, CURRENT_TIMESTAMP)
         ''', (key, value))
         conn.commit()
-        print(f"✓ Saved config key '{key}' to database ({len(value)} chars)")
+        _log.debug(f"✓ Saved config key '{key}' to database ({len(value)} chars)")
         return {"success": True}
     except Exception as e:
         print(f"✗ Error saving config key {key}: {e}")

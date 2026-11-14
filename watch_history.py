@@ -6,6 +6,8 @@ import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from config import USE_SQLITE, DATABASE_FILE
+import logging as _logging
+_log = _logging.getLogger('lustr.watch_history')
 
 if USE_SQLITE:
     from database import Database
@@ -31,7 +33,7 @@ class WatchHistory:
         
         if self.use_sqlite:
             self.db = Database(DATABASE_FILE)
-            print(f"✓ Watch history using SQLite: {DATABASE_FILE}")
+            _log.debug(f"✓ Watch history using SQLite: {DATABASE_FILE}")
         else:
             self.load()
     
@@ -87,7 +89,7 @@ class WatchHistory:
         # Log progress saves (use info level so it shows up)
         filename = os.path.basename(path)
         progress_pct = (current_time / duration * 100) if duration > 0 else 0
-        log_info(f"Progress: {username} - {filename} - {current_time:.1f}s/{duration:.1f}s ({progress_pct:.0f}%) {'✓ COMPLETED' if completed else ''}")
+        log_debug(f"Progress: {username} - {filename} - {current_time:.1f}s/{duration:.1f}s ({progress_pct:.0f}%) {'✓ COMPLETED' if completed else ''}")
         
         if self.use_sqlite:
             self.db.save_watch_progress(username, path, current_time, duration, completed)

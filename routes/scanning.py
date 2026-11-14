@@ -79,6 +79,9 @@ def _scan_library(req, model):
             print(f"[play history] relink failed: {e}")
     
     model.save()
+    if USE_SQLITE:                                 # search index: catch up now rather than on the next search
+        import search_index
+        search_index.warm_up(model.db)
     
     # Chapters in the new files -> markers (background)
     if USE_SQLITE and new:

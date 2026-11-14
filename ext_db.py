@@ -23,6 +23,7 @@ API keys come from environment variables (see compose.yml / .env):
 import io
 import json
 import os
+import logging
 import re
 import threading
 import time
@@ -1612,7 +1613,7 @@ def _bulk_worker(names, source, delay):
         st['current'] = None
         st['note'] = ''
         st['finished_at'] = time.time()
-        print(f"ext_db bulk run {run_id} finished: {st['done']}/{st['total']} {st['counts']}")
+        logging.getLogger('lustr.ext_db').info(f"ext_db bulk run {run_id} finished: {st['done']}/{st['total']} {st['counts']}")
 
 
 def _bulk_status():
@@ -3542,67 +3543,80 @@ def find_scene_candidates(conn, source, clues, query=None, which='both'):
                 notes.append(f'ThePornDB: {e}')
         notes.append(f'search: {q}')
     elif use_stash or tpdb_on:
-        studios = [st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') != 'network']
-        networks = [st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') == 'network']
-        linked = [c['ext_id'] for c in clues['cast'] if c['ext_id']]
-        if not use_stash:
-            studios, networks, linked = [], [], []
-        if use_stash and clues['date']:
-            if studios:
-                add(scenes_query(source, {'studios': {'value': studios, 'modifier': 'INCLUDES'},
-                                          'date': {'value': clues['date'], 'modifier': 'EQUALS'}}), 'studio + date')
-                notes.append('studio + date')
-            for nid in networks[:3]:
-                add(scenes_query(source, {'parentStudio': nid, 'date': {'value': clues['date'], 'modifier': 'EQUALS'}}), 'network + date')
-                notes.append('network + date')
-            if linked and not studios and not networks:
-                add(scenes_query(source, {'performers': {'value': linked[:3], 'modifier': 'INCLUDES'},
-                                          'date': {'value': clues['date'], 'modifier': 'EQUALS'}}), 'performer + date')
-                notes.append('performer + date')
-        names = [c['name'] for c in clues['cast'][:2]]
-        studio_word = next((st['ext_name'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') != 'network'), None) \
-            or next((st['ext_name'] for s_ in clues['sites'] for st in s_['studios']), None) \
-            or next((s_['value'].replace('.', ' ').replace('_', ' ') for s_ in clues['sites'] if s_.get('status') != 'not_on_db'), None)
-        searches = []
-        if clues['title']:
-            searches.append(' '.join(names + [clues['title']]))
-            if names and studio_word:
-                searches.append(' '.join(names + [studio_word]))       # so a noisy title can't bury the scene
-        else:
-            searches.append(' '.join(names + ([studio_word] if studio_word else []) + ([clues['date']] if clues['date'] else [])))
-        for words in searches:
-            if use_stash and words.strip():
-                add(scenes_search(source, words), 'word search')
-                notes.append(f'word search: {words}')
-        for pid in linked[:2]:
+        # the file's fingerprint first: StashDB users' files with the same OSHash (fingerprints.py)
+        fp_scenes = []
+        if use_stash and clues.get('path'):
             try:
-                cat, cached = performer_catalog(conn, source, pid)
-                name = next((c['name'] for c in clues['cast'] if c['ext_id'] == pid), pid)
-                notes.append(f"{name}'s {len(cat)} scenes" + (' (cached)' if cached else ''))
-                scored = sorted(cat, key=lambda sc: -score_scene(sc, clues)[0])[:15]
-                add(scored, "performer's scenes")
+                import fingerprints
+                _hash, fp_scenes = fingerprints.scenes_for(conn, source, clues['path'])
+                if fp_scenes:
+                    add(fp_scenes, 'file fingerprint')
+                    notes.append(f"file fingerprint: {len(fp_scenes)} scene{'' if len(fp_scenes) == 1 else 's'}")
             except ExtDBError as e:
-                notes.append(f'performer scenes unavailable: {e}')
-        if tpdb_on:
-            try:
-                # movie search: for "Movie Name Scene N" files, always when ThePornDB is chosen,
-                # and as a fallback when StashDB found nothing convincing
-                best_so_far = max([score_scene(sc_, clues)[0] for sc_, _ in found.values()] or [0])
-                movie_text = clues.get('movie_title') or (clues['title'] if (which == 'tpdb' or best_so_far < 50) else None)
-                if movie_text:
-                    movies = tpdb_search('movie', movie_text)
-                    notes.append(f"ThePornDB movies: {movie_text}" + (f" (scene {clues['scene_number']})" if clues.get('scene_number') else ''))
-                    for mv in sorted(movies, key=lambda x: -score_scene(x, clues)[0])[:2]:   # open the best two
-                        try:
-                            full = _tpdb_compact(tpdb_find('movie', mv['id']), 'movie')
-                            mv.update(scenes=full['scenes'], performers=full['performers'] or mv['performers'])
-                        except ExtDBError:
-                            pass
-                    add(movies, 'ThePornDB movie search')
-                add(tpdb_search('scene', clues.get('stem') or clues['title']), 'ThePornDB scene search')
-                notes.append('ThePornDB scene search')
-            except ExtDBError as e:
-                notes.append(f'ThePornDB: {e}')
+                notes.append(f'fingerprint lookup unavailable: {e}')
+        if not (len(fp_scenes) == 1 and fp_scenes[0].get('fingerprint', {}).get('submissions', 0)
+                > fp_scenes[0].get('fingerprint', {}).get('reports', 0)):     # one trusted match: no need to search
+            studios = [st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') != 'network']
+            networks = [st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') == 'network']
+            linked = [c['ext_id'] for c in clues['cast'] if c['ext_id']]
+            if not use_stash:
+                studios, networks, linked = [], [], []
+            if use_stash and clues['date']:
+                if studios:
+                    add(scenes_query(source, {'studios': {'value': studios, 'modifier': 'INCLUDES'},
+                                              'date': {'value': clues['date'], 'modifier': 'EQUALS'}}), 'studio + date')
+                    notes.append('studio + date')
+                for nid in networks[:3]:
+                    add(scenes_query(source, {'parentStudio': nid, 'date': {'value': clues['date'], 'modifier': 'EQUALS'}}), 'network + date')
+                    notes.append('network + date')
+                if linked and not studios and not networks:
+                    add(scenes_query(source, {'performers': {'value': linked[:3], 'modifier': 'INCLUDES'},
+                                              'date': {'value': clues['date'], 'modifier': 'EQUALS'}}), 'performer + date')
+                    notes.append('performer + date')
+            names = [c['name'] for c in clues['cast'][:2]]
+            studio_word = next((st['ext_name'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') != 'network'), None) \
+                or next((st['ext_name'] for s_ in clues['sites'] for st in s_['studios']), None) \
+                or next((s_['value'].replace('.', ' ').replace('_', ' ') for s_ in clues['sites'] if s_.get('status') != 'not_on_db'), None)
+            searches = []
+            if clues['title']:
+                searches.append(' '.join(names + [clues['title']]))
+                if names and studio_word:
+                    searches.append(' '.join(names + [studio_word]))       # so a noisy title can't bury the scene
+            else:
+                searches.append(' '.join(names + ([studio_word] if studio_word else []) + ([clues['date']] if clues['date'] else [])))
+            for words in searches:
+                if use_stash and words.strip():
+                    add(scenes_search(source, words), 'word search')
+                    notes.append(f'word search: {words}')
+            for pid in linked[:2]:
+                try:
+                    cat, cached = performer_catalog(conn, source, pid)
+                    name = next((c['name'] for c in clues['cast'] if c['ext_id'] == pid), pid)
+                    notes.append(f"{name}'s {len(cat)} scenes" + (' (cached)' if cached else ''))
+                    scored = sorted(cat, key=lambda sc: -score_scene(sc, clues)[0])[:15]
+                    add(scored, "performer's scenes")
+                except ExtDBError as e:
+                    notes.append(f'performer scenes unavailable: {e}')
+            if tpdb_on:
+                try:
+                    # movie search: for "Movie Name Scene N" files, always when ThePornDB is chosen,
+                    # and as a fallback when StashDB found nothing convincing
+                    best_so_far = max([score_scene(sc_, clues)[0] for sc_, _ in found.values()] or [0])
+                    movie_text = clues.get('movie_title') or (clues['title'] if (which == 'tpdb' or best_so_far < 50) else None)
+                    if movie_text:
+                        movies = tpdb_search('movie', movie_text)
+                        notes.append(f"ThePornDB movies: {movie_text}" + (f" (scene {clues['scene_number']})" if clues.get('scene_number') else ''))
+                        for mv in sorted(movies, key=lambda x: -score_scene(x, clues)[0])[:2]:   # open the best two
+                            try:
+                                full = _tpdb_compact(tpdb_find('movie', mv['id']), 'movie')
+                                mv.update(scenes=full['scenes'], performers=full['performers'] or mv['performers'])
+                            except ExtDBError:
+                                pass
+                        add(movies, 'ThePornDB movie search')
+                    add(tpdb_search('scene', clues.get('stem') or clues['title']), 'ThePornDB scene search')
+                    notes.append('ThePornDB scene search')
+                except ExtDBError as e:
+                    notes.append(f'ThePornDB: {e}')
     cur_row = conn.execute('SELECT ext_source, ext_id FROM video_ext_link WHERE video_id = ?', (clues['video_id'],)).fetchone()
     out = []
     for sc, hows in found.values():
@@ -3610,6 +3624,13 @@ def find_scene_candidates(conn, source, clues, query=None, which='both'):
         sc.setdefault('source', src)
         sc.setdefault('kind', 'scene')
         score, reasons = score_scene(sc, clues)
+        if 'file fingerprint' in hows:              # the same file as StashDB users': near certain
+            import fingerprints
+            fp = sc.get('fingerprint') or {}
+            n = fp.get('submissions', 0)
+            score = min(100, max(score + 50, 90)) if fingerprints.trusted(sc) else min(100, score + 25)
+            reasons = [f"same file (fingerprint, {n} submission{'' if n == 1 else 's'}"
+                       + (f", {fp['reports']} reported wrong" if fp.get('reports') else '') + ')'] + reasons
         extra = {}
         if sc['kind'] == 'movie':
             n, picked = _movie_scene_pick(sc, clues)
@@ -4704,6 +4725,9 @@ def _scene_cache(video_id, results):
 def _strong_signals(sc, clues):
     """The independent pieces of evidence that agree between a candidate and your video."""
     sig = set()
+    fp = sc.get('fingerprint') or {}
+    if fp and (fp.get('submissions') or 0) > (fp.get('reports') or 0):
+        sig.add('fingerprint')
     if sc.get('kind') != 'movie' and clues['duration'] and sc.get('duration') and abs(sc['duration'] - clues['duration']) <= 5:
         sig.add('same length')
     if sc.get('source') == 'tpdb':
@@ -4832,7 +4856,7 @@ def _bulk_scene_one(conn, video_id, path, which, apply_safe):
         why.append(f'score below {SCENE_AUTO_MIN_SCORE}')
     if lead < SCENE_AUTO_MIN_LEAD:
         why.append(f'only {lead} ahead of the next')
-    if len(sig) < SCENE_AUTO_MIN_SIGNALS:
+    if len(sig) < SCENE_AUTO_MIN_SIGNALS and 'fingerprint' not in sig:      # the file's own fingerprint is enough
         why.append('only ' + (', '.join(sorted(sig)) if sig else 'no') + ' strong signal' + ('' if len(sig) == 1 else 's'))
     if why:
         return 'review', f"{label} - {'; '.join(why)}", best
@@ -4862,10 +4886,15 @@ def _scene_bulk_worker(targets, which, delay, apply_safe):
     errors_in_a_row = 0
     try:
         conn = _conn()
+        import fingerprints
         for idx, (vid, path) in enumerate(targets):
             if st['stop']:
                 st['stopped'] = True
                 break
+            if which != 'tpdb' and idx % fingerprints.BATCH == 0:      # the next 40 files' fingerprints, one request
+                st['note'] = 'Reading file fingerprints…'
+                fingerprints.prefetch(conn, default_source(), [p for _v, p in targets[idx:idx + fingerprints.BATCH]])
+                st['note'] = ''
             st['current'] = os.path.basename(path)
             outcome, detail, best = 'error', 'Rate limited', None
             for attempt in range(3):
@@ -4915,7 +4944,7 @@ def _scene_bulk_worker(targets, which, delay, apply_safe):
         st['current'] = None
         st['note'] = ''
         st['finished_at'] = time.time()
-        print(f"ext_db scene bulk run {run_id} finished: {st['done']}/{st['total']} {st['counts']}")
+        logging.getLogger('lustr.ext_db').info(f"ext_db scene bulk run {run_id} finished: {st['done']}/{st['total']} {st['counts']}")
 
 
 def _sleep_unless_scene_stopped(seconds):

@@ -13,6 +13,8 @@ from helpers import get_thumbnail_path, check_auth
 from media_handler import MediaHandler
 from cast_manager import CastManager
 from config import USE_SQLITE
+import logging as _logging
+_log = _logging.getLogger('lustr.cast')
 
 router = APIRouter(prefix="/api/cast", tags=["cast"])
 
@@ -51,7 +53,7 @@ def get_all_cast(model = Depends(get_model)):
         # Get favorites
         t1 = time.time()
         favorites = set(model.db.get_favorite_cast())
-        print(f"[PERF] get_favorite_cast: {(time.time() - t1)*1000:.0f}ms")
+        _log.debug(f"[PERF] get_favorite_cast: {(time.time() - t1)*1000:.0f}ms")
         
         # For SQLite, get cast members directly from database
         with model.db.get_connection() as conn:
@@ -67,7 +69,7 @@ def get_all_cast(model = Depends(get_model)):
             ORDER BY count DESC
             ''')
             cast_rows = cursor.fetchall()
-            print(f"[PERF] get cast counts: {(time.time() - t2)*1000:.0f}ms - {len(cast_rows)} cast members")
+            _log.debug(f"[PERF] get cast counts: {(time.time() - t2)*1000:.0f}ms - {len(cast_rows)} cast members")
             
             # OPTIMIZED: Get all cast with photos in ONE query instead of 500+ individual queries
             t3 = time.time()
@@ -77,7 +79,7 @@ def get_all_cast(model = Depends(get_model)):
             # source_type: 'upload'/'url' = manual; 'stashdb'/'tpdb' = from an external DB
             photo_sources = {row['cast_name']: (row['source_type'] or '') for row in cursor.fetchall()}
             cast_with_photos = set(photo_sources)
-            print(f"[PERF] get cast with photos: {(time.time() - t3)*1000:.0f}ms - {len(cast_with_photos)} have photos")
+            _log.debug(f"[PERF] get cast with photos: {(time.time() - t3)*1000:.0f}ms - {len(cast_with_photos)} have photos")
             
             # Get all cast genders and categories
             t4 = time.time()
@@ -85,7 +87,7 @@ def get_all_cast(model = Depends(get_model)):
             cast_genders = {row['cast_name']: row['gender'] for row in cursor.fetchall()}
             cursor.execute('SELECT cast_name, category FROM cast_category')
             cast_categories = {row['cast_name']: row['category'] for row in cursor.fetchall()}
-            print(f"[PERF] get cast genders: {(time.time() - t4)*1000:.0f}ms - {len(cast_genders)} have gender")
+            _log.debug(f"[PERF] get cast genders: {(time.time() - t4)*1000:.0f}ms - {len(cast_genders)} have gender")
             
             # Get cast attributes from cast_attributes table (if it exists)
             cast_attributes = {}
@@ -112,9 +114,9 @@ def get_all_cast(model = Depends(get_model)):
                         
                         cast_attributes[cast_name][attr_type].append(attr_value)
                     
-                    print(f"Loaded attributes for {len(cast_attributes)} cast members from cast_attributes table")
+                    _log.debug(f"Loaded attributes for {len(cast_attributes)} cast members from cast_attributes table")
                 else:
-                    print("cast_attributes table does not exist, falling back to video attributes")
+                    _log.debug("cast_attributes table does not exist, falling back to video attributes")
             except Exception as e:
                 print(f"Error loading cast_attributes: {e}")
             
@@ -188,7 +190,7 @@ def get_all_cast(model = Depends(get_model)):
     # Sort: favorites first, then by count
     cast_list.sort(key=lambda x: (not x.get('is_favorite', False), -x['count']))
     
-    print(f"[PERF] TOTAL /api/cast/all: {(time.time() - start_time)*1000:.0f}ms - returned {len(cast_list)} cast members")
+    _log.debug(f"[PERF] TOTAL /api/cast/all: {(time.time() - start_time)*1000:.0f}ms - returned {len(cast_list)} cast members")
     
     return {"cast": cast_list}
 

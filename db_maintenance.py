@@ -1023,6 +1023,16 @@ def run(conn, dry_run=True, actions=None, auto=False, vacuum=False):
             conn.rollback()
         else:
             conn.commit()
+            try:                                         # picture files nothing uses any more (photo_store.py)
+                import photo_store
+                files, size = photo_store.gc(conn)
+                if files:
+                    results['photo_files'] = {'count': files, 'bytes': size}
+                import fingerprints
+                fingerprints.forget_missing(conn)
+                conn.commit()
+            except Exception as e:
+                print(f"[Maintenance] picture clean-up failed: {e}")
             if vacuum:
                 conn.execute('VACUUM')
         summary = {'success': True, 'dry_run': dry_run, 'auto': auto, 'actions': results, 'backup': backup,

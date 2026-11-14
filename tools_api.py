@@ -514,12 +514,19 @@ def full_backup_zip():
     name = dm.make_backup(_conn())
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     zpath = os.path.join(dm.BACKUP_DIR, f'lustr-full-backup-{stamp}.zip')
+    import photo_store
     with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as z:
         z.write(os.path.join(dm.DATA_DIR, name), 'library.db')
         for f in BACKUP_SETTINGS_FILES:
             full = os.path.join(dm.DATA_DIR, f)
             if os.path.isfile(full):
                 z.write(full, f)
+        # movie covers and performer photos (photo_store.py): pictures are already compressed, stored as they are
+        for root, _dirs, files in os.walk(photo_store.STORE_DIR):
+            for f in files:
+                if not f.endswith('.tmp'):
+                    full = os.path.join(root, f)
+                    z.write(full, os.path.relpath(full, dm.DATA_DIR), compress_type=zipfile.ZIP_STORED)
     return zpath, name
 
 

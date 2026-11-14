@@ -14,6 +14,8 @@ from typing import List, Optional, Dict
 from helpers import get_file_data
 from config import USE_SQLITE, DATA_FILE
 import movies
+import logging as _logging
+_log = _logging.getLogger('lustr.metadata')
 
 router = APIRouter(prefix="/api", tags=["metadata"])
 
@@ -79,11 +81,11 @@ def toggle_fav(req: ToggleFavRequest, model = Depends(get_model)):
 def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
     """Bulk update metadata for multiple files."""
     try:
-        print(f"=== UPDATE METADATA DEBUG ===")
-        print(f"Received {len(req.paths)} paths: {req.paths}")
-        print(f"Updates: {req.updates}")
-        print(f"Add to lists: {req.add_to_lists}")
-        print(f"Remove from lists: {req.remove_from_lists}")
+        _log.debug(f"=== UPDATE METADATA DEBUG ===")
+        _log.debug(f"Received {len(req.paths)} paths: {req.paths}")
+        _log.debug(f"Updates: {req.updates}")
+        _log.debug(f"Add to lists: {req.add_to_lists}")
+        _log.debug(f"Remove from lists: {req.remove_from_lists}")
         
         count = 0
         target_files = set()
@@ -365,8 +367,8 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
         if not USE_SQLITE and count > 0:
             model.save()
         
-        print(f"=== UPDATE COMPLETE: {count} files updated ===")
-        print(f"Target files found: {len(target_files)}")
+        _log.debug(f"=== UPDATE COMPLETE: {count} files updated ===")
+        _log.debug(f"Target files found: {len(target_files)}")
         
         return {"updated": count}
     

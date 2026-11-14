@@ -9,15 +9,10 @@ Original file was 2,215 lines - now reduced to ~250 lines.
 All route logic has been moved to focused modules in routes/ folder.
 """
 
-# Import logger FIRST to set up timestamped print()
-try:
-    import logger  # This sets up logging and replaces print()
-    from logger import log_info, log_error
-    log_info("Logger initialized")
-except Exception as e:
-    print(f"Warning: Could not initialize logger: {e}")
-    def log_info(msg): print(msg)
-    def log_error(msg): print(msg)
+# Import logger FIRST: it sets up logging (console + <data>/logs/lustr.log) and routes print() into it
+import logger
+from logger import log_info, log_error
+import logging
 
 import os
 import time
@@ -26,7 +21,6 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
-import shutil
 import glob
 from datetime import datetime
 
@@ -78,6 +72,7 @@ from routes.collections import router as collections_router
 from routes.movies import router as movies_router
 from routes.images import router as images_router
 from routes.tv import router as tv_router
+import support
 
 
 # --- BACKUP FUNCTION ---
@@ -101,11 +96,18 @@ def backup_database():
     backup_path = os.path.join(backup_dir, f'library_{timestamp}.db')
     
     try:
-        shutil.copy2(db_path, backup_path)
+        import sqlite3
+        src = sqlite3.connect(db_path, timeout=30.0)      # backup API: consistent, and includes what's still in the WAL
+        dst = sqlite3.connect(backup_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
         print(f"Database backed up: {os.path.basename(backup_path)}")
         
         # Keep the newest STARTUP_BACKUPS
-        backups = sorted(glob.glob(os.path.join(backup_dir, 'library_*.db')))
+        backups = sorted(glob.glob(os.path.join(backup_dir, 'library_[0-9]*.db')))   # not library_before_<migration>_*
         for old in backups[:-STARTUP_BACKUPS]:
             os.remove(old)
     except Exception as e:
@@ -115,6 +117,28 @@ def backup_database():
 
 app = FastAPI(title="Video Library Manager")
 
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    """Anything a route didn't handle: log it once, with its traceback and a short ID the page shows,
+    so a problem report can point at this exact entry."""
+    error_id = logger.new_error_id()
+    logging.getLogger('lustr.error').error(f"[{error_id}] {request.method} {request.url.path}: {type(exc).__name__}: {exc}",
+                                           exc_info=exc, extra={'error_id': error_id})
+    return JSONResponse(status_code=500, content={
+        "detail": f"Something went wrong on the server (error ID {error_id}). "
+                  f"Settings → Maintenance → Problem report has the details.",
+        "error_id": error_id})
+
+
+# Compress pages, scripts and JSON (the main page is ~1.8 MB, ~350 KB gzipped). Videos, images,
+# partial (Range) responses and anything already compressed are passed through untouched.
+from starlette.middleware.gzip import GZipMiddleware, DEFAULT_EXCLUDED_CONTENT_TYPES
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6,
+                   exclude_content_types=DEFAULT_EXCLUDED_CONTENT_TYPES + (
+                       'application/octet-stream', 'application/x-sqlite3', 'application/vnd.sqlite3',
+                       'application/x-tar', 'application/x-7z-compressed', 'application/x-rar-compressed',
+                       'application/pdf', 'image/x-icon', 'image/vnd.microsoft.icon'))
+
 # Initialize your existing models
 model = LibraryModel()
 user_model = UserModel()
@@ -122,6 +146,11 @@ user_model = UserModel()
 import auth_sessions
 auth_sessions.set_db_path(DATABASE_FILE)
 watch_history_instance = WatchHistory(WATCH_HISTORY_DIR)
+if USE_SQLITE:                                     # full-text search index: built / caught up in the background
+    import search_index
+    search_index.warm_up(model.db)
+    import photo_store                             # movie covers / performer photos: files, not database rows
+    photo_store.migrate_background(model.db.get_connection)
 
 # --- STATIC FILE SERVING ---
 
@@ -248,7 +277,7 @@ async def auth_middleware(request: Request, call_next):
         response = await call_next(request)
         took = time.time() - started
         if took > 0.5 and path.startswith('/api/'):          # slow-request log, for finding sluggish spots
-            print(f"[SLOW] {request.method} {path}?{request.url.query[:120]} {took:.2f}s")
+            logging.getLogger('lustr.slow').info(f"{request.method} {path}?{request.url.query[:120]} took {took:.2f}s")
         return response
     else:
         # API requests get JSON error
@@ -296,6 +325,7 @@ def inject_dependencies():
     routes.scanning.set_model(model)
     routes.thumbnails.set_model(model)
     routes.videos.set_model(model)
+    support.set_model(model)
     routes.videos.set_watch_history(watch_history_instance)
     routes.files.set_model(model)
     
@@ -415,6 +445,7 @@ def register_routes():
     app.include_router(movies_router)
     app.include_router(images_router)
     app.include_router(tv_router)
+    app.include_router(support.router)            # problem report, log level, browser errors
 
 
 # --- STATUS ENDPOINT ---
@@ -453,31 +484,9 @@ register_routes()
 
 # Start the server
 if __name__ == "__main__":
-    print("=" * 60)
-    print("🚀 Video Library Manager Starting...")
-    print("=" * 60)
-    print(f"📊 Modularization Status:")
+    from config import VERSION
+    log_info(f"lustr {VERSION} starting on http://0.0.0.0:8008 (log level {logger.current_level()}, "
+             f"log file {logger.APP_LOG_FILE})")
     backup_database()
-    print(f"   ✅ Completed: 47 of 47 endpoints (100%)")
-    print(f"   ⏳ Remaining: 0 endpoints")
-    print(f"")
-    print(f"📦 Active Modules:")
-    print(f"   ✅ routes/auth.py (6 endpoints)")
-    print(f"   ✅ routes/streaming.py (4 endpoints)")
-    print(f"   ✅ routes/watch_history_routes.py (13 endpoints)")
-    print(f"   ✅ routes/cast.py (3 endpoints)")
-    print(f"   ✅ routes/ui.py (4 endpoints)")
-    print(f"   ✅ routes/library.py (9 endpoints)")
-    print(f"   ✅ routes/metadata.py (5 endpoints)")
-    print(f"   ✅ routes/scanning.py (2 endpoints)")
-    print(f"   ✅ routes/thumbnails.py (2 endpoints)")
-    print(f"   ✅ routes/videos.py (3 endpoints)")
-    print(f"   ✅ routes/files.py (4 endpoints)")
-    print(f"   ✅ routes/playlists.py (12 endpoints)")
-    print(f"")
-    print("=" * 60)
-    print(f"🌐 Server starting on http://0.0.0.0:8008")
-    print("=" * 60)
-    print("")
     
-    uvicorn.run(app, host="0.0.0.0", port=8008)
+    uvicorn.run(app, host="0.0.0.0", port=8008, log_config=None)   # logging is set up by logger.py

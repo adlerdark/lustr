@@ -8,6 +8,8 @@ import hmac
 from datetime import datetime
 from config import DATA_FILE, USER_FILE, VIDEO_EXTENSIONS, LIST_FIELDS, MAX_USERS, USE_SQLITE, DATABASE_FILE
 from media_handler import MediaHandler
+import logging as _logging
+_log = _logging.getLogger('lustr.model')
 
 # Import database manager if using SQLite
 if USE_SQLITE:
@@ -119,7 +121,7 @@ class LibraryModel:
         
         if self.use_sqlite:
             self.db = Database(DATABASE_FILE)
-            print(f"✓ Using SQLite database: {DATABASE_FILE}")
+            _log.debug(f"✓ Using SQLite database: {DATABASE_FILE}")
         
         self.load()
 
@@ -328,7 +330,7 @@ class LibraryModel:
                 new_order.append(lib)
         
         self.library_order = new_order
-        print(f"Updated library_order to include groups: {new_order}")
+        _log.debug(f"Updated library_order to include groups: {new_order}")
         
         self.save()
     
@@ -602,7 +604,7 @@ class LibraryModel:
                                 cursor = conn.cursor()
                                 
                                 lib_here = dm.owner_of(full_path, roots)
-                                print(f"[Move Check] Checking if {filename} exists elsewhere in {lib_here}")
+                                _log.debug(f"[Move Check] Checking if {filename} exists elsewhere in {lib_here}")
                                 cursor.execute('''
                                     SELECT fv.path, fv.video_id, fv.length_seconds, fv.deleted_at
                                     FROM file_versions fv
@@ -628,8 +630,8 @@ class LibraryModel:
                                     old_path = existing_dict['path']
                                     old_video_id = existing_dict['video_id']
                                     
-                                    print(f"[Move Check] Found existing entry: {old_path}")
-                                    print(f"[Move Check] Old path exists on disk: {os.path.exists(old_path)}")
+                                    _log.debug(f"[Move Check] Found existing entry: {old_path}")
+                                    _log.debug(f"[Move Check] Old path exists on disk: {os.path.exists(old_path)}")
                                     
                                     if not os.path.exists(old_path):
                                         # Old path gone - this is a move!
@@ -643,7 +645,7 @@ class LibraryModel:
                                         )
                                         rows_updated = cursor.rowcount
                                         dm.forget_path(conn, old_path)
-                                        print(f"[Move Detection] Updated {rows_updated} rows in file_versions")
+                                        _log.debug(f"[Move Detection] Updated {rows_updated} rows in file_versions")
                                         
                                         # Refresh technical metadata
                                         from media_handler import MediaHandler
@@ -661,15 +663,15 @@ class LibraryModel:
                                               full_path))
                                         
                                         conn.commit()
-                                        print(f"[Move Detection] Successfully updated path and metadata for {filename}")
+                                        _log.debug(f"[Move Detection] Successfully updated path and metadata for {filename}")
                                         
                                         # Don't add to new_files - it's not actually new
                                         self._update_search_index_entry(full_path)
                                         continue  # Skip _ensure_file_entry
                                     else:
-                                        print(f"[Move Check] Old path still exists - treating as copy/duplicate")
+                                        _log.debug(f"[Move Check] Old path still exists - treating as copy/duplicate")
                                 else:
-                                    print(f"[Move Check] No existing entry found for {filename} in {library}")
+                                    _log.debug(f"[Move Check] No existing entry found for {filename} in {library}")
 
                                 # Another copy of a video already in this library (same name, any
                                 # extension, same length): add it as a version of that video and
@@ -690,7 +692,7 @@ class LibraryModel:
                                     continue
                             
                             # Truly new file - create entry
-                            print(f"[New File] Creating new entry for {full_path}")
+                            _log.debug(f"[New File] Creating new entry for {full_path}")
                             new_files.append(full_path)
                             self._ensure_file_entry(full_path, filename, skip_metadata=fast)
                             self._update_search_index_entry(full_path)
@@ -1217,10 +1219,10 @@ class LibraryModel:
                     if matched_path:
                         self._apply_import_data(matched_path, norm_item, list_fields_lower)
                         updates_count += 1
-                        print(f"✓ Updated: {os.path.basename(matched_path)}", flush=True)
+                        _log.debug(f"✓ Updated: {os.path.basename(matched_path)}")
                     else:
                         filename = norm_item.get('filename', norm_item.get('path', 'unknown'))
-                        print(f"✗ Skipping: {filename} (not found in files)", flush=True)
+                        _log.debug(f"✗ Skipping: {filename} (not found in files)")
                 
                 if updates_count > 0:
                     self.save()
@@ -1393,7 +1395,7 @@ class LibraryModel:
                         'resolution': file_info.get('resolution')
                     }
                 )
-                print(f"Flagged deleted file: {filename}")
+                _log.debug(f"Flagged deleted file: {filename}")
         
         # Check new files for potential replacements
         for path in new_files:
@@ -1516,7 +1518,7 @@ class LibraryModel:
                         'resolution': info.get('resolution')
                     }
                 )
-                print(f"Flagged new file: {filename}")
+                _log.debug(f"Flagged new file: {filename}")
     
     def check_cross_library_replacements(self):
         """Check for files moved/copied between libraries after all scans complete."""
@@ -1591,9 +1593,9 @@ class LibraryModel:
         cursor.execute('SELECT id, flag_type, filename, related_id FROM file_changes WHERE library = ?', (library,))
         all_entries = cursor.fetchall()
         if all_entries:
-            print(f"\n=== File changes for library '{library}' ===")
+            _log.debug(f"\n=== File changes for library '{library}' ===")
             for row in all_entries:
-                print(f"  ID {row[0]}: {row[1]} - {row[2]} (related_id={row[3]})")
+                _log.debug(f"  ID {row[0]}: {row[1]} - {row[2]} (related_id={row[3]})")
         
         cursor.execute('''
             SELECT COUNT(*) FROM file_changes
@@ -1602,5 +1604,5 @@ class LibraryModel:
         ''', (library,))
         
         count = cursor.fetchone()[0]
-        print(f"Alert count for '{library}': {count}")
+        _log.debug(f"Alert count for '{library}': {count}")
         return count

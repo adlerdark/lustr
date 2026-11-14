@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from typing import Optional, List
 from pydantic import BaseModel
 from helpers import check_auth, get_thumbnail_path
+import logging as _logging
+_log = _logging.getLogger('lustr.playlists')
 
 router = APIRouter(prefix="/api/playlists", tags=["playlists"])
 
@@ -441,19 +443,19 @@ def remove_from_playlist(request: Request, data: RemoveFromPlaylistRequest):
     conn = db.get_connection()
     cursor = conn.cursor()
     
-    print(f"[DEBUG] Removing from playlist {data.playlist_id}: video_ids={data.video_ids}")
+    _log.debug(f"[DEBUG] Removing from playlist {data.playlist_id}: video_ids={data.video_ids}")
     
     # Remove videos
     placeholders = ','.join(['?' for _ in data.video_ids])
     query = f'DELETE FROM playlist_items WHERE playlist_id = ? AND video_id IN ({placeholders})'
     params = [data.playlist_id] + data.video_ids
-    print(f"[DEBUG] Query: {query}")
-    print(f"[DEBUG] Params: {params}")
+    _log.debug(f"[DEBUG] Query: {query}")
+    _log.debug(f"[DEBUG] Params: {params}")
     
     cursor.execute(query, params)
     
     removed = cursor.rowcount
-    print(f"[DEBUG] Removed {removed} items")
+    _log.debug(f"[DEBUG] Removed {removed} items")
     
     # Reorder remaining items
     cursor.execute('''

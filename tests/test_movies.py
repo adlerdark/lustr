@@ -950,6 +950,39 @@ class CandidateDetailTests(BulkLinkTests):
         self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'bare2')
         self.assertIn('2 copies of this movie', detail)
 
+    def _copies(self, *extra):
+        cast = [{'name': 'Jane Doe'}, {'name': 'John Roe'}]
+        self.raws['old'] = {'id': 'old', 'title': 'Summer Road Trip 13', 'date': '2006-12-01', 'performers': cast, 'scenes': []}
+        self.raws['new'] = {'id': 'new', 'title': 'Summer Road Trip 13', 'date': '2009-03-23', 'performers': cast, 'scenes': [],
+                            'tags': [{'name': 'Outdoor'}, {'name': 'Gonzo'}]}
+        out = []
+        for i, date, studio in (('old', '2006-12-01', 'Red Light'), ('new', '2009-03-23', 'RLD Classics')) + extra:
+            c = self.cand(i, 'Summer Road Trip 13', date, studio=studio)
+            c['performers'] = [{'name': 'Jane Doe'}]
+            out.append(c)
+        return out
+
+    def test_copies_years_apart_under_another_studio_are_one_movie(self):
+        self.results = self._copies()
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        self.assertEqual(out, 'linked', detail)
+        self.assertEqual(movies.get(self.c, self.mid)['ext_id'], 'new')          # the one with more tags
+        self.assertIn('2 copies of this movie', detail)
+
+    def test_a_different_movie_among_the_copies_is_left_to_you(self):
+        self.raws['other'] = {'id': 'other', 'title': 'Summer Road Trip 13', 'date': '2015-01-01', 'scenes': [],
+                              'performers': [{'name': 'Jane Doe'}, {'name': 'Mary Major'}, {'name': 'Ann Lee'}]}
+        self.results = self._copies(('other', '2015-01-01', 'Elsewhere'))
+        self.assertEqual(movies.bulk_one(self.c, self.mid)[0], 'review')
+
+    def test_what_was_known_at_check_time_is_kept(self):
+        self.results = self._copies()
+        out, detail, cands = movies.bulk_one(self.c, self.mid)
+        movies._log_check(self.c, self.mid, out, detail, cands)
+        import json
+        ctx = json.loads(self.c.execute('SELECT context_json FROM movie_ext_check WHERE movie_id = ?', (self.mid,)).fetchone()[0])
+        self.assertEqual(ctx['year'], '2011')
+
     def test_copies_then_the_one_with_a_cover(self):
         self.raws['bare2'] = dict(self.raws['bare'], id='bare2', posters={'large': 'https://cdn.theporndb.net/x.jpg'})
         self.results = [self.cand('bare', 'Summer Road Trip 13', '2011-05-01'), self.cand('bare2', 'Summer Road Trip 13', '2011-05-01')]

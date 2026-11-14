@@ -80,6 +80,27 @@
     <link href="/static/vendor/video-js-8.24.1.min.css" rel="stylesheet">
     <script src="/static/vendor/video-8.24.1.min.js"></script>
     <script>window.lustrNP = { player: null, app: null, registered: false };</script>
+    <script>
+        // JavaScript errors go to the server log (support.py) so a problem report includes them
+        (function () {
+            let sent = 0;
+            const send = d => {
+                if (sent++ >= 20) return;
+                try { fetch('/api/support/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                           body: JSON.stringify({ ...d, page: location.pathname }) }).catch(() => {}); } catch (e) {}
+            };
+            window.addEventListener('error', e => {
+                if (!e.message || /ResizeObserver loop/.test(e.message)) return;
+                if (e.filename && !e.filename.startsWith(location.origin)) return;        // browser extensions
+                send({ kind: 'error', message: e.message, source: e.filename || '', line: e.lineno, col: e.colno, stack: (e.error && e.error.stack) || '' });
+            });
+            window.addEventListener('unhandledrejection', e => {
+                const r = e.reason, m = r && (r.message || String(r));
+                if (!m || /AbortError|Failed to fetch|NetworkError|Load failed|play\(\) request was interrupted/.test(m)) return;
+                send({ kind: 'promise', message: m, stack: (r && r.stack) || '' });
+            });
+        })();
+    </script>
     <style>
         /* New player (np) */
         #npStage .video-js { width: 100%; height: 100%; background: #000; }
@@ -1076,7 +1097,7 @@
                       subs: [['overview', 'Overview'], ['tagmap', 'Tag mappings'], ['sites', 'Site Linking'], ['links', 'Linked videos']] },
                     { id: 'maintenance', label: 'Maintenance', group: 'Data', icon: '🧹', wide: true,
                       subs: [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'],
-                             ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['corrupt', 'Corrupt files'], ['backups', 'Backups']] },
+                             ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['corrupt', 'Corrupt files'], ['backups', 'Backups'], ['report', 'Problem report']] },
                     { id: 'importexport', label: 'Import / Export', group: 'Data', icon: '📁' },
                 ],
                 // Settings -> General -> Play History (library_stats.py: play_log, watch_stats)
@@ -1120,6 +1141,7 @@
                          settings: { retention_days: 7, daily: true, auto_backups_keep: 5 },
                          deleted: { rows: [], total: 0, page: 1, per_page: 200, library: '', reason: '', q: '', libraries: {}, selected: {}, loading: false },
                          cast: { rows: [], selected: {}, loading: false },
+                         report: { text: '', redact: true, loading: false, level: 'INFO', issueUrl: '', copied: false, seq: 0 },   // support.py
                          corrupt: { rows: [], selected: {}, loading: false, loaded: false },   // videos tagged corrupt.file (corrupt.py)
                          spell: { groups: [], keep: {}, loading: false },      // same performer, different spelling
                          gender: { rows: [], ignored: [], counts: {}, kind: '', selected: {}, open: {}, showIgnored: false, loading: false },   // gender_check.py
@@ -1246,12 +1268,6 @@
                         this.hiddenLibraries = [];
                     }
                     
-                    console.log('visibleLibraries: Building structure', {
-                        allLibrariesCount: Object.keys(this.allLibraries).length,
-                        libraryOrderCount: this.libraryOrder.length,
-                        groupsCount: Object.keys(this.libraryGroups).length,
-                        hiddenCount: this.hiddenLibraries.length
-                    });
                     
                     // Display filter: libraries of an unselected orientation type are left out,
                     // and so are groups that end up empty (only while filtering)
@@ -1260,18 +1276,14 @@
 
                     // Track which libraries are in groups
                     const inGroups = new Set();
-                    console.log('Building inGroups set, groups:', this.libraryGroups);
                     for (const groupName in this.libraryGroups) {
                         const group = this.libraryGroups[groupName];
-                        console.log('Group:', groupName, 'libraries:', group.libraries);
                         for (const item of (group.libraries || [])) {
                             if (this.allLibraries[item]) {
                                 inGroups.add(item);
-                                console.log('  Added to inGroups:', item);
                             }
                         }
                     }
-                    console.log('Final inGroups:', Array.from(inGroups));
                     
                     // Always show Home first (not hideable)
                     structure.push({type: 'library', name: 'Home', isGroup: false});
@@ -1336,15 +1348,7 @@
                     };
                     
                     // Add items from libraryOrder
-                    console.log('About to process libraryOrder:', this.libraryOrder);
                     for (const item of this.libraryOrder) {
-                        // console.log('Processing:', item, {
-                        //     isGroup: !!this.libraryGroups[item],
-                        //     groupData: this.libraryGroups[item],
-                        //     isLibrary: !!this.allLibraries[item],
-                        //     isHidden: this.hiddenLibraries.includes(item),
-                        //     inGroup: inGroups.has(item)
-                        // });
 
                     //for (const item of this.libraryOrder) {
                         //if (this.libraryGroups[item] && !this.libraryGroups[item].parent) {
@@ -1367,7 +1371,6 @@
                         }
                     }
                     
-                    console.log('visibleLibraries: Final structure length:', structure.length);
                     
                     return structure;
                 },
@@ -1792,28 +1795,19 @@
                     return Math.min((this.seekValue / this.playerDuration) * 100, 100);
                 },
                 get filteredCastBioVideos() {
-                    console.log('=== filteredCastBioVideos computed ===', {
-                        hasData: !!this.castBioData?.exact_matches,
-                        filter: this.castBioFilterLibrary,
-                        totalVideos: this.castBioData?.exact_matches?.length
-                    });
                     
                     if (!this.castBioData?.exact_matches) return [];
                     
                     // If no library filter, return all
                     if (!this.castBioFilterLibrary) {
-                        console.log('No filter - returning all videos');
                         return this.castBioData.exact_matches;
                     }
                     
                     // Check if libraries are loaded - FIX: use allLibraries not libraries
                     if (!this.allLibraries) {
-                        console.log('allLibraries not loaded yet');
                         return this.castBioData.exact_matches;
                     }
                     
-                    console.log('Filtering by:', this.castBioFilterLibrary);
-                    console.log('Library paths:', this.allLibraries[this.castBioFilterLibrary]);
                     
                     // Filter by selected library
                     const filtered = this.castBioData.exact_matches.filter(video => {
@@ -1821,7 +1815,6 @@
                         // Check if this video's path starts with any of the library's paths
                         const libraryPaths = this.allLibraries[this.castBioFilterLibrary];
                         if (!libraryPaths) {
-                            console.log('No paths for library:', this.castBioFilterLibrary);
                             return false;
                         }
                         
@@ -1833,7 +1826,6 @@
                         });
                     });
                     
-                    console.log(`Filtered: ${filtered.length} of ${this.castBioData.exact_matches.length}`);
                     return filtered;
                 },
 
@@ -1863,7 +1855,6 @@
                 },
 
                 playSpecificVersion(version) {
-                    console.log('Playing version:', version.path);
                     
                     const video = this.videos.find(v => 
                         v.versions && v.versions.some(ver => ver.path === version.path)
@@ -2465,14 +2456,12 @@
                 },
                 
                 onAlpineInit() {
-                    console.log('Alpine initialized');
                     TimerManager.init(this);
                     
                     // Set up event listeners
                     ['mousemove', 'keydown', 'click', 'touchstart', 'wheel']
                         .forEach(ev => document.addEventListener(ev, () => TimerManager.reset(), { passive: true }));
                     
-                    console.log('Event listeners attached');
                 },
                 
                 // Helper: Fetch with timeout and error handling
@@ -2500,7 +2489,6 @@
                 async init() {
                     if (this._initDone) return;
                     this._initDone = true;
-                    console.log('App init starting');
                     this.$nextTick(() => this.autoDraggables());
                     // Libraries (Settings): your edits to the order / groups are saved however Settings is closed
                     this.$watch('modals.settings', open => {
@@ -2520,7 +2508,6 @@
                     await this.authInit();
                     
                     if (this.isLoggedIn) {
-                        console.log('User logged in, starting timer');
                         TimerManager.start();
                     }                
                     
@@ -3186,11 +3173,6 @@
                         this.imgLoadCounts();                                   // which libraries get an Images tab
                         const initData = await initRes.json();
                         
-                        console.log('refreshAll: Received init data', {
-                            librariesCount: Object.keys(initData.libraries || {}).length,
-                            orderCount: (initData.library_order || []).length,
-                            libraries: initData.libraries
-                        });
                         
                         // Set libraries data FIRST - use new object references to trigger reactivity
                         // 1. Assign raw data
@@ -3222,7 +3204,6 @@
                             const quickTagsRes = await fetch('/api/quicktags');
                             if (quickTagsRes.ok) {
                                 this.quickTags = await quickTagsRes.json();
-                                console.log('Quick tags loaded:', Object.keys(this.quickTags).length, 'fields');
                             }
                         } catch (e) {
                             console.error('Failed to load quick tags:', e);
@@ -3241,16 +3222,11 @@
                         this.isDataFullyLoaded = true;
                         this.libraryDataVersion++; 
 
-                        console.log('refreshAll: Data initialized with groups forced into order');
 
                         // Single nextTick is sufficient once data structures are correct
                         await this.$nextTick();
                         
-                        console.log('After forced updates, flattened:', this.flattenedLibraries);
 
-                        console.log('refreshAll: After nextTick', {
-                            flattenedCount: this.flattenedLibraries.length
-                        });
                         
                         if (initData.config) {
                             if (initData.config.sort_field) this.sortField = initData.config.sort_field === 'Chapter Markers' ? 'Markers' : initData.config.sort_field;
@@ -3316,11 +3292,8 @@
                                 const notepadData = await notepadRes.json();
                                 this.notepadContent = notepadData.value || '';
                                 this.notepadLastSaved = this.notepadContent; // Initialize for undo tracking
-                                console.log('Notepad loaded:', this.notepadContent.length, 'chars');
                             }
-                        } catch (e) {
-                            console.log('Notepad not loaded:', e);
-                        }
+                        } catch (e) { /* no notepad yet */ }
                     } catch(e) { 
                         this.loadMockData();
                     }
@@ -3355,8 +3328,6 @@
                     this.ccIndexLoad();
                     this.imgLinkedLoad();
                     this.isSearching = true;
-                    const startTime = performance.now();
-                    console.log('=== fetchVideos START ===');
                     
                     if (window.location.protocol === 'blob:' || !this.isLoggedIn) { this.isSearching = false; return; }
                     if (this.collFiltering()) {
@@ -3385,7 +3356,6 @@
                     if (this.libraryTab !== 'library' && this.searchQuery && this.searchQuery.trim()) this.setLibraryTab('library');   // a search shows the grid
                     if (mode === 'reset') { this.gridStale = false; this._gridSeq++; }   // loading it now (a pending gridCatchUp needn't)
                     try {
-                        const urlStart = performance.now();
                         let url = this.videosUrl();
                         
                         let limit = parseInt(this.appSettings.itemsPerPage) || 150;
@@ -3398,23 +3368,16 @@
                             if (this.currentFolder) url += `&current_folder=${encodeURIComponent(this.currentFolder)}`;
                         }
                         
-                        console.log(`URL built in ${performance.now() - urlStart}ms`);
                         
-                        const fetchStart = performance.now();
                         const res = await fetch(url);
-                        console.log(`API responded in ${performance.now() - fetchStart}ms`);
                         
                         if (!res.ok) {
                             if (res.status === 401) this.lock('Your session has ended. Log in again.');
                             throw new Error(`Fetch Failed`);
                         }
                         
-                        const parseStart = performance.now();
                         const data = await res.json();
-                        console.log(`JSON parsed in ${performance.now() - parseStart}ms`);
-                        console.log(`Received ${data.items?.length || 0} videos`);
                         
-                        const updateStart = performance.now();
                         const scEl = document.querySelector('.scroller-main'), h0 = scEl ? scEl.scrollHeight : 0;
                         if (mode === 'append') {
                             this.videos = [...this.videos, ...data.items];
@@ -3428,25 +3391,6 @@
                         }
                         this.jumpLetters = data.letters || [];
                         this.$nextTick(() => this.jumpMeasure());
-                        
-                        // DEBUG: Check videos array after assignment
-                        console.log('=== VIDEOS ARRAY CHECK ===');
-                        console.log('Total videos:', this.videos.length);
-                        const withVersions = this.videos.filter(v => v.versions && v.versions.length > 1);
-                        console.log('Videos with multiple versions:', withVersions.length);
-                        if (withVersions.length > 0) {
-                            console.log('First video with versions:', {
-                                filename: withVersions[0].filename,
-                                versionsCount: withVersions[0].versions.length,
-                                versions: withVersions[0].versions
-                            });
-                        }
-                        // Check first 3 videos
-                        console.log('First 3 videos:', this.videos.slice(0, 3).map(v => ({
-                            filename: v.filename,
-                            hasVersions: !!v.versions,
-                            versionCount: v.versions?.length
-                        })));
                         
                         if (data.stats) this.libraryStats = { total: data.stats.total_files, filtered: data.stats.filtered_files };
                         if (data.tags) this.allTags = data.tags;
@@ -3473,7 +3417,6 @@
                             this.selectedPaths = new Set([...this.selectedPaths].filter(p => validPaths.has(p)));
                         }
                         
-                        console.log(`Data updated in ${performance.now() - updateStart}ms`);
 
                         // SCROLL RESET LOGIC
                         // // If we are NOT appending (new library, search, filter, or prev/next page), reset to top
@@ -3498,12 +3441,6 @@
                             // if mode is 'append', we do nothing, staying where we are!
                         });
 
-                        console.log(`=== fetchVideos TOTAL: ${performance.now() - startTime}ms ===`);
-                        
-                        // Use setTimeout instead of $nextTick for timing DOM render
-                        setTimeout(() => {
-                            console.log(`=== After DOM render: ${performance.now() - startTime}ms ===`);
-                        }, 0);
                         
                         // Update available filters after video data loads and state updates (unless appending for pagination)
                         // Use setTimeout to ensure all reactive updates complete first
@@ -3631,7 +3568,6 @@
                             }
                             
                             // If we never had groups, it's okay to save empty
-                            console.log('No library groups to save (and none existed before)');
                         }
                         
                         // Create backup in localStorage before saving
@@ -3641,7 +3577,6 @@
                                 groups: this.libraryGroups
                             };
                             localStorage.setItem('libraryGroupsBackup', JSON.stringify(backup));
-                            console.log('✓ Created groups backup in localStorage');
                         } catch (e) {
                             console.error('Failed to create backup:', e);
                         }
@@ -3652,7 +3587,6 @@
                             body: JSON.stringify({groups: this.libraryGroups})
                         });
                         
-                        console.log(`✓ Saved ${Object.keys(this.libraryGroups).length} library groups`);
                         this.libraryDataVersion++; // Force reactivity after saving groups
                     } catch (e) {
                         console.error('Failed to save library groups:', e);
@@ -3764,7 +3698,6 @@
                 
                 // Cast member click handler - backend handles fuzzy matching
                 searchCastMember(castName) {
-                    console.log('searchCastMember called with:', castName);
                     // Open cast bio page
                     this.openCastBio(castName);
                 },
@@ -6437,7 +6370,6 @@ No metadata is changed.`)) return;
                         });
                         
                         if (res.ok) {
-                            console.log(`Set ${castName} gender to ${gender}`);
                             
                             // Update bio data if currently viewing this cast member
                             if (this.castBioData && this.castBioData.name === castName) {
@@ -6659,7 +6591,6 @@ No metadata is changed.`)) return;
                     
                     // Refresh library data if needed (not for browser source)
                     if (source !== 'browser' && source !== 'bulk' && source !== 'sugbulk' && source !== 'gendercheck' && this.currentLibrary && this.currentLibrary !== 'Home' && this.currentView === 'library') {
-                        console.log('Refreshing library before closing cast bio:', this.currentLibrary);
                         await this.fetchVideos('reset');
                     }
                     
@@ -9019,7 +8950,6 @@ No metadata is changed.`)) return;
                 },
                 
                 async rescanLibrary(libraryName) {
-                    console.log(`Scanning library: ${libraryName}`);
                     try {
                         const res = await fetch('/api/scan', {
                             method: 'POST', 
@@ -10559,11 +10489,6 @@ No metadata is changed.`)) return;
                     }
                 },
                 openMetadataEditor() {
-                    console.log('=== openMetadataEditor called ===');
-                    console.log('currentView:', this.currentView);
-                    console.log('currentLibrary:', this.currentLibrary);
-                    console.log('castBioMode:', this.castBioMode);
-                    console.log('selectedPaths:', Array.from(this.selectedPaths));
                     
                     try {
                         this.activeMenu = null;
@@ -10586,11 +10511,9 @@ No metadata is changed.`)) return;
                             checkVideoList = this.videos;
                         }
                         
-                        console.log('checkVideoList length:', checkVideoList.length);
                         
                         // Get ALL selected file paths (not just visible ones)
                         const selectedArray = Array.from(this.selectedPaths);
-                        console.log('Selected paths:', selectedArray);
                         
                         this.editPaths = selectedArray.filter(p => {
                             const video = checkVideoList.find(v => v.path === p);
@@ -10602,10 +10525,8 @@ No metadata is changed.`)) return;
                             }
                             return true;
                         });
-                        console.log('Edit paths after filter:', this.editPaths);
                         
                         if (this.editPaths.length === 0) {
-                            console.log('No edit paths, returning early');
                             return;
                         }
                         
@@ -10620,7 +10541,6 @@ No metadata is changed.`)) return;
                             }
                             return true;
                         });
-                        console.log('Visible selected videos:', visibleSelectedVideos.length);
                         
                         this.editData = {};
                         this.originalEditData = {};
@@ -10834,16 +10754,9 @@ No metadata is changed.`)) return;
                         if (!window.confirm(`Removing tags from [${fields}] for ALL selected. Continue?`)) return;
                     }
                     
-                    console.log('=== SAVE METADATA DEBUG ===');
-                    console.log('Paths to update:', this.editPaths.length, this.editPaths);
-                    console.log('Updates:', updates);
-                    console.log('Add to lists:', addTo);
-                    console.log('Remove from lists:', removeFrom);
-                    console.log('Replace with:', replaceWith);
                     
                     // Ensure paths is a plain array (not a Proxy)
                     const plainPaths = this.editPaths.map(p => p);
-                    console.log('Plain paths:', plainPaths);
                     
                     try {
                         // Save metadata with 30-second timeout
@@ -10865,7 +10778,6 @@ No metadata is changed.`)) return;
                         }
                         
                         const result = await response.json();
-                        console.log('Server response:', result);
                         if (maleChange) await this.saveMaleCastMarks(plainPaths, maleChange);
                         else if (clearLists.includes('cast') || clearLists.includes('male_cast')) await this.loadMaleCast();
                         
@@ -11073,6 +10985,13 @@ No metadata is changed.`)) return;
 
                 maintPost(url, body) { return this.extDbPostAny(url, body); },
 
+                async maintGet(url) {
+                    const res = await fetch(url);
+                    const d = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(d.error || d.detail || `Request failed (${res.status})`);
+                    return d;
+                },
+
                 // ----- Fix resolutions: vertical files stored by their long side (resolution_fix.py) -----
                 async maintResLoad() {
                     const was = this.maintRes.running;
@@ -11126,7 +11045,8 @@ No metadata is changed.`)) return;
                               orphan_ext_rows: 'Remove scene links, playlist entries and Male Cast marks of missing videos',
                               merge_cast_case: 'Merge performers written with different capitals (Jessie Rogers / jessie rogers)',
                               merge_alias_profiles: 'Merge profiles stored under an alias into their primary name',
-                              orphan_values: 'Remove values no video uses (performers with a profile are kept)' })[a] || a;
+                              orphan_values: 'Remove values no video uses (performers with a profile are kept)',
+                              photo_files: 'Delete cover and photo files nothing has used for 60 days' })[a] || a;
                 },
 
                 maintActionDetail(r) {
@@ -11167,6 +11087,59 @@ No metadata is changed.`)) return;
                     if (view === 'backups') await this.maintLoadBackups();
                     if (view === 'tags') await this.maintLoadTags();
                     if (view === 'corrupt') await this.corruptLoad();
+                    if (view === 'report') await this.reportLoad();
+                },
+
+                // ----- Problem report (support.py) -----
+                async reportLoad() {
+                    const R = this.maint.report, seq = ++R.seq;
+                    R.loading = true; R.copied = false;
+                    try {
+                        const [d, lv] = await Promise.all([
+                            this.maintGet('/api/support/report?redact=' + (R.redact ? 1 : 0)),
+                            this.maintGet('/api/support/log-level')]);
+                        if (seq !== R.seq) return;                       // a newer load (redact toggled) won
+                        R.text = d.text + '\n' + this.reportBrowserInfo();
+                        R.issueUrl = d.issue_url;
+                        R.level = lv.level;
+                    } catch (e) { this.maint.error = e.message; } finally { if (seq === R.seq) R.loading = false; }
+                },
+
+                reportBrowserInfo() {
+                    const n = navigator;
+                    return ['## This browser', `Browser   ${n.userAgent}`, `Screen    ${screen.width}x${screen.height} @${window.devicePixelRatio || 1}x, window ${innerWidth}x${innerHeight}`,
+                            `Language  ${n.language}`, `Player    ${this.appSettings?.playerMode || 'new'}`, ''].join('\n');
+                },
+
+                reportDownload() {
+                    const R = this.maint.report;
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(new Blob([R.text], { type: 'text/plain' }));
+                    a.download = `lustr-report-${this.upd.current || ''}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}.txt`;
+                    a.click();
+                    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+                },
+
+                async reportCopy() {
+                    try { await navigator.clipboard.writeText(this.maint.report.text); this.maint.report.copied = true; }
+                    catch (e) { this.maint.error = 'Could not copy (the browser blocked it) - use Download instead.'; }
+                },
+
+                reportIssue() {
+                    const R = this.maint.report;
+                    const ids = [...new Set((R.text.match(/\[([0-9a-f]{6})\]/g) || []))].slice(-5).join(' ');
+                    const body = `**What happened**\n\n\n**What you expected**\n\n\n**Steps to reproduce**\n1. \n\n`
+                               + `lustr ${this.upd.current || ''}` + (ids ? ` · error IDs: ${ids}` : '')
+                               + `\n\n_Attach the problem report (Settings → Maintenance → Problem report → Download) - drag the file here._`;
+                    window.open(R.issueUrl + '?body=' + encodeURIComponent(body), '_blank', 'noopener');
+                },
+
+                async reportSetLevel(level) {
+                    try {
+                        const d = await this.maintPost('/api/support/log-level', { level });
+                        this.maint.report.level = d.level;
+                        this.maint.message = level === 'DEBUG' ? 'Detailed logging is on. Make the problem happen again, then make the report. Turn it back to Normal afterwards.' : 'Log level saved.';
+                    } catch (e) { this.maint.error = e.message; }
                 },
 
                 // ----- Tag cleanup (§2.5) -----
@@ -12029,7 +12002,6 @@ No metadata is changed.`)) return;
                         if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
                         
                         const data = await res.json(); 
-                        console.log("Browser Data Received:", data); // Check console for 'type' values
                         
                         this.browserPath = data.current_path; 
                         this.browserEntries = data.entries || []; 
@@ -12341,7 +12313,6 @@ No metadata is changed.`)) return;
                                     value: this.notepadContent
                                 })
                             });
-                            console.log('Notepad auto-saved');
                         } catch (e) {
                             console.error('Failed to save notepad:', e);
                         }
@@ -12464,7 +12435,6 @@ No metadata is changed.`)) return;
                         if (groupCount > 0) {
                             localStorage.setItem('libraryGroups_backup', JSON.stringify(this.libraryGroups));
                             localStorage.setItem('libraryGroups_backup_time', new Date().toISOString());
-                            console.log('✅ Backed up', groupCount, 'groups to localStorage');
                         }
                         
                         await fetch('/api/library/set_groups', {
@@ -14132,7 +14102,6 @@ No metadata is changed.`)) return;
                 async seekTo(time) {
                     // Prevent duplicate seeks while one is in progress
                     if (this.seekInProgress) {
-                        console.log('Seek already in progress, ignoring duplicate');
                         return;
                     }
                     
@@ -14144,7 +14113,6 @@ No metadata is changed.`)) return;
                     
                     if (this.isHlsMode) {
                         // HLS Mode: Need to restart stream at new offset
-                        console.log(`Seeking to ${time}s in HLS mode`);
                         
                         // Mark seek in progress
                         this.seekInProgress = true;
@@ -14266,7 +14234,6 @@ No metadata is changed.`)) return;
                 showSkipFeedback(direction) {
                     // Show visual feedback for skip (optional but nice)
                     // Could add a brief animation or text overlay here
-                    console.log(`Skipped ${direction === 'left' ? 'backward' : 'forward'} 10 seconds`);
                 },
 
                 debouncedSeek() {
@@ -14552,14 +14519,10 @@ No metadata is changed.`)) return;
                 
                 async loadPlaylists() {
                     try {
-                        console.log('Loading playlists...');
                         const res = await fetch('/api/playlists');
-                        console.log('Playlists response status:', res.status);
                         if (res.ok) {
                             const data = await res.json();
-                            console.log('Playlists data:', data);
                             this.playlists = data.playlists;
-                            console.log('Playlists loaded:', this.playlists);
                         } else {
                             const errorText = await res.text();
                             console.error('Failed to load playlists - status:', res.status, 'body:', errorText);
@@ -14665,16 +14628,10 @@ No metadata is changed.`)) return;
                 
                 async loadPlaylistItems(playlistId) {
                     try {
-                        console.log('Loading playlist items for playlist:', playlistId);
                         const res = await fetch(`/api/playlists/${playlistId}/items?sort_by=${this.playlistSortField}&desc=${this.playlistSortDesc}`);
                         if (res.ok) {
                             const data = await res.json();
-                            console.log('Playlist items loaded:', data);
-                            console.log('data.items:', data.items);
-                            console.log('data.items.length:', data.items?.length);
                             this.playlistVideos = data.items;
-                            console.log('this.playlistVideos after assignment:', this.playlistVideos);
-                            console.log('this.playlistVideos.length:', this.playlistVideos.length);
                             // Preserve is_watchlist from existing currentPlaylist or playlists list
                             const existingPlaylist = this.playlists?.find(p => p.id === playlistId);
                             this.currentPlaylist = {
@@ -14865,7 +14822,6 @@ No metadata is changed.`)) return;
                 },
                 
                 async removeFromPlaylist(playlistId, videoIds) {
-                    console.log('removeFromPlaylist called with:', { playlistId, videoIds });
                     try {
                         const res = await fetch('/api/playlists/remove', {
                             method: 'POST',
@@ -14878,7 +14834,6 @@ No metadata is changed.`)) return;
                         
                         if (res.ok) {
                             const result = await res.json();
-                            console.log('Remove result:', result);
                             await this.loadPlaylistItems(playlistId);
                             await this.loadPlaylists(); // Update sidebar counts
                         } else {
@@ -17398,15 +17353,12 @@ No metadata is changed.`)) return;
                                     <button 
                                         @click.stop="
                                             const castName = castBioData?.name;
-                                            console.log('[SearchVideos] castName:', castName, 'currentLibrary before:', currentLibrary);
                                             castBioMode = false;
                                             activeTags = {}; excludeTags = {}; activeSites = {}; excludeSites = {};
                                             currentLibrary = 'All Videos';
                                             searchQuery = 'cast:' + String.fromCharCode(34) + castName + String.fromCharCode(34);
                                             page = 1;
-                                            console.log('[SearchVideos] searchQuery set to:', searchQuery, 'currentLibrary:', currentLibrary);
                                             $nextTick(() => {
-                                                console.log('[SearchVideos] nextTick - searchQuery:', searchQuery, 'currentLibrary:', currentLibrary);
                                                 fetchVideos('reset');
                                             });
                                         "
@@ -17596,7 +17548,7 @@ No metadata is changed.`)) return;
                             <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3">
                                 <template x-for="[library, count] in Object.entries(castBioData?.library_distribution || {})" :key="library">
                                     <div 
-                                        @click="console.log('Clicked:', library, 'Current:', castBioFilterLibrary); castBioFilterLibrary = castBioFilterLibrary === library ? null : library; console.log('New:', castBioFilterLibrary); $nextTick(() => console.log('Videos:', filteredCastBioVideos.length))"
+                                        @click="castBioFilterLibrary = castBioFilterLibrary === library ? null : library"
                                         class="bg-gray-700 rounded p-2 sm:p-3 cursor-pointer hover:bg-gray-600 transition"
                                         :class="castBioFilterLibrary === library ? 'ring-2 ring-blue-500' : ''"
                                         :title="'Click to filter videos from ' + library">
@@ -17823,7 +17775,6 @@ No metadata is changed.`)) return;
                 @click="(async () => { 
                     // Ensure playlists are loaded
                     if (playlists.length === 0) {
-                        console.log('Playlists not loaded, loading now...');
                         await loadPlaylists();
                     }
                     const watchlist = playlists.find(p => p.is_watchlist); 
@@ -20297,7 +20248,7 @@ No metadata is changed.`)) return;
                         <!-- Database Maintenance (db_maintenance.py) -->
                         <div x-show="toolsActiveTab === 'cleanup'" class="space-y-3 text-sm">
                             <div class="flex flex-wrap gap-2 items-center">
-                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['corrupt', 'Corrupt files'], ['backups', 'Backups']]" :key="k">
+                                <template x-for="[k, label] in [['overview', 'Overview'], ['deleted', 'Deleted & moved files'], ['cast', 'Performers with no videos'], ['spell', 'Same performer, different spelling'], ['gender', 'Gender check'], ['tags', 'Tag cleanup'], ['corrupt', 'Corrupt files'], ['backups', 'Backups'], ['report', 'Problem report']]" :key="k">
                                     <button x-show="settingsLayout !== 'page'" @click="maintShow(k)" class="px-3 py-1 rounded text-xs"
                                             :class="maint.view === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="label"></button>
                                 </template>
@@ -20706,6 +20657,38 @@ No metadata is changed.`)) return;
                                 </div>
                             </div>
 
+                            <!-- Problem report (support.py) -->
+                            <div x-show="maint.view === 'report'" class="space-y-3 text-xs">
+                                <p class="text-gray-400">Something not working? This report has what's needed to look into it: lustr's version and system, the database's health,
+                                    background jobs, recent errors and the end of the log. Attach it to an issue on GitHub.</p>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <label class="flex items-center gap-2 cursor-pointer mr-2"><input type="checkbox" class="rounded" :checked="!!maint.report.redact"
+                                           @change="maint.report.redact = $event.target.checked; reportLoad()"> Hide names, titles and paths</label>
+                                    <button @click="reportDownload()" :disabled="maint.report.loading || !maint.report.text" class="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-40">⬇ Download</button>
+                                    <button @click="reportCopy()" :disabled="maint.report.loading || !maint.report.text" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-40"
+                                            x-text="maint.report.copied ? '✓ Copied' : '📋 Copy'"></button>
+                                    <button @click="reportIssue()" :disabled="maint.report.loading || !maint.report.issueUrl" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-40">Open a GitHub issue ↗</button>
+                                    <button @click="reportLoad()" :disabled="maint.report.loading" class="px-2 py-1.5 rounded bg-gray-700 hover:bg-gray-600" title="Make the report again">⟳</button>
+                                </div>
+                                <p x-show="!maint.report.redact" class="text-yellow-400">This report shows your file names, titles and performers. Check it before you share it.</p>
+                                <div class="relative">
+                                    <div x-show="maint.report.loading" class="absolute inset-0 flex items-center justify-center bg-gray-900/70 text-gray-300 rounded">Making the report…</div>
+                                    <textarea readonly x-model="maint.report.text" spellcheck="false"
+                                              class="w-full h-[45vh] bg-gray-900 border border-gray-700 rounded p-2 font-mono text-[11px] leading-snug text-gray-300 whitespace-pre"></textarea>
+                                </div>
+                                <div class="bg-gray-900 p-3 rounded space-y-2">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="font-bold text-sm text-gray-200 mr-2">Logging</span>
+                                        <template x-for="[lv, label] in [['WARNING', 'Problems only'], ['INFO', 'Normal'], ['DEBUG', 'Detailed']]" :key="lv">
+                                            <button @click="reportSetLevel(lv)" class="px-2 py-1 rounded"
+                                                    :class="maint.report.level === lv ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'" x-text="label"></button>
+                                        </template>
+                                    </div>
+                                    <p class="text-gray-500">The log is in lustr's data folder (<span class="font-mono">logs/lustr.log</span>) and in <span class="font-mono">docker logs lustr</span>.
+                                        For a problem that's hard to pin down, switch to Detailed, make it happen again, then make the report.</p>
+                                </div>
+                            </div>
+
                             <!-- Backups -->
                             <div x-show="maint.view === 'backups'" class="space-y-2">
                                 <p class="text-xs text-gray-400" x-text="'Database backups in data/ and data/backups/ - ' + maintFmtBytes(maint.backups.bytes) + '. Maintenance makes one before it changes anything (automatic runs at most once a day).'"></p>
@@ -20773,7 +20756,6 @@ No metadata is changed.`)) return;
                                 <p class="text-xs text-gray-400 mb-3">Everything you've added: a fresh copy of the database (metadata, cast, movies, collections, settings) plus
                                     quick tags and watch history, in one zip (your fields and their layout are in the database). Thumbnails aren't included; they're made again by themselves.</p>
                                 <a href="/api/tools/maintenance/backups/full" class="block w-full bg-gray-700 hover:bg-gray-600 px-4 py-3 rounded text-left">💾 Download full backup</a>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -21332,9 +21314,9 @@ No metadata is changed.`)) return;
                             <h4 class="text-sm font-semibold mb-3 text-gray-300">Theme</h4>
                             <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
                                 <template x-for="theme in allThemes" :key="theme.id">
-                                    <button
-                                        @click="applyTheme(theme.id)"
-                                        class="relative flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left"
+                                    <div role="button" tabindex="0"
+                                        @click="applyTheme(theme.id)" @keydown.enter.prevent="applyTheme(theme.id)" @keydown.space.prevent="applyTheme(theme.id)"
+                                        class="relative flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left cursor-pointer"
                                         :class="activeTheme === theme.id
                                             ? 'border-blue-500 bg-blue-900/30'
                                             : 'border-gray-700 bg-gray-900 hover:border-gray-500'">
@@ -21358,7 +21340,7 @@ No metadata is changed.`)) return;
                                                 @click.stop="deleteUploadedTheme(theme.id)"
                                                 class="absolute top-1 right-1 text-gray-600 hover:text-red-400 text-sm leading-none px-1"
                                                 title="Delete">&times;</button>
-                                    </button>
+                                    </div>
                                 </template>
                             </div>
                         </div>
@@ -21406,6 +21388,7 @@ No metadata is changed.`)) return;
 
             </div>
         </div>
+        </div><!-- end of the main column (flex-1 flex flex-col); the modals below sit outside it, as they always have -->
 
         <!-- Clip maker (from the new player) -->
         <div x-show="clipMk.open" x-cloak class="fixed inset-0 z-[150] bg-black/70 flex items-end sm:items-center justify-center p-2 sm:p-4">
