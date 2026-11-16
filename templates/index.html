@@ -21947,14 +21947,15 @@ No metadata is changed.`)) return;
                     <button @click="feSave()" :disabled="fe.busy || !feDirty()" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-sm">Save</button>
                 </div>
             </div>
-            <!-- delete permanently -->
-            <div x-show="fe.del" x-cloak class="fixed inset-0 z-[85] bg-black/70 flex items-center justify-center p-4" @keydown.escape.window.stop="fe.del = null">
+            <!-- delete permanently (built only while open: its input binds fe.del.confirm) -->
+            <template x-if="fe.del">
+            <div class="fixed inset-0 z-[85] bg-black/70 flex items-center justify-center p-4" @keydown.escape.window.stop="fe.del = null">
                 <div class="bg-gray-800 rounded-lg w-full max-w-md shadow-2xl p-4 space-y-3 text-sm" @click.outside="fe.del = null">
                     <div class="font-bold text-red-300" x-text="'Delete “' + (fe.del?.label || '') + '” permanently?'"></div>
                     <p class="text-gray-300" x-show="fe.del?.usage" x-text="fe.del?.usage ? 'This erases ' + fe.del.usage.values + ' values on ' + fe.del.usage.videos + ' videos, ' + fe.del.usage.albums + ' albums, attributes of ' + fe.del.usage.performers + ' performers, ' + fe.del.usage.quick_tags + ' quick tags and ' + fe.del.usage.tag_maps + ' tag-map rows.' : ''"></p>
                     <p class="text-gray-400">A backup of the database is made first (Settings → Maintenance → Backups). To keep the values, hide the field instead.</p>
                     <label class="block text-xs text-gray-400">Type <b class="text-gray-200" x-text="fe.del?.label"></b> to confirm
-                        <input type="text" x-model="fe.del.confirm" class="mt-1 w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm" x-show="fe.del"></label>
+                        <input type="text" x-model="fe.del.confirm" class="mt-1 w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm"></label>
                     <div class="flex justify-end gap-2">
                         <button @click="fe.del = null" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600">Cancel</button>
                         <button @click="feDelete()" :disabled="fe.busy || (fe.del?.confirm || '').trim().toLowerCase() !== (fe.del?.label || '').toLowerCase()"
@@ -21962,6 +21963,7 @@ No metadata is changed.`)) return;
                     </div>
                 </div>
             </div>
+            </template>
         </div>
 
         <div x-show="modals.quickTags" x-cloak class="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-4"
