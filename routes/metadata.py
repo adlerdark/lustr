@@ -121,6 +121,7 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
             if not file_data:
                 continue
             cast_before = {str(c).lower() for c in (file_data.get('cast') or [])}
+            tagged_before = movies.FULL_MOVIE_TAG in {str(t).lower() for t in (file_data.get('tags') or [])}
             
             # Make a working copy if using JSON, or work directly if using SQLite
             if not USE_SQLITE:
@@ -346,6 +347,8 @@ def update_metadata(req: UpdateMetadataRequest, model = Depends(get_model)):
                                 pass
                         if any(k in movies.UPDATE_KEYS for k in (req.updates or {})):
                             movies.apply_updates(conn, video_id, req.updates)   # Movie / Scene # / Part #
+                        if not tagged_before:            # full.movie just added: its movie entry becomes the whole movie
+                            movies.on_full_movie_tagged(conn, video_id)
                         conn.commit()
                         # performers added to this video bring their starred attributes (Settings)
                         added_cast = [c for c in (file_data.get('cast') or []) if str(c).lower() not in cast_before]

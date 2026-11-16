@@ -727,8 +727,8 @@
                            review: { name: '', loading: false, cached: false, results: [], selectedId: null, query: '', busy: false } },
                 extBulkTimer: null,
                 extDbDragging: false,   // true while the Find match / Linked data modal is being dragged
-                // Sites -> StashDB studios, and library default sites (ext_db.py)
-                extSites: { tab: 'sites', loading: false, sites: [], stats: null, filter: 'unlinked', q: '', error: '', message: '',
+                // Sites -> StashDB studios / ThePornDB sites (per database), and library default sites (ext_db.py)
+                extSites: { tab: 'sites', source: '', loading: false, sites: [], stats: null, filter: 'unlinked', q: '', error: '', message: '',
                             view: 'list', fromMeta: false, limit: '150', recheck: false, job: null,
                             find: { site: null, loading: false, outcome: '', pick: null, cands: [], query: '', cached: false, busy: false },
                             libs: [], libsLoading: false, libEdit: {} },
@@ -1146,7 +1146,7 @@
                          spell: { groups: [], keep: {}, loading: false },      // same performer, different spelling
                          gender: { rows: [], ignored: [], counts: {}, kind: '', selected: {}, open: {}, showIgnored: false, loading: false },   // gender_check.py
                          backups: { rows: [], bytes: 0, selected: {}, keep: 3, loading: false },
-                         tags: { changes: [], sites: [], counts: {}, selected: {}, keep: {}, loading: false, loaded: false } },
+                         tags: { changes: [], sites: [], format: [], siteNames: [], counts: {}, selected: {}, keep: {}, formatTo: {}, loading: false, loaded: false } },
                 browserLayout: 'grid', // 'grid' or 'table'
                 
                 // Library Management
@@ -5070,11 +5070,18 @@
                     }
                 },
 
+                // Full movie (your choice, or the full.movie tag): applying makes the video the whole movie and tags it
+                extSceneMakesWhole() {
+                    const sg = this.extScene.suggest;
+                    return !!sg.movieCast?.full_movie && sg.fullMovie !== false;
+                },
+
                 async extSceneSuggestApply() {
                     const sc = this.extScene, sg = sc.suggest;
                     const picked = sg.items.filter(i => !i.already_set && this.extSceneSuggestIsChecked(i));
                     const genderSaves = this.extSceneGenderSaves();
-                    if ((!picked.length && !genderSaves.length) || sc.busy) return;
+                    const makeWhole = this.extSceneMakesWhole();
+                    if ((!picked.length && !genderSaves.length && sg.fullMovie !== true) || sc.busy) return;
                     const updates = {}, addTo = {}, male = [], unmale = [], castAdded = [], tags = [];
                     const lc = v => String(v).toLowerCase();
                     for (const it of picked) {
@@ -5089,7 +5096,8 @@
                     sc.busy = 'apply';
                     sc.error = '';
                     try {
-                        if (picked.length) {
+                        if (makeWhole) updates.movie_whole = '1';
+                        if (picked.length || makeWhole) {
                             const res = await fetch('/api/metadata/update', {
                                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ paths: [sc.path], updates, add_to_lists: addTo })
@@ -5109,6 +5117,7 @@
                         }
                         await this.fetchVideos('none');
                         let msg = picked.length ? `Added ${picked.length} item${picked.length === 1 ? '' : 's'}: ` + picked.map(i => i.value).join(', ') : '';
+                        if (makeWhole && sg.fullMovie === true) msg += (msg ? ' · ' : '') + 'marked as the whole movie (full.movie)';
                         if (gOk.length) msg += (msg ? ' · ' : '') + 'gender: ' + gOk.map(s => s.name + ' ' + this.genderLabel(s.gender)).join(', ');
                         if (gFail.length) sc.error = 'Could not save the gender of ' + gFail.map(s => s.name).join(', ');
                         const withAttrs = castAdded.filter(n => !male.includes(n));
@@ -5468,7 +5477,7 @@ No metadata is changed.`)) return;
                     return r.page_url || ('https://stashdb.org/scenes/' + r.id);
                 },
 
-                // ===== Sites -> StashDB studios (ext_db.py) =====
+                // ===== Sites -> StashDB studios / ThePornDB sites (ext_db.py); links are kept per database =====
                 // Settings -> External DB -> Site Linking; from the Metadata Browser, closing Settings goes back to it
                 extSitesOpen() {
                     this.extSites.fromMeta = !!this.modals.metadataBrowser;
@@ -5488,16 +5497,34 @@ No metadata is changed.`)) return;
                             this.extDb.source = st.default_source;
                         } catch (e) { /* shown on first search */ }
                     }
-                    await this.extSitesLoad();
+                    if (!this.extSites.source || !this.extSitesSources().some(x => x.key === this.extSites.source))
+                        this.extSites.source = this.extDb.status?.default_source || 'stashdb';
                     await this.extSitesJobRefresh();
+                    if (this.extSites.job?.running && this.extSites.job.source) this.extSites.source = this.extSites.job.source;   // show the database being checked
+                    await this.extSitesLoad();
                     if (this.extSites.job?.running) this.extSitesStartPolling();
                     if (this.extSites.tab === 'libraries') this.extSitesLibsLoad();
+                },
+
+                // the databases sites can be linked on (configured ones), and the one this page is showing
+                extSitesSources() { return this.extDbConfiguredSources(); },
+                extSitesSourceLabel() {
+                    return (this.extDb.status?.sources || []).find(x => x.key === this.extSites.source)?.label || 'StashDB';
+                },
+                extSitesOtherLabels(x) {
+                    return (x.link?.linked_on || []).filter(k => k !== this.extSites.source)
+                        .map(k => (this.extDb.status?.sources || []).find(s => s.key === k)?.label || k);
+                },
+                async extSitesSetSource(src) {
+                    if (src === this.extSites.source) return;
+                    Object.assign(this.extSites, { source: src, view: 'list', sites: [], error: '', message: '' });
+                    await this.extSitesLoad();
                 },
 
                 async extSitesLoad() {
                     this.extSites.loading = true;
                     try {
-                        const d = await (await fetch('/api/extdb/sites')).json();
+                        const d = await (await fetch('/api/extdb/sites?source=' + encodeURIComponent(this.extSites.source || ''))).json();
                         if (!d.success) throw new Error(d.error || 'Could not load sites');
                         this.extSites.sites = d.sites;
                         this.extSites.stats = d.stats;
@@ -5528,7 +5555,7 @@ No metadata is changed.`)) return;
                     const pct = Math.round(st.videos_covered / Math.max(1, st.videos_total) * 100);
                     return `${st.linked.toLocaleString()} of ${st.sites.toLocaleString()} sites linked, covering `
                          + `${st.videos_covered.toLocaleString()} of ${st.videos_total.toLocaleString()} site-tagged videos (${pct}%)`
-                         + (st.not_on_db ? ` · ${st.not_on_db} marked not on ${this.extDbSourceLabel()}` : '');
+                         + (st.not_on_db ? ` · ${st.not_on_db} marked not on ${this.extSitesSourceLabel()}` : '');
                 },
 
                 extSitesOutcomeLabel(o) {
@@ -5540,9 +5567,10 @@ No metadata is changed.`)) return;
                     Object.assign(this.extSites.find, { site, loading: true, outcome: '', pick: null, cands: [], query: '', cached: false, busy: false });
                     Object.assign(this.extSites, { view: 'find', error: '', message: '' });
                     try {
-                        const url = auto ? '/api/extdb/sites/candidates?site=' + encodeURIComponent(site.display) : null;
+                        const src = this.extSites.source;
+                        const url = auto ? '/api/extdb/sites/candidates?site=' + encodeURIComponent(site.display) + '&source=' + encodeURIComponent(src) : null;
                         const d = url ? await (await fetch(url)).json()
-                                      : await this.extDbPost('/api/extdb/sites/search', { site: site.display });
+                                      : await this.extDbPost('/api/extdb/sites/search', { site: site.display, source: src });
                         if (!d.success) throw new Error(d.error || 'Search failed');
                         Object.assign(this.extSites.find, { outcome: d.outcome, pick: d.pick, cands: d.candidates || [], cached: !!d.cached });
                     } catch (e) {
@@ -5557,7 +5585,7 @@ No metadata is changed.`)) return;
                     fd.loading = true;
                     this.extSites.error = '';
                     try {
-                        const d = await this.extDbPost('/api/extdb/sites/search', { site: fd.site.display, query: fd.query.trim() || null });
+                        const d = await this.extDbPost('/api/extdb/sites/search', { site: fd.site.display, query: fd.query.trim() || null, source: this.extSites.source });
                         Object.assign(fd, { outcome: d.outcome, pick: d.pick, cands: d.candidates || [], cached: false });
                     } catch (e) {
                         this.extSites.error = e.message;
@@ -5572,8 +5600,10 @@ No metadata is changed.`)) return;
                     fd.busy = true;
                     this.extSites.error = '';
                     try {
-                        const d = await this.extDbPost('/api/extdb/sites/link', { site: fd.site.display, ext_id: extId, as_network: asNetwork });
-                        this.extSites.message = `${fd.site.display} → added ${label || 'studio'}`;
+                        const d = await this.extDbPost('/api/extdb/sites/link', { site: fd.site.display, ext_id: extId, as_network: asNetwork, source: this.extSites.source });
+                        this.extSites.message = `${fd.site.display} → added ${label || 'studio'}`
+                            + (d.also || []).map(a => a.outcome === 'linked' ? ` · also linked on ${a.label}: ${a.name}`
+                                                                            : ` · ${a.label}: no exact match, see Needs a look there`).join('');
                         await this.extSitesLoad();
                         fd.site = this.extSites.sites.find(x => x.site_key === d.site_key) || fd.site;
                     } catch (e) {
@@ -5586,7 +5616,7 @@ No metadata is changed.`)) return;
                 async extSitesUnlinkStudio(site, extId, label = '') {
                     this.extSites.error = '';
                     try {
-                        const d = await this.extDbPost('/api/extdb/sites/unlink-studio', { site: site.display, ext_id: extId });
+                        const d = await this.extDbPost('/api/extdb/sites/unlink-studio', { site: site.display, ext_id: extId, source: this.extSites.source });
                         this.extSites.message = `${site.display}: removed ${label || 'studio'}`;
                         await this.extSitesLoad();
                         if (this.extSites.view === 'find')
@@ -5600,17 +5630,17 @@ No metadata is changed.`)) return;
 
                 async extSitesNotOnDb(site) {
                     try {
-                        await this.extDbPost('/api/extdb/sites/not-on-db', { site: site.display });
-                        this.extSites.message = `${site.display} marked as not on ${this.extDbSourceLabel()}`;
+                        await this.extDbPost('/api/extdb/sites/not-on-db', { site: site.display, source: this.extSites.source });
+                        this.extSites.message = `${site.display} marked as not on ${this.extSitesSourceLabel()}`;
                         if (this.extSites.view === 'find') this.extSites.view = 'list';
                         await this.extSitesLoad();
                     } catch (e) { this.extSites.error = e.message; }
                 },
 
                 async extSitesClear(site) {
-                    if (!confirm(`Remove the link for ${site.display}? (Your abbreviations for it are kept.)`)) return;
+                    if (!confirm(`Remove the ${this.extSitesSourceLabel()} link for ${site.display}? (Your abbreviations for it are kept.)`)) return;
                     try {
-                        await this.extDbPost('/api/extdb/sites/clear', { site: site.display });
+                        await this.extDbPost('/api/extdb/sites/clear', { site: site.display, source: this.extSites.source });
                         this.extSites.message = `${site.display} unlinked`;
                         await this.extSitesLoad();
                     } catch (e) { this.extSites.error = e.message; }
@@ -5633,10 +5663,10 @@ No metadata is changed.`)) return;
                     const unl = this.extSites.sites.filter(x => x.status === 'unlinked' && (this.extSites.recheck || !x.check)).length;
                     const n = this.extSites.limit === '0' ? unl : Math.min(unl, Number(this.extSites.limit));
                     if (!n) { this.extSites.error = this.extSites.recheck ? 'No unlinked sites left.' : 'No unchecked, unlinked sites left - tick "Re-check" to check the rest again.'; return; }
-                    if (!confirm(`Check ${n} site(s) against ${this.extDbSourceLabel()} (about ${Math.ceil(n * 1.5 / 60)} min)?\n\n`
+                    if (!confirm(`Check ${n} site(s) against ${this.extSitesSourceLabel()} (about ${Math.ceil(n * 1.5 / 60)} min)?\n\n`
                                + `Only exact and network matches are linked; everything else is kept for you to review.`)) return;
                     try {
-                        const d = await this.extDbPost('/api/extdb/sites/bulk/start', { limit: Number(this.extSites.limit), recheck: this.extSites.recheck });
+                        const d = await this.extDbPost('/api/extdb/sites/bulk/start', { limit: Number(this.extSites.limit), recheck: this.extSites.recheck, source: this.extSites.source });
                         this.extSites.job = d.status;
                         this.extSitesStartPolling();
                     } catch (e) { this.extSites.error = e.message; }
@@ -7199,7 +7229,7 @@ No metadata is changed.`)) return;
                     return !!(C.snap && C.view && C.view.kind === 'smart' && this.libraryTab === 'collections' && this.currentLibrary !== 'Home');
                 },
                 _collFilterKeys: ['activeTags', 'activeSites', 'activeLengthFilters', 'favoritesOnly', 'resFilter', 'starsFilter', 'sceneFilter',
-                                  'quickFilters', 'lengthSliderMin', 'lengthSliderMax', 'searchQuery'],
+                                  'quickFilters', 'lengthSliderMin', 'lengthSliderMax', 'searchQuery', 'sortField', 'sortDesc'],
                 collFiltersEnter(rules) {
                     const C = this.coll, r = rules || {};
                     if (!C.snap) C.snap = JSON.parse(JSON.stringify(Object.fromEntries(this._collFilterKeys.map(k => [k, this[k]]))));
@@ -7217,7 +7247,8 @@ No metadata is changed.`)) return;
                     Object.assign(this, { activeTags: states(r.tags, r.tags_exclude), activeSites: states(r.sites, r.sites_exclude),
                                           activeLengthFilters: lengths, favoritesOnly: !!r.favorites_only, resFilter: res, starsFilter: stars,
                                           sceneFilter: '', quickFilters: { captions: '', chapters: '', markers: '' }, searchQuery: '',
-                                          lengthSliderMin: one ? Math.round(+one[1] / 60) : 0, lengthSliderMax: one ? Math.min(40, Math.round(+one[2] / 60)) : 40 });
+                                          lengthSliderMin: one ? Math.round(+one[1] / 60) : 0, lengthSliderMax: one ? Math.min(40, Math.round(+one[2] / 60)) : 40,
+                                          sortField: r.sort_by || 'Recently Added', sortDesc: r.desc !== false });   // the header's sort shows (and changes) its sort
                     C.base = base;
                 },
                 // back to the Library's own filters (leaving the collection, the tab or the library, or searching)
@@ -7236,17 +7267,21 @@ No metadata is changed.`)) return;
                     const q = [this.coll.base, this.resFilter ? 'res:' + this.resFilter : '', this.starsFilter ? 'stars:' + this.starsFilter : ''].filter(Boolean).join(' ');
                     return { ...(this.coll.view?.rules || {}), query: q, tags: pick(this.activeTags, 1), tags_exclude: pick(this.activeTags, -1),
                              sites: pick(this.activeSites, 1), sites_exclude: pick(this.activeSites, -1), favorites_only: !!this.favoritesOnly,
-                             length_filter: this.activeLengthFilters.join(',') || null };
+                             length_filter: this.activeLengthFilters.join(',') || null, sort_by: this.sortField, desc: !!this.sortDesc };
                 },
-                // has the sidebar changed the filters from the saved ones?
+                // have the sidebar or the sort changed from the saved ones?
                 collFiltersDirty() {
                     if (!this.collFiltering()) return false;
-                    const norm = r => JSON.stringify(['query', 'tags', 'tags_exclude', 'sites', 'sites_exclude', 'favorites_only', 'length_filter']
-                        .map(k => { const v = (r || {})[k]; return k === 'favorites_only' ? !!v : (k === 'query' ? String(v || '').replace(/\s+/g, ' ').trim() : (v || null)); }));
+                    const norm = r => JSON.stringify(['query', 'tags', 'tags_exclude', 'sites', 'sites_exclude', 'favorites_only', 'length_filter', 'sort_by', 'desc']
+                        .map(k => { const v = (r || {})[k];
+                                    if (k === 'favorites_only') return !!v;
+                                    if (k === 'desc') return v !== false;
+                                    if (k === 'sort_by') return v || 'Recently Added';
+                                    return k === 'query' ? String(v || '').replace(/\s+/g, ' ').trim() : (v || null); }));
                     return norm(this.collFilterRules()) !== norm(this.coll.view.rules);
                 },
                 async collSaveFilters() {
-                    if (!confirm('Save the filters shown in the sidebar as this smart collection\'s filters?')) return;
+                    if (!confirm('Save the filters shown in the sidebar, and the sort, as this smart collection\'s?')) return;
                     await this.collUpdate({ rules: this.collFilterRules() });
                 },
 
@@ -7475,6 +7510,7 @@ No metadata is changed.`)) return;
                     const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
                     const d = await r.json();
                     if (!d.success) throw Object.assign(new Error(d.error || 'Failed'), { data: d });
+                    this.gridStale = true;                 // movies change videos (movie, scene, whole, tags): the Library tab reloads when shown
                     return d;
                 },
 
@@ -7815,6 +7851,7 @@ No metadata is changed.`)) return;
                         const r = await fetch('/api/metadata/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                                                          body: JSON.stringify({ paths: [video.path], updates: { [key]: String(value || '') } }) });
                         if (!r.ok) throw new Error('HTTP ' + r.status);
+                        this.gridStale = true;                         // the Library tab's copy of this video is out of date now
                         await this.mvLoad(this.mv.view.id);           // re-sorts by scene / part
                     } catch (e) { this.mv.msg = 'Not saved: ' + e.message; }
                 },
@@ -10001,7 +10038,8 @@ No metadata is changed.`)) return;
                     if (field === 'Random') { this.sortField = field; this.sortSeed = Math.floor(Math.random() * 1e9); }   // pick again = reshuffle
                     else if (this.sortField === field) this.sortDesc = !this.sortDesc;
                     else { this.sortField = field; this.sortDesc = this.specialSorts.includes(field) || ['Plays', 'Chapters', 'Markers'].includes(field); }   // newest / most first
-                    
+                    if (this.collFiltering()) { this.fetchVideos('reset'); return; }   // an open smart collection: its sort, until you save it
+
                     // Save sort settings for current library (session-based)
                     if (this.currentLibrary && this.currentLibrary !== 'Home') {
                         this.librarySortSettings[this.currentLibrary] = {
@@ -10015,6 +10053,7 @@ No metadata is changed.`)) return;
                 },
                 toggleSortDir() { 
                     this.sortDesc = !this.sortDesc; 
+                    if (this.collFiltering()) { this.fetchVideos('reset'); return; }   // an open smart collection: its sort, until you save it
                     
                     // Save sort settings for current library (session-based)
                     if (this.currentLibrary && this.currentLibrary !== 'Home') {
@@ -11151,7 +11190,10 @@ No metadata is changed.`)) return;
                         const selected = {}, keep = {};
                         (d.changes || []).forEach(c => { selected[c.id] = true; });
                         (d.sites || []).forEach(s => { selected['site|' + s.key] = true; keep[s.key] = s.keep; });
-                        Object.assign(T, { changes: d.changes || [], sites: d.sites || [], counts: d.counts || {}, selected, keep, loaded: true });
+                        const formatTo = {};
+                        (d.site_format || []).forEach(r => { selected['fmt|' + r.value] = true; formatTo[r.value] = r.to; });
+                        Object.assign(T, { changes: d.changes || [], sites: d.sites || [], format: d.site_format || [], siteNames: d.site_names || [],
+                                           counts: d.counts || {}, selected, keep, formatTo, loaded: true });
                     } catch (e) { this.maint.error = e.message; } finally { T.loading = false; }
                 },
 
@@ -11165,6 +11207,14 @@ No metadata is changed.`)) return;
 
                 maintTagCount() { return Object.values(this.maint.tags.selected).filter(Boolean).length; },
 
+                // Your site format: lowercase, words joined by periods (same as the server's _user_format)
+                maintSiteFormat(v) { return (v || '').trim().toLowerCase().replace(/\s+/g, '.').replace(/\.{2,}/g, '.').replace(/^\.+|\.+$/g, ''); },
+
+                maintSiteMerges(r) {
+                    const to = this.maintSiteFormat(this.maint.tags.formatTo[r.value]);
+                    return !!to && to !== r.value && this.maint.tags.siteNames.includes(to);
+                },
+
                 maintTagTo(c) {
                     if (!c.to.length) return 'remove (empty)';
                     return c.to.map(([f, v]) => (f === c.field ? '' : f + ': ') + v).join(' + ');
@@ -11175,15 +11225,18 @@ No metadata is changed.`)) return;
                     const ids = T.changes.filter(c => T.selected[c.id]).map(c => c.id);
                     const sites = {};
                     T.sites.forEach(s => { if (T.selected['site|' + s.key]) sites[s.key] = T.keep[s.key]; });
-                    const n = ids.length + Object.keys(sites).length;
+                    const site_format = {};
+                    T.format.forEach(r => { if (T.selected['fmt|' + r.value]) site_format[r.value] = r.videos ? this.maintSiteFormat(T.formatTo[r.value]) : ''; });
+                    const n = ids.length + Object.keys(sites).length + Object.keys(site_format).length;
                     if (!n || !confirm(`Apply ${n} tag cleanup change${n === 1 ? '' : 's'}?\n\nA backup of the database is made first.`)) return;
                     this.maint.busy = 'tags';
                     Object.assign(this.maint, { error: '', message: '' });
                     try {
-                        const d = await this.maintPost('/api/tools/maintenance/tag-cleanup/apply', { ids, sites });
+                        const d = await this.maintPost('/api/tools/maintenance/tag-cleanup/apply', { ids, sites, site_format });
                         const a = d.applied || {};
                         this.maint.message = `Done: ${a.malformed || 0} malformed values fixed, ${a.nationality_move || 0} moved to nationality, `
-                            + `${a.indian_nationality || 0} nationality added, ${a.sites || 0} sites merged (${a.site_videos || 0} videos)`
+                            + `${a.indian_nationality || 0} nationality added, ${a.sites || 0} sites merged, ${a.site_renamed || 0} sites renamed `
+                            + `(${a.site_videos || 0} videos), ${a.site_removed || 0} unused sites removed`
                             + (d.backup ? ` · backup ${d.backup}` : '') + '.';
                         await this.maintLoadTags();
                         this.fetchVideos('none');
@@ -16232,7 +16285,7 @@ No metadata is changed.`)) return;
                                     </select>
                                     <button x-show="coll.view?.kind === 'smart'" @click="collSaveFilters()" :disabled="!collFiltersDirty()"
                                             class="px-2 py-1 rounded disabled:opacity-40" :class="collFiltersDirty() ? 'bg-blue-600 hover:bg-blue-500 text-white' : 'bg-gray-800 text-gray-300'"
-                                            title="Make the filters shown in the sidebar this collection's filters">Save current filters</button>
+                                            title="Make the filters shown in the sidebar, and the sort, this collection's">Save current filters</button>
                                     <button x-show="coll.view?.kind === 'smart'" @click="collShowInOpen()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
                                             title="Which Collections tabs list it">Show in…</button>
                                     <button @click="collStartEdit()" class="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Edit</button>
@@ -20543,7 +20596,7 @@ No metadata is changed.`)) return;
 
                             <!-- Tag cleanup -->
                             <div x-show="maint.view === 'tags'" class="space-y-3">
-                                <p class="text-xs text-gray-400">Values that are malformed, nationality words stored as an ethnicity, and sites spelled several ways. Everything is ticked; untick what you want to keep as it is. New variants can appear later (scans, edits) - this page finds them again.</p>
+                                <p class="text-xs text-gray-400">Values that are malformed, nationality words stored as an ethnicity, sites spelled several ways or with capitals and spaces, and sites no video uses. Everything is ticked; untick what you want to keep as it is. New variants can appear later (scans, edits) - this page finds them again.</p>
                                 <p x-show="maint.tags.loading" class="text-center text-gray-400 py-4">Looking for values to clean up…</p>
                                 <template x-for="sec in [['malformed', 'Malformed values'], ['nationality_move', 'Ethnicity → nationality'], ['indian_nationality', 'Add nationality: indian (linked record says India)']]" :key="sec[0]">
                                     <div x-show="maintTagRows(sec[0]).length" class="space-y-1">
@@ -20611,7 +20664,41 @@ No metadata is changed.`)) return;
                                         </table>
                                     </div>
                                 </div>
-                                <p x-show="maint.tags.loaded && !maint.tags.loading && !maint.tags.changes.length && !maint.tags.sites.length" class="text-center text-gray-500 py-4">Nothing to clean up.</p>
+                                <div x-show="maint.tags.format.length" class="space-y-1">
+                                    <div class="flex items-center gap-3 text-xs">
+                                        <h4 class="font-semibold text-sm text-gray-200" x-text="'Site format (' + maint.tags.format.length + ')'"></h4>
+                                        <button @click="maintTagToggleAll(maint.tags.format.map(r => 'fmt|' + r.value), true)" class="text-gray-400 hover:text-white">All</button>
+                                        <button @click="maintTagToggleAll(maint.tags.format.map(r => 'fmt|' + r.value), false)" class="text-gray-400 hover:text-white">None</button>
+                                        <span class="text-gray-500">Renamed to lowercase with periods (you can edit the new name); site links aren't affected. Unused sites are removed.</span>
+                                    </div>
+                                    <div class="bg-gray-900 rounded overflow-auto max-h-[40vh] border border-gray-700">
+                                        <table class="w-full text-xs">
+                                            <thead class="sticky top-0 z-10 bg-gray-900"><tr class="text-left text-gray-400 border-b border-gray-700">
+                                                <th class="p-2 w-6"></th><th class="p-2 font-medium">Now</th><th class="p-2 font-medium">Becomes</th>
+                                                <th class="p-2 font-medium text-right">Videos</th></tr></thead>
+                                            <tbody>
+                                                <template x-for="r in maint.tags.format" :key="r.value">
+                                                    <tr class="border-b border-gray-800">
+                                                        <td class="p-2"><input type="checkbox" class="rounded" :checked="!!maint.tags.selected['fmt|' + r.value]"
+                                                            @change="maint.tags.selected = { ...maint.tags.selected, ['fmt|' + r.value]: $event.target.checked }"></td>
+                                                        <td class="p-2 font-mono text-gray-300" x-text="'“' + r.value + '”'"></td>
+                                                        <td class="p-2">
+                                                            <span x-show="!r.videos" class="text-red-300">remove (no videos)</span>
+                                                            <span x-show="r.videos" class="flex items-center gap-2">
+                                                                <input type="text" class="bg-gray-800 border border-gray-600 rounded px-1 py-0.5 font-mono text-green-300 w-56"
+                                                                       :value="maint.tags.formatTo[r.value]"
+                                                                       @change="maint.tags.formatTo = { ...maint.tags.formatTo, [r.value]: maintSiteFormat($event.target.value) || r.to }; $event.target.value = maint.tags.formatTo[r.value]">
+                                                                <span x-show="maintSiteMerges(r)" class="px-1 rounded bg-yellow-900 text-yellow-300" title="A site with this name exists: the two become one">merges</span>
+                                                            </span>
+                                                        </td>
+                                                        <td class="p-2 text-right text-gray-400" x-text="r.videos"></td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <p x-show="maint.tags.loaded && !maint.tags.loading && !maint.tags.changes.length && !maint.tags.sites.length && !maint.tags.format.length" class="text-center text-gray-500 py-4">Nothing to clean up.</p>
                                 <div class="flex flex-wrap gap-2">
                                     <button @click="maintLoadTags()" :disabled="maint.tags.loading || !!maint.busy" class="px-3 py-1.5 rounded text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40">Refresh</button>
                                     <button @click="maintApplyTags()" :disabled="!maintTagCount() || !!maint.busy" class="px-3 py-1.5 rounded text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40"
@@ -21082,6 +21169,12 @@ No metadata is changed.`)) return;
                         <div class="bg-gray-800 rounded-lg w-full flex flex-col" :style="settingsLayout === 'page' ? 'height: calc(100vh - 6rem)' : 'height: 62vh'">
                             <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700">
                                 <h2 class="text-lg font-semibold">🏢 Site Linking</h2>
+                                <div x-show="extSites.tab === 'sites' && extSitesSources().length > 1" class="flex gap-1 text-sm" title="Links are kept separately for each database">
+                                    <template x-for="src in extSitesSources()" :key="src.key">
+                                        <button @click="extSitesSetSource(src.key)" :disabled="!!extSites.job?.running" class="px-3 py-1 rounded disabled:opacity-50"
+                                                :class="extSites.source === src.key ? 'bg-green-700 text-white' : 'bg-gray-700 hover:bg-gray-600'" x-text="src.label"></button>
+                                    </template>
+                                </div>
                                 <div class="flex gap-1 text-sm">
                                     <button @click="extSites.tab = 'sites'; extSites.view = 'list'" class="px-3 py-1 rounded"
                                             :class="extSites.tab === 'sites' ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'">Sites</button>
@@ -21096,7 +21189,7 @@ No metadata is changed.`)) return;
                                 <div class="bg-gray-900 rounded p-3 flex flex-wrap items-center gap-2">
                                     <template x-if="!extSites.job?.running">
                                         <div class="flex flex-wrap items-center gap-2 w-full">
-                                            <span class="text-gray-300 flex-1 min-w-0">Auto-link sites that match a studio exactly (or a network's parent studio). Everything else is kept for review.</span>
+                                            <span class="text-gray-300 flex-1 min-w-0">Auto-link sites that match a studio exactly (or a network's parent studio). Sites linked on the other database are searched by that studio's name first, and a new link is tried on the other database too. Everything else is kept for review.</span>
                                             <label class="flex items-center gap-1 text-xs text-gray-300" title="Also check again sites that an earlier run couldn't link">
                                                 <input type="checkbox" class="rounded" x-model="extSites.recheck"> Re-check unlinked
                                             </label>
@@ -21116,7 +21209,8 @@ No metadata is changed.`)) return;
                                             </div>
                                             <div class="h-2 bg-gray-700 rounded overflow-hidden"><div class="h-full bg-blue-600" :style="'width:' + Math.floor(extSites.job.done / Math.max(1, extSites.job.total) * 100) + '%'"></div></div>
                                             <div class="flex items-center gap-2 text-xs">
-                                                <span class="text-gray-400 flex-1" x-text="Object.entries(extSites.job.counts || {}).map(([k, v]) => extSitesOutcomeLabel(k) + ': ' + v).join(' · ')"></span>
+                                                <span class="text-gray-400 flex-1" x-text="Object.entries(extSites.job.counts || {}).map(([k, v]) => extSitesOutcomeLabel(k) + ': ' + v).join(' · ')
+                                                      + (extSites.job.also ? ' · also linked on the other database: ' + extSites.job.also : '')"></span>
                                                 <span x-show="extSites.job.note" class="text-yellow-400" x-text="extSites.job.note"></span>
                                                 <button @click="extSitesStop()" class="px-2 py-1 bg-red-700 hover:bg-red-600 rounded">Stop</button>
                                             </div>
@@ -21128,7 +21222,7 @@ No metadata is changed.`)) return;
                                         <option value="unlinked">Unlinked</option>
                                         <option value="review">Needs a look (checked, not linked)</option>
                                         <option value="linked">Linked</option>
-                                        <option value="not_on_db">Not on StashDB</option>
+                                        <option value="not_on_db" x-text="'Not on ' + extSitesSourceLabel()"></option>
                                         <option value="all">All sites</option>
                                     </select>
                                     <input type="text" x-model="extSites.q" placeholder="Filter sites…"
@@ -21156,10 +21250,11 @@ No metadata is changed.`)) return;
                                                         </template>
                                                     </span>
                                                 </template>
-                                                <span x-show="x.status === 'not_on_db'" class="px-1.5 rounded bg-gray-700 text-gray-300" x-text="'not on ' + extDbSourceLabel()"></span>
+                                                <span x-show="x.status === 'not_on_db'" class="px-1.5 rounded bg-gray-700 text-gray-300" x-text="'not on ' + extSitesSourceLabel()"></span>
                                                 <span x-show="x.status === 'unlinked' && x.check" class="text-yellow-400"
                                                       x-text="x.check ? extSitesOutcomeLabel(x.check.outcome) + (x.check.detail ? ': ' + x.check.detail : '') : ''"></span>
                                                 <span x-show="x.status === 'unlinked' && !x.check" class="text-gray-500">not checked yet</span>
+                                                <span x-show="extSitesOtherLabels(x).length" class="ml-1 text-gray-500" x-text="'· linked on ' + extSitesOtherLabels(x).join(', ')"></span>
                                                 <span x-show="(x.link?.abbreviations || []).length" class="ml-1 text-gray-400"
                                                       x-text="'· abbrev: ' + (x.link?.abbreviations || []).join(', ')"></span>
                                             </div>
@@ -21169,7 +21264,7 @@ No metadata is changed.`)) return;
                                                 <button x-show="x.status !== 'not_on_db'" @click="extSitesNotOnDb(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
                                                         title="Skip this site in searches from now on">Not on DB</button>
                                                 <button x-show="x.status !== 'unlinked'" @click="extSitesClear(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
-                                                        :title="x.status === 'linked' ? 'Remove all linked studios' : 'Remove the not-on-StashDB mark'">Clear</button>
+                                                        :title="x.status === 'linked' ? 'Remove all studios linked on ' + extSitesSourceLabel() : 'Remove the not-on-' + extSitesSourceLabel() + ' mark'">Clear</button>
                                                 <button @click="extSitesAbbrev(x)" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
                                                         title="Your filename abbreviations for this site">Abbrev</button>
                                             </div>
@@ -21204,13 +21299,13 @@ No metadata is changed.`)) return;
                                 </div>
                                 <div class="flex gap-2">
                                     <input type="text" x-model="extSites.find.query" @keydown.enter="extSitesSearch()"
-                                           placeholder="Search by another name, or paste a StashDB studio link"
+                                           :placeholder="'Search by another name, or paste a ' + extSitesSourceLabel() + (extSites.source === 'tpdb' ? ' site link' : ' studio link')"
                                            class="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500">
                                     <button @click="extSitesSearch()" :disabled="extSites.find.loading" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40">Search</button>
                                 </div>
                                 <div x-show="extSites.find.loading" class="text-center text-gray-400 py-6">Searching…</div>
                                 <div x-show="!extSites.find.loading && !extSites.find.cands.length" class="text-center text-gray-400 py-6">
-                                    No studios found. Try another name or a studio link, or mark this site as not on StashDB.
+                                    <span x-text="'No studios found. Try another name or a link, or mark this site as not on ' + extSitesSourceLabel() + '.'"></span>
                                 </div>
                                 <div class="bg-gray-900 rounded">
                                     <template x-for="c in extSites.find.cands" :key="c.ext_id">
@@ -21283,7 +21378,7 @@ No metadata is changed.`)) return;
                                     <span x-show="!extSites.error && extSites.message" class="text-green-400" x-text="extSites.message"></span>
                                 </div>
                                 <button x-show="extSites.tab === 'sites' && extSites.view === 'find' && extSites.find.site && extSites.find.site.status !== 'not_on_db'"
-                                        @click="extSitesNotOnDb(extSites.find.site)" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Not on StashDB</button>
+                                        @click="extSitesNotOnDb(extSites.find.site)" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm" x-text="'Not on ' + extSitesSourceLabel()"></button>
                                 <button x-show="extSites.tab === 'sites' && extSites.view === 'find'" @click="extSites.view = 'list'; extSites.error = ''"
                                         class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
                                         x-text="(extSites.find.site?.link?.studios || []).length ? 'Done' : 'Back to sites'"></button>
@@ -22282,7 +22377,7 @@ No metadata is changed.`)) return;
                             <span x-show="advancedSearchMode">← Back to Browse</span>
                         </button>
                         <button @click="extSitesOpen()" class="px-3 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600"
-                                title="Link your sites to StashDB studios, and set default sites for libraries">🏢 Link sites</button>
+                                title="Link your sites to StashDB studios and ThePornDB sites, and set default sites for libraries">🏢 Link sites</button>
                     </div>
                     <div class="flex items-center gap-3">
                         <!-- Layout Toggle (only in browse mode) -->
@@ -23739,7 +23834,7 @@ No metadata is changed.`)) return;
                      :class="extScene.suggest.movieCast?.full_movie ? 'bg-blue-900/40 text-blue-200' : 'bg-yellow-900/40 text-yellow-300'">
                     <span class="flex-1 min-w-[12rem]" x-text="extScene.suggest.movieCast?.full_movie
                         ? 'Full movie' + (extScene.suggest.movieCast.tagged && extScene.suggest.fullMovie === null ? ' (tagged full.movie)' : '')
-                          + ': the whole movie cast is suggested below - tick or untick as usual.'
+                          + ': the whole movie cast is suggested below - tick or untick as usual. Applying marks this video as the whole movie.'
                         : 'Movie cast, scenes not listed - performers are not suggested, because they may not be in this scene: '
                           + (extScene.suggest.movieCast?.names || []).join(', ')"></span>
                     <button x-show="!extScene.suggest.movieCast?.full_movie" @click="extSceneSetFullMovie(true)"
@@ -23988,9 +24083,9 @@ No metadata is changed.`)) return;
                         class="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 rounded text-sm disabled:opacity-40">Suggest metadata</button>
                 <button x-show="extScene.mode === 'suggest'" @click="Object.assign(extScene, { mode: 'linked', error: '', message: '' })" :disabled="!!extScene.busy"
                         class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-40">Back to linked scene</button>
-                <button x-show="extScene.mode === 'suggest'" @click="extSceneSuggestApply()" :disabled="(!extSceneSuggestCount() && !extSceneGenderSaves().length) || !!extScene.busy"
+                <button x-show="extScene.mode === 'suggest'" @click="extSceneSuggestApply()" :disabled="(!extSceneSuggestCount() && !extSceneGenderSaves().length && extScene.suggest.fullMovie !== true) || !!extScene.busy"
                         class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40"
-                        x-text="extScene.busy === 'apply' ? 'Adding…' : (extScene.busy === 'apply-videos' ? 'Applying attributes…' : (extSceneSuggestCount() ? 'Add selected (' + extSceneSuggestCount() + ')' : 'Save genders (' + extSceneGenderSaves().length + ')'))"></button>
+                        x-text="extScene.busy === 'apply' ? 'Adding…' : (extScene.busy === 'apply-videos' ? 'Applying attributes…' : (extSceneSuggestCount() ? 'Add selected (' + extSceneSuggestCount() + ')' : (extSceneGenderSaves().length ? 'Save genders (' + extSceneGenderSaves().length + ')' : 'Mark as whole movie')))"></button>
                 <button x-show="extScene.mode === 'linked'" @click="extSceneRefresh()" :disabled="!!extScene.busy"
                         class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm disabled:opacity-40"
                         x-text="extScene.busy === 'refresh' ? 'Refreshing…' : 'Refresh'"></button>

@@ -42,6 +42,7 @@ import library_scope
 from database import gender_from_external      # 'TRANSGENDER_FEMALE' -> 'trans_female', ...
 
 router = APIRouter(prefix="/api/extdb", tags=["extdb"])
+log = logging.getLogger('lustr.ext_db')
 
 # ---------------------------------------------------------------------------
 # Model wiring (same pattern as cast_attributes.py)
@@ -224,6 +225,10 @@ def ensure_schema():
         checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (site_key, ext_source)
         )''')
+    # 'not on DB' used to be one mark per site (always StashDB then): now one per source, in site_ext_check
+    conn.execute("INSERT OR REPLACE INTO site_ext_check (site_key, ext_source, outcome, detail) "
+                 "SELECT site_key, ?, 'not_on_db', 'Marked by you' FROM site_ext_link WHERE status = 'not_on_db'", (default_source(),))
+    conn.execute("UPDATE site_ext_link SET status = 'unlinked' WHERE status = 'not_on_db'")
     # Videos -> external scenes
     conn.execute('''
         CREATE TABLE IF NOT EXISTS video_ext_link (
@@ -2372,7 +2377,7 @@ def nationality_fill(model=Depends(get_model)):
 #     website search, since StashDB's name search matches whole words
 NETWORK_SUFFIXES = ('.network', '.networks')
 STUDIO_FRAGMENT = 'fragment S on Studio { id name aliases urls { url } parent { id name } deleted }'
-_site_cands = {}                 # site_key -> candidates from the last check (memory only)
+_site_cands = {}                 # (source, site_key) -> candidates from the last check (memory only)
 _site_job = {'running': False}
 _site_lock = threading.Lock()
 
@@ -2406,7 +2411,20 @@ def _studio_public(st, how=None):
             'match': how}
 
 
+def _tpdb_site(x):
+    """A ThePornDB site in the shape of a StashDB studio, so classify_site and the page take either.
+    Its parent (else its network) is what 'Link parent' links."""
+    up = x.get('parent') or x.get('network') or {}
+    return {'id': str(x.get('id')), 'name': x.get('name') or '', 'deleted': False,
+            'aliases': [x['short_name']] if x.get('short_name') else [],
+            'urls': [{'url': x['url']}] if x.get('url') else [],
+            'parent': {'id': str(up['id']), 'name': up.get('name') or ''} if up.get('id') and up.get('id') != x.get('id') else None}
+
+
 def search_studios(source, term):
+    if source == 'tpdb':
+        js = tpdb_get('/sites', {'q': term, 'per_page': 10})
+        return [_tpdb_site(x) for x in (js.get('data') or []) if x and x.get('id')]
     data = gql(source, lambda f, old: STUDIO_FRAGMENT + ' query($t: String!) { searchStudio(term: $t, limit: 10) { ...S } }',
                {'t': term})
     return [x for x in (data.get('searchStudio') or []) if x and not x.get('deleted')]
@@ -2417,7 +2435,7 @@ def studios_by_letters(source, key, per_page=50):
     'julesjordan' -> 'j%u%l%e%s%j%o%r%d%a%n' matches "Jules Jordan Video". StashDB's
     studio 'names' filter is a LIKE search (stash-box studio/query.go). Results are
     still judged by the same exact rules afterwards."""
-    if len(key) < 5:
+    if len(key) < 5 or source == 'tpdb':          # ThePornDB's search already finds names written without spaces
         return []
     pattern = '%'.join(key)
     data = gql(source, lambda f, old: STUDIO_FRAGMENT + ' query($p: String!, $n: Int!) '
@@ -2426,6 +2444,11 @@ def studios_by_letters(source, key, per_page=50):
 
 
 def find_studio(source, ext_id):
+    if source == 'tpdb':                          # a site id, uuid or slug
+        x = tpdb_get('/sites/' + str(ext_id).strip()).get('data')
+        if not x or not x.get('id'):
+            raise ExtDBError(f'Site {ext_id} not found on ThePornDB')
+        return _tpdb_site(x)
     data = gql(source, lambda f, old: STUDIO_FRAGMENT + ' query($id: ID!) { findStudio(id: $id) { ...S } }', {'id': ext_id})
     st = data.get('findStudio')
     if not st or st.get('deleted'):
@@ -2496,6 +2519,53 @@ def check_site(source, value, variants=None):
     return outcome, pick, cands
 
 
+def _match_site(source, display, variants, hints=()):
+    """check_site, trying first the names the site already has on other databases (a StashDB studio's own
+    name finds its ThePornDB site best, and the other way round), then your site name."""
+    best = None
+    for value in dict.fromkeys([h for h in hints if h] + [display]):
+        outcome, pick, cands = check_site(source, value, [display] + [v for v in variants if v != display])
+        if outcome in ('exact', 'network') and pick:
+            return outcome, pick, cands
+        rank = {'ambiguous': 3, 'close': 2, 'not_found': 1}.get(outcome, 0)
+        if best is None or rank > best[0]:
+            best = (rank, (outcome, pick, cands))
+    return best[1] if best else ('not_found', None, [])
+
+
+def _cross_link(conn, key, source, kind, names, groups=None):
+    """A site was just linked on `source`: link it on the other configured databases too, where it isn't
+    linked or marked 'not on' yet and one studio matches exactly. Otherwise the candidates are kept for
+    review there, as Auto-link does. -> [{source, outcome, name}]"""
+    out = []
+    groups = groups if groups is not None else _site_groups(conn)
+    g = groups.get(key)
+    display = g['display'] if g else key
+    variants = sorted(g['values']) if g else []
+    for other in SOURCES:
+        if other == source or not api_key(other):
+            continue
+        if (_site_rows(conn, other)[0].get(key) or {}).get('status') in ('linked', 'not_on_db'):
+            continue
+        try:
+            outcome, pick, cands = _match_site(other, display, variants, names)
+        except ExtDBError as e:
+            log.debug(f'site {key}: {SOURCES[other]["label"]} not checked: {e}')
+            continue
+        if outcome in ('exact', 'network') and pick:
+            _save_site_link(conn, key, other, pick, 'network' if 'network' in (kind, outcome) else 'studio')
+            detail = f'{pick["name"]} (from the {SOURCES[source]["label"]} link)'
+            out.append({'source': other, 'outcome': 'linked', 'name': pick['name']})
+        else:
+            _site_cands[(other, key)] = {'source': other, 'outcome': outcome, 'pick': pick, 'cands': cands}
+            detail = ' | '.join(c['name'] for c in cands[:3])
+            out.append({'source': other, 'outcome': outcome, 'name': None})
+        conn.execute('INSERT OR REPLACE INTO site_ext_check (site_key, ext_source, outcome, detail, checked_at) '
+                     'VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)', (key, other, outcome, detail))
+        conn.commit()
+    return out
+
+
 def _site_groups(conn):
     """{site_key: {'display', 'values': {value: videos}, 'videos'}} from your video_site values."""
     groups = {}
@@ -2518,30 +2588,45 @@ def _site_groups(conn):
     return groups
 
 
-def _site_rows(conn):
+def _site_rows(conn, source=None):
+    """({site_key: link}, {site_key: last check}). With a source: that database's studios, check and
+    'not on DB' mark only (the Link sites page). Without: studios of every source (each says its
+    ext_source), and 'not_on_db' when a source has it marked (scene matching)."""
     links = {}
-    for r in _rows(conn, 'SELECT site_key, status, abbreviations FROM site_ext_link'):
-        links[r[0]] = {'status': r[1], 'abbreviations': json.loads(r[2]) if r[2] else [], 'studios': []}
+    for r in _rows(conn, 'SELECT site_key, abbreviations FROM site_ext_link'):
+        links[r[0]] = {'abbreviations': json.loads(r[1]) if r[1] else [], 'studios': [], 'linked_on': []}
     for r in _rows(conn, 'SELECT site_key, ext_source, ext_id, ext_name, ext_parent_id, ext_parent_name, link_kind '
                          'FROM site_ext_studio ORDER BY added_at, ext_name'):
-        ln = links.setdefault(r[0], {'status': 'linked', 'abbreviations': [], 'studios': []})
+        ln = links.setdefault(r[0], {'abbreviations': [], 'studios': [], 'linked_on': []})
+        if r[1] not in ln['linked_on']:
+            ln['linked_on'].append(r[1])
+        if source and r[1] != source:
+            continue
         ln['studios'].append({'ext_source': r[1], 'ext_id': r[2], 'ext_name': r[3], 'ext_parent_id': r[4],
                               'ext_parent_name': r[5], 'link_kind': r[6]})
-    for ln in links.values():
-        ln['status'] = 'linked' if ln['studios'] else (ln['status'] if ln['status'] == 'not_on_db' else 'unlinked')
+    checks, absent = {}, set()
+    for k, src, outcome, detail in _rows(conn, 'SELECT site_key, ext_source, outcome, detail FROM site_ext_check'):
+        if outcome == 'not_on_db':
+            if not source or src == source:
+                absent.add(k)
+        elif not source or src == source:
+            checks[k] = {'outcome': outcome, 'detail': detail}
+    for k in absent:
+        links.setdefault(k, {'abbreviations': [], 'studios': [], 'linked_on': []})
+    for k, ln in links.items():
+        ln['status'] = 'linked' if ln['studios'] else ('not_on_db' if k in absent else 'unlinked')
         first = ln['studios'][0] if ln['studios'] else {}
         ln['ext_name'] = ', '.join(x['ext_name'] for x in ln['studios']) or None    # for display / filtering
         ln['link_kind'] = first.get('link_kind')
-    checks = {r[0]: {'outcome': r[1], 'detail': r[2]} for r in
-              _rows(conn, 'SELECT site_key, outcome, detail FROM site_ext_check')}
     return links, checks
 
 
 def _save_site_link(conn, key, source, pick, kind):
-    """Add a studio to a site (a site can have several)."""
+    """Add a studio to a site (a site can have several, on each source)."""
     old = conn.execute('SELECT abbreviations FROM site_ext_link WHERE site_key = ?', (key,)).fetchone()
     conn.execute("INSERT OR REPLACE INTO site_ext_link (site_key, status, abbreviations, updated_at) "
                  "VALUES (?, 'linked', ?, CURRENT_TIMESTAMP)", (key, old[0] if old else None))
+    conn.execute("DELETE FROM site_ext_check WHERE site_key = ? AND ext_source = ? AND outcome = 'not_on_db'", (key, source))
     conn.execute('INSERT OR REPLACE INTO site_ext_studio (site_key, ext_source, ext_id, ext_name, ext_parent_id, '
                  'ext_parent_name, link_kind) VALUES (?, ?, ?, ?, ?, ?, ?)',
                  (key, source, pick['ext_id'], pick['name'], (pick.get('parent') or {}).get('id'),
@@ -2568,24 +2653,25 @@ class SiteAbbrevBody(BaseModel):
 
 
 @router.get('/sites')
-def sites_list(model=Depends(get_model)):
-    """All your sites (grouped variants) with link status. Local only."""
+def sites_list(source: Optional[str] = None, model=Depends(get_model)):
+    """All your sites (grouped variants) with their link status on one source. Local only."""
     try:
         ensure_schema()
+        source = _source(source)
         conn = _conn()
         groups = _site_groups(conn)
-        links, checks = _site_rows(conn)
+        links, checks = _site_rows(conn, source)
         out = []
         for k, g in groups.items():
             ln = links.get(k)
             out.append({'site_key': k, 'display': g['display'], 'variants': sorted(g['values']),
                         'videos': g['videos'], 'is_network': g['is_network'],
                         'status': ln['status'] if ln else 'unlinked', 'link': ln,
-                        'check': checks.get(k), 'has_candidates': k in _site_cands})
+                        'check': checks.get(k), 'has_candidates': (source, k) in _site_cands})
         out.sort(key=lambda x: -x['videos'])
         total = sum(x['videos'] for x in out) or 1
         covered = sum(x['videos'] for x in out if x['status'] == 'linked')
-        return {'success': True, 'sites': out,
+        return {'success': True, 'source': source, 'sites': out,
                 'stats': {'sites': len(out), 'linked': sum(x['status'] == 'linked' for x in out),
                           'not_on_db': sum(x['status'] == 'not_on_db' for x in out),
                           'videos_covered': covered, 'videos_total': total}}
@@ -2595,14 +2681,17 @@ def sites_list(model=Depends(get_model)):
 
 @router.post('/sites/search')
 def sites_search(body: SiteBody, model=Depends(get_model)):
-    """User-initiated studio search for one site. Accepts a custom term, a
-    stashdb.org/studios/<id> link, or a studio ID."""
+    """User-initiated studio search for one site. Accepts a custom term, a studio link
+    (stashdb.org/studios/<id>, theporndb.net/sites/<slug>), or a studio ID."""
     try:
         ensure_schema()
         source = _source(body.source)
         k = site_key(body.site)
         q = (body.query or '').strip()
-        m = re.search(r'(' + _UUID + ')', q) if q else None
+        if source == 'tpdb':
+            m = re.search(r'theporndb\.net/sites/([\w-]+)', q) or re.fullmatch(r'(\d+|' + _UUID + ')', q)
+        else:
+            m = re.search(r'(' + _UUID + ')', q) if q else None
         if m:
             st = find_studio(source, m.group(1))
             outcome, pick, cands = 'exact', _studio_public(st, 'ID'), [_studio_public(st, 'ID')]
@@ -2612,7 +2701,7 @@ def sites_search(body: SiteBody, model=Depends(get_model)):
         else:
             g = _site_groups(_conn()).get(k)
             outcome, pick, cands = check_site(source, body.site, sorted(g['values']) if g else None)
-        _site_cands[k] = {'source': source, 'outcome': outcome, 'pick': pick, 'cands': cands}
+        _site_cands[(source, k)] = {'source': source, 'outcome': outcome, 'pick': pick, 'cands': cands}
         return {'success': True, 'site_key': k, 'outcome': outcome, 'pick': pick, 'candidates': cands,
                 'cached': False}
     except Exception as e:
@@ -2620,14 +2709,17 @@ def sites_search(body: SiteBody, model=Depends(get_model)):
 
 
 @router.get('/sites/candidates')
-def sites_candidates(site: str = Query(...), model=Depends(get_model)):
+def sites_candidates(site: str = Query(...), source: Optional[str] = None, model=Depends(get_model)):
     """Candidates remembered from the last check (no request). Falls back to a search."""
     k = site_key(site)
-    c = _site_cands.get(k)
+    try:
+        c = _site_cands.get((_source(source), k))
+    except ExtDBError as e:
+        return _err(e)
     if c:
         return {'success': True, 'site_key': k, 'outcome': c['outcome'], 'pick': c['pick'],
                 'candidates': c['cands'], 'cached': True}
-    return sites_search(SiteBody(site=site), model)
+    return sites_search(SiteBody(site=site, source=source), model)
 
 
 @router.post('/sites/link')
@@ -2643,8 +2735,10 @@ def sites_link(body: SiteLinkBody, model=Depends(get_model)):
         conn.execute("INSERT OR REPLACE INTO site_ext_check (site_key, ext_source, outcome, detail, checked_at) "
                      "VALUES (?, ?, 'linked', ?, CURRENT_TIMESTAMP)", (k, source, 'Linked manually: ' + st['name']))
         conn.commit()
-        links, _ = _site_rows(conn)
-        return {'success': True, 'site_key': k, 'link': links.get(k)}
+        also = _cross_link(conn, k, source, 'network' if body.as_network else 'studio', [st['name']])
+        links, _ = _site_rows(conn, source)
+        return {'success': True, 'site_key': k, 'link': links.get(k),
+                'also': [dict(a, label=SOURCES[a['source']]['label']) for a in also]}
     except Exception as e:
         return _err(e)
 
@@ -2652,6 +2746,7 @@ def sites_link(body: SiteLinkBody, model=Depends(get_model)):
 class SiteStudioBody(BaseModel):
     site: str
     ext_id: str
+    source: Optional[str] = None
 
 
 @router.post('/sites/unlink-studio')
@@ -2661,12 +2756,10 @@ def sites_unlink_studio(body: SiteStudioBody, model=Depends(get_model)):
         ensure_schema()
         conn = _conn()
         k = site_key(body.site)
-        conn.execute('DELETE FROM site_ext_studio WHERE site_key = ? AND ext_id = ?', (k, body.ext_id))
-        left = conn.execute('SELECT COUNT(*) FROM site_ext_studio WHERE site_key = ?', (k,)).fetchone()[0]
-        if not left:
-            conn.execute("UPDATE site_ext_link SET status = 'unlinked', updated_at = CURRENT_TIMESTAMP WHERE site_key = ?", (k,))
+        source = _source(body.source)
+        conn.execute('DELETE FROM site_ext_studio WHERE site_key = ? AND ext_source = ? AND ext_id = ?', (k, source, body.ext_id))
         conn.commit()
-        links, _ = _site_rows(conn)
+        links, _ = _site_rows(conn, source)
         return {'success': True, 'site_key': k, 'link': links.get(k)}
     except Exception as e:
         return _err(e)
@@ -2678,12 +2771,12 @@ def sites_not_on_db(body: SiteBody, model=Depends(get_model)):
         ensure_schema()
         conn = _conn()
         k = site_key(body.site)
-        old = conn.execute('SELECT abbreviations FROM site_ext_link WHERE site_key = ?', (k,)).fetchone()
-        conn.execute("INSERT OR REPLACE INTO site_ext_link (site_key, status, abbreviations, updated_at) "
-                     "VALUES (?, 'not_on_db', ?, CURRENT_TIMESTAMP)", (k, old[0] if old else None))
-        conn.execute('DELETE FROM site_ext_studio WHERE site_key = ?', (k,))
+        source = _source(body.source)
+        conn.execute("INSERT OR REPLACE INTO site_ext_check (site_key, ext_source, outcome, detail, checked_at) "
+                     "VALUES (?, ?, 'not_on_db', 'Marked by you', CURRENT_TIMESTAMP)", (k, source))
+        conn.execute('DELETE FROM site_ext_studio WHERE site_key = ? AND ext_source = ?', (k, source))
         conn.commit()
-        _site_cands.pop(k, None)
+        _site_cands.pop((source, k), None)
         return {'success': True, 'site_key': k}
     except Exception as e:
         return _err(e)
@@ -2691,17 +2784,14 @@ def sites_not_on_db(body: SiteBody, model=Depends(get_model)):
 
 @router.post('/sites/clear')
 def sites_clear(body: SiteBody, model=Depends(get_model)):
-    """Remove the link (or 'not on StashDB' mark). Abbreviations are kept."""
+    """Remove the links (or the 'not on DB' mark) on one source. Abbreviations are kept."""
     try:
         ensure_schema()
         conn = _conn()
         k = site_key(body.site)
-        old = conn.execute('SELECT abbreviations FROM site_ext_link WHERE site_key = ?', (k,)).fetchone()
-        conn.execute('DELETE FROM site_ext_link WHERE site_key = ?', (k,))
-        conn.execute('DELETE FROM site_ext_studio WHERE site_key = ?', (k,))
-        if old and old[0] and json.loads(old[0]):
-            conn.execute("INSERT INTO site_ext_link (site_key, status, abbreviations) VALUES (?, 'unlinked', ?)", (k, old[0]))
-        conn.execute('DELETE FROM site_ext_check WHERE site_key = ?', (k,))
+        source = _source(body.source)
+        conn.execute('DELETE FROM site_ext_studio WHERE site_key = ? AND ext_source = ?', (k, source))
+        conn.execute('DELETE FROM site_ext_check WHERE site_key = ? AND ext_source = ?', (k, source))
         conn.commit()
         return {'success': True, 'site_key': k}
     except Exception as e:
@@ -2736,6 +2826,16 @@ def _site_worker(keys, groups, source, delay):
     _pace_interval = delay
     try:
         conn = _conn()
+        names, kinds, others = {}, {}, {}        # what each site is linked to on the other databases
+        for k, ln in _site_rows(conn)[0].items():
+            for x in ln['studios']:
+                if x['ext_source'] != source:
+                    names.setdefault(k, []).append(x['ext_name'])
+                    others.setdefault(k, [])
+                    if x['ext_source'] not in others[k]:
+                        others[k].append(x['ext_source'])
+                    if x.get('link_kind') == 'network':
+                        kinds[k] = 'network'
         for i, k in enumerate(keys):
             if st.get('stop'):
                 st['stopped'] = True
@@ -2743,7 +2843,7 @@ def _site_worker(keys, groups, source, delay):
             g = groups[k]
             st['current'] = g['display']
             try:
-                outcome, pick, cands = check_site(source, g['display'], sorted(g['values']))
+                outcome, pick, cands = _match_site(source, g['display'], sorted(g['values']), names.get(k, []))
             except ExtDBError as e:
                 if 'api key' in str(e).lower():
                     st['error'] = str(e)
@@ -2757,10 +2857,19 @@ def _site_worker(keys, groups, source, delay):
                 outcome, pick, cands = 'error', None, []
             detail = ''
             if outcome in ('exact', 'network') and pick:
-                _save_site_link(conn, k, source, pick, 'network' if outcome == 'network' else 'studio')
+                kind = 'network' if outcome == 'network' or kinds.get(k) == 'network' else 'studio'
+                _save_site_link(conn, k, source, pick, kind)
                 detail = pick['name'] + (f" (part of {pick['parent']['name']})" if pick.get('parent') else '')
+                if names.get(k):
+                    detail += ' (via its ' + '/'.join(SOURCES[x]['label'] for x in others.get(k, [])) + ' link)'
+                try:
+                    for a in _cross_link(conn, k, source, kind, [pick['name']], groups):
+                        if a['outcome'] == 'linked':
+                            st['also'] = st.get('also', 0) + 1
+                except Exception as e:
+                    log.debug(f'site {k}: cross-link failed: {e}')
             else:
-                _site_cands[k] = {'source': source, 'outcome': outcome, 'pick': pick, 'cands': cands}
+                _site_cands[(source, k)] = {'source': source, 'outcome': outcome, 'pick': pick, 'cands': cands}
                 detail = ' | '.join(c['name'] for c in cands[:3])
             conn.execute('INSERT OR REPLACE INTO site_ext_check (site_key, ext_source, outcome, detail, checked_at) '
                          'VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)', (k, source, outcome, detail))
@@ -2795,7 +2904,7 @@ def sites_bulk_start(body: SiteBulkBody, model=Depends(get_model)):
                 raise ExtDBError('Another bulk job is running - wait for it to finish')
             conn = _conn()
             groups = _site_groups(conn)
-            links, checks = _site_rows(conn)
+            links, checks = _site_rows(conn, source)
             keys = [k for k, g in sorted(groups.items(), key=lambda kv: -kv[1]['videos'])
                     if (links.get(k) or {}).get('status') not in ('linked', 'not_on_db')
                     and (body.recheck or k not in checks)]
@@ -2805,7 +2914,7 @@ def sites_bulk_start(body: SiteBulkBody, model=Depends(get_model)):
                 raise ExtDBError('No unlinked sites left to check')
             delay = min(max(float(body.delay), 0.5), 10.0)
             _site_job.clear()
-            _site_job.update({'running': True, 'stop': False, 'stopped': False, 'total': len(keys), 'done': 0,
+            _site_job.update({'running': True, 'source': source, 'stop': False, 'stopped': False, 'total': len(keys), 'done': 0,
                               'counts': {}, 'current': None, 'note': '', 'error': None,
                               'started_at': time.time(), 'finished_at': None})
             threading.Thread(target=_site_worker, args=(keys, groups, source, delay), daemon=True,
@@ -3282,6 +3391,24 @@ def video_clues(conn, path):
 
 
 # ---------- scoring ----------
+def _linked_ids(clues, source):
+    """(studio ids, network ids) your sites are linked to on this source."""
+    studios, networks = set(), set()
+    for s_ in clues.get('sites') or []:
+        for st in s_.get('studios') or []:
+            if (st.get('ext_source') or 'stashdb') == source:
+                (networks if st.get('link_kind') == 'network' else studios).add(st['ext_id'])
+    return studios, networks
+
+
+def _studio_hit(sc, studios, networks):
+    """The scene's studio is one of these (or part of one of these networks)."""
+    if not sc.get('studio_id'):
+        return False
+    ups = set(sc.get('site_up_ids') or []) | ({sc['parent_id']} if sc.get('parent_id') else set())
+    return sc['studio_id'] in studios | networks or bool(ups & networks)
+
+
 def _title_similarity(a, b):
     ta, tb = _norm_title(a), _norm_title(b)
     if not ta or not tb:
@@ -3322,16 +3449,15 @@ def score_scene(sc, clues):
         else:
             pts -= 15
             reasons.append('none of your cast in this scene')
-    studio_ids = {st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') != 'network'}
-    network_ids = {st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') == 'network'}
-    if sc.get('source') == 'tpdb':
-        # ThePornDB has its own studio IDs: compare names, reward a match, never penalise
+    studio_ids, network_ids = _linked_ids(clues, sc.get('source') or 'stashdb')
+    if sc.get('source') == 'tpdb' and not (studio_ids or network_ids):
+        # no ThePornDB site links for these sites: compare names, reward a match, never penalise
         names = {norm_name(s_['value']) for s_ in clues['sites']} | {norm_name(st['ext_name']) for s_ in clues['sites'] for st in s_['studios']}
         if names & {norm_name(sc.get('studio_name')), norm_name(sc.get('parent_name'))} - {''}:
             pts += 10
             reasons.append('studio: ' + (sc['studio_name'] or ''))
     elif studio_ids or network_ids:
-        if sc['studio_id'] in studio_ids or sc['studio_id'] in network_ids or sc['parent_id'] in network_ids:
+        if _studio_hit(sc, studio_ids, network_ids):
             pts += w_studio
             reasons.append('studio: ' + (sc['studio_name'] or ''))
         elif sc['studio_id']:
@@ -3476,6 +3602,7 @@ def _tpdb_compact(x, kind):
             'duration': _int(x.get('duration')), 'code': x.get('sku') or '',
             'studio_id': str(site.get('id') or '') or None, 'studio_name': site.get('name'),
             'parent_id': None, 'parent_name': par.get('name') if par.get('name') != site.get('name') else None,
+            'site_up_ids': [str(i) for i in (site.get('parent_id'), site.get('network_id')) if i and i != site.get('id')],
             'performers': [_tpdb_performer(p) for p in (x.get('performers') or []) if p],
             'image_url': (tpdb_movie_images(x)[0] or [None])[0] if kind == 'movie' else _tpdb_image(x), 'scenes': scenes,
             'tags': [t.get('name') for t in (x.get('tags') or []) if isinstance(t, dict) and t.get('name')],
@@ -3486,6 +3613,12 @@ def _tpdb_compact(x, kind):
 def tpdb_search(kind, text, per_page=10):
     js = tpdb_get('/movies' if kind == 'movie' else '/scenes', {'parse': text, 'per_page': per_page})
     return [_tpdb_compact(x, kind) for x in (js.get('data') or []) if x and x.get('id')]
+
+
+def tpdb_scenes_on(site_id, date, per_page=25):
+    """ThePornDB scenes of one site on one date."""
+    js = tpdb_get('/scenes', {'site_id': site_id, 'date': date, 'per_page': per_page})
+    return [_tpdb_compact(x, 'scene') for x in (js.get('data') or []) if x and x.get('id')]
 
 
 def tpdb_find(kind, ext_id):
@@ -3556,8 +3689,7 @@ def find_scene_candidates(conn, source, clues, query=None, which='both'):
                 notes.append(f'fingerprint lookup unavailable: {e}')
         if not (len(fp_scenes) == 1 and fp_scenes[0].get('fingerprint', {}).get('submissions', 0)
                 > fp_scenes[0].get('fingerprint', {}).get('reports', 0)):     # one trusted match: no need to search
-            studios = [st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') != 'network']
-            networks = [st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') == 'network']
+            studios, networks = (sorted(x) for x in _linked_ids(clues, source))
             linked = [c['ext_id'] for c in clues['cast'] if c['ext_id']]
             if not use_stash:
                 studios, networks, linked = [], [], []
@@ -3597,6 +3729,14 @@ def find_scene_candidates(conn, source, clues, query=None, which='both'):
                     add(scored, "performer's scenes")
                 except ExtDBError as e:
                     notes.append(f'performer scenes unavailable: {e}')
+            if tpdb_on and clues['date']:
+                # your sites' ThePornDB links + the date (sub-sites of a linked network aren't searchable this way)
+                for sid in sorted(_linked_ids(clues, 'tpdb')[0])[:3]:
+                    try:
+                        add(tpdb_scenes_on(sid, clues['date']), 'ThePornDB site + date')
+                        notes.append('ThePornDB site + date')
+                    except ExtDBError as e:
+                        notes.append(f'ThePornDB: {e}')
             if tpdb_on:
                 try:
                     # movie search: for "Movie Name Scene N" files, always when ThePornDB is chosen,
@@ -4191,26 +4331,35 @@ def build_scene_suggestions(conn, path, full_movie=None):
             add('year', year, f'from {label}', not cur_year and tick['year'], already_set=(cur_year == year))
 
     # --- site: the scene's studio, mapped back through your site links ---
-    parent_id = None
-    if source == 'stashdb':
-        try:
-            raw = json.loads(conn.execute('SELECT ext_raw_json FROM video_ext_link WHERE video_id = ?', (vid,)).fetchone()[0] or '{}')
-            parent_id = ((raw.get('studio') or {}).get('parent') or {}).get('id')
-        except (TypeError, ValueError):
-            pass
+    parent_ids = set()                   # the studio's parent (StashDB) / parent site and network (ThePornDB)
+    try:
+        raw = json.loads(conn.execute('SELECT ext_raw_json FROM video_ext_link WHERE video_id = ?', (vid,)).fetchone()[0] or '{}')
+        if source == 'stashdb':
+            parent_ids = {((raw.get('studio') or {}).get('parent') or {}).get('id')} - {None}
+        else:
+            site = raw.get('site') or {}
+            parent_ids = {str(i) for i in (site.get('parent_id'), site.get('network_id')) if i and i != site.get('id')}
+    except (TypeError, ValueError):
+        pass
     st_id, st_name, par_name = link.get('ext_studio_id'), link.get('ext_studio_name'), link.get('ext_studio_parent')
     groups = _site_groups(conn)
     no_site = not have['site'] and tick['site']
-    for r in _rows(conn, 'SELECT site_key, ext_source, ext_id, ext_name, link_kind FROM site_ext_studio'):
+    own_links = {r[0] for r in _rows(conn, 'SELECT DISTINCT site_key FROM site_ext_studio WHERE ext_source = ?', (source,))}
+    done = set()
+    for r in _rows(conn, 'SELECT site_key, ext_source, ext_id, ext_name, link_kind FROM site_ext_studio '
+                         'ORDER BY ext_source = ? DESC', (source,)):
         key, s_src, s_id, s_name, kind = r
-        if source == 'stashdb':
-            is_studio = s_src == 'stashdb' and st_id and s_id == st_id
-            is_net = s_src == 'stashdb' and kind == 'network' and parent_id and s_id == parent_id
-        else:          # site links hold StashDB ids: compare ThePornDB studios by name
+        if s_src == source:              # a link on the scene's own database: compare ids
+            is_studio = bool(st_id) and s_id == st_id
+            is_net = kind == 'network' and s_id in parent_ids
+        elif source == 'tpdb' and key not in own_links:   # site linked on StashDB only: compare ThePornDB studios by name
             is_studio = bool(st_name) and norm_name(s_name) == norm_name(st_name)
             is_net = kind == 'network' and bool(par_name) and norm_name(s_name) == norm_name(par_name)
-        if not (is_studio or is_net):
+        else:
             continue
+        if not (is_studio or is_net) or key in done:
+            continue
+        done.add(key)
         g = groups.get(key)
         value = g['display'] if g else key
         why = f'via site link {s_name}' if is_studio else f'network of {st_name} (via site link {s_name})'
@@ -4734,16 +4883,19 @@ def _strong_signals(sc, clues):
         names = {norm_name(p['name']) for p in sc['performers']} | {norm_name(p['as']) for p in sc['performers'] if p.get('as')}
         if any(norm_name(c['name']) in names for c in clues['cast']):
             sig.add('performer')
-        mine = {norm_name(s_['value']) for s_ in clues['sites']} | {norm_name(st['ext_name']) for s_ in clues['sites'] for st in s_['studios']}
-        if mine & ({norm_name(sc.get('studio_name')), norm_name(sc.get('parent_name'))} - {''}):
-            sig.add('studio')
+        studios, networks = _linked_ids(clues, 'tpdb')
+        if studios or networks:
+            if _studio_hit(sc, studios, networks):
+                sig.add('studio')
+        else:
+            mine = {norm_name(s_['value']) for s_ in clues['sites']} | {norm_name(st['ext_name']) for s_ in clues['sites'] for st in s_['studios']}
+            if mine & ({norm_name(sc.get('studio_name')), norm_name(sc.get('parent_name'))} - {''}):
+                sig.add('studio')
     else:
         linked = {c['ext_id'] for c in clues['cast'] if c['ext_id']}
         if linked & {p['id'] for p in sc['performers']}:
             sig.add('performer')
-        studios = {st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') != 'network'}
-        networks = {st['ext_id'] for s_ in clues['sites'] for st in s_['studios'] if st.get('link_kind') == 'network'}
-        if sc.get('studio_id') and (sc['studio_id'] in studios | networks or sc.get('parent_id') in networks):
+        if _studio_hit(sc, *_linked_ids(clues, sc.get('source') or 'stashdb')):
             sig.add('studio')
     if clues['date'] and sc.get('date') == clues['date']:
         sig.add('same date')

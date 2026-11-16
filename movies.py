@@ -351,6 +351,15 @@ def add_full_movie_tag(conn, video_id):
     conn.execute(f'INSERT OR IGNORE INTO video_tags_junction (video_id, {_tags_fk(conn)}) VALUES (?, ?)', (video_id, tid))
 
 
+def on_full_movie_tagged(conn, video_id):
+    """The video was just tagged full.movie: if it's in a movie, it's the whole movie (each sets the other
+    when it first happens - see set_video_movie)."""
+    if not has_full_movie_tag(conn, video_id):
+        return False
+    ensure_schema(conn)
+    return conn.execute('UPDATE video_movie SET whole = 1 WHERE video_id = ? AND whole = 0', (video_id,)).rowcount > 0
+
+
 def _tags_fk(conn):
     return next(r[1] for r in conn.execute('PRAGMA table_info(video_tags_junction)') if r[1].endswith('_id') and r[1] != 'video_id')
 

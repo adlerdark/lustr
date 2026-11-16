@@ -787,12 +787,60 @@ def tag_cleanup_preview(conn):
               'keep': site_keep_default(g), 'videos': sum(n for _v, n in g)}
              for k, g in groups.items() if len(g) > 1]
     sites.sort(key=lambda s: -s['videos'])
+    site_format, site_names = _site_format_rows(conn, sfk, {v['value'] for s in sites for v in s['variants']})
     counts = {}
     for c in changes:
         counts[c['kind']] = counts.get(c['kind'], 0) + 1
     counts['sites'] = len(sites)
     counts['site_videos'] = sum(sum(x['videos'] for x in s['variants'] if x['value'] != s['keep']) for s in sites)
-    return {'changes': changes, 'sites': sites, 'counts': counts}
+    counts['site_format'] = len(site_format)
+    return {'changes': changes, 'sites': sites, 'site_format': site_format, 'site_names': site_names, 'counts': counts}
+
+
+def _site_format_rows(conn, sfk, grouped):
+    """Sites spelled one way only but not in your format (capitals, spaces) -> their lowercase, dotted
+    form, and sites no video uses -> removed. Spellings already in a 'Site spellings' group and
+    libraries' default sites are left out. -> ([{value, videos, to, merge}], [every site value])"""
+    if not sfk:
+        return [], []
+    rows = _rows(conn, f'SELECT t.value, COUNT(j.video_id) FROM video_site t LEFT JOIN video_site_junction j '
+                       f'ON j.{sfk} = t.id GROUP BY t.id')
+    names = {v for v, _n in rows if v}
+    defaults = {r[0] for r in _rows(conn, 'SELECT site_value FROM library_default_site')} \
+        if _exists(conn, 'library_default_site') else set()
+    out = []
+    for v, n in rows:
+        if not v or v in grouped or not n:
+            continue
+        to = _user_format(v)
+        if to and to != v:
+            out.append({'value': v, 'videos': n, 'to': to, 'merge': to in names})
+    targets = {r['to'] for r in out}
+    for v, n in rows:
+        if v and not n and v not in defaults and v not in targets:
+            out.append({'value': v, 'videos': 0, 'to': '', 'merge': False})
+    out.sort(key=lambda r: (-r['videos'], r['value'].lower()))
+    return out, sorted(names)
+
+
+def _apply_site_format(conn, rows, picked):
+    """picked: {value: new name}. Renames (merging into an existing site of that name) and removes
+    unused sites. -> (renamed, removed, videos moved)"""
+    by_value = {r['value']: r for r in rows}
+    renamed = removed = moved = 0
+    for value, new in picked.items():
+        r = by_value.get(value)
+        if not r:
+            continue
+        if not r['videos']:
+            removed += conn.execute(f'DELETE FROM video_site WHERE value = ? AND id NOT IN '
+                                    f'(SELECT {_fk(conn, "site")} FROM video_site_junction)', (value,)).rowcount
+            continue
+        new = _user_format(new or '')
+        if new and new != value:
+            moved += _merge_site_variants(conn, new, [value])
+            renamed += 1
+    return renamed, removed, moved
 
 
 def _value_id(conn, field, value):
@@ -859,15 +907,18 @@ def _merge_site_variants(conn, keep, variants):
     return moved
 
 
-def tag_cleanup_apply(conn, change_ids, sites, backup=True):
-    """Apply the ticked changes (ids from the preview) and site merges ({key: kept spelling})."""
+def tag_cleanup_apply(conn, change_ids, sites, backup=True, site_format=None):
+    """Apply the ticked changes (ids from the preview), site merges ({key: kept spelling}) and
+    site renames / removals ({value: new name})."""
     preview = tag_cleanup_preview(conn)
     wanted = set(change_ids or [])
     by_key = {s['key']: s for s in preview['sites']}
     picked_sites = {k: keep for k, keep in (sites or {}).items() if k in by_key
                     and keep in [v['value'] for v in by_key[k]['variants']] + [by_key[k]['keep']]}
     todo = [c for c in preview['changes'] if c['id'] in wanted]
-    if not todo and not picked_sites:
+    fmt_values = {r['value'] for r in preview['site_format']}
+    picked_format = {v: n for v, n in (site_format or {}).items() if v in fmt_values}
+    if not todo and not picked_sites and not picked_format:
         return {'success': True, 'applied': {}, 'backup': None}
     conn.commit()
     name = make_backup(conn) if backup else None
@@ -888,6 +939,10 @@ def tag_cleanup_apply(conn, change_ids, sites, backup=True):
             applied['site_videos'] = applied.get('site_videos', 0) + _merge_site_variants(
                 conn, keep, [v['value'] for v in by_key[k]['variants']])
             applied['sites'] = applied.get('sites', 0) + 1
+        if picked_format:
+            renamed, removed, moved = _apply_site_format(conn, preview['site_format'], picked_format)
+            applied.update(site_renamed=renamed, site_removed=removed,
+                           site_videos=applied.get('site_videos', 0) + moved)
         conn.commit()
     except Exception:
         conn.rollback()

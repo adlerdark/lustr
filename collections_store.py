@@ -20,7 +20,7 @@ KINDS = ('collection', 'smart')
 RULE_KEYS = ('library', 'query', 'tags', 'tags_exclude', 'sites', 'sites_exclude', 'favorites_only', 'length_filter',
              'sort_by', 'desc', 'hide_zero_length',
              'show_in', 'show_in_found')   # where a smart one is listed: names (may hold 'All Videos') / wherever its videos are
-MANUAL_SORTS = ('position', 'Recently Added', 'Title', 'Most Played', 'Last Played')
+MANUAL_SORTS = ('position', 'Recently Added', 'Title', 'Most Played', 'Last Played', 'Time Watched')
 
 
 class CollectionError(Exception):

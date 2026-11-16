@@ -467,18 +467,19 @@ def automation_settings_save(body: AutomationBody):
 class TagCleanupBody(BaseModel):
     ids: List[str] = []
     sites: Dict[str, str] = {}
+    site_format: Dict[str, str] = {}               # site -> new name (unused sites: removed)
 
 
 @router.get("/maintenance/tag-cleanup")
 def maintenance_tag_cleanup():
-    """Malformed values, nationality words stored as ethnicity, site spellings (read-only)."""
+    """Malformed values, nationality words stored as ethnicity, site spellings and format (read-only)."""
     return dm.tag_cleanup_preview(_conn())
 
 
 @router.post("/maintenance/tag-cleanup/apply")
 def maintenance_tag_cleanup_apply(body: TagCleanupBody):
     try:
-        return dm.tag_cleanup_apply(_conn(), body.ids, body.sites)
+        return dm.tag_cleanup_apply(_conn(), body.ids, body.sites, site_format=body.site_format)
     except Exception as e:
         return {'success': False, 'error': str(e)}
 

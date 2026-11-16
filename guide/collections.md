@@ -55,7 +55,7 @@ Hover over it for the libraries and how many videos are in each. The collection'
 Open a collection to change it:
 
 - **Edit**: its name and description. **Delete** removes the collection, not its videos.
-- The sort menu (hand-filled collections): **Order added**, **Title**, **Recently added**, **Most played**, **Last played** or **Time watched**. A smart collection uses the sort it was saved with.
+- The sort menu (hand-filled collections): **Order added**, **Title**, **Recently added**, **Most played**, **Last played** or **Time watched**. A smart collection uses the sort it was saved with. While one is open, the sort menu at the top changes its sort for now; **Save current filters** saves it, together with the filters in the sidebar.
 - **Show on Home**: the collection becomes a row on Home and on the library's **Recommended** tab.
 
 ## Playlists

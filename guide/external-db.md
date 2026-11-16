@@ -43,7 +43,9 @@ Before it starts, it shows how many videos there are, how many are already linke
 
 ## Sites
 
-**Settings → External DB → Site Linking** links your sites to StashDB studios. Matching is better when lustr knows them.
+**Settings → External DB → Site Linking** links your sites to StashDB studios and ThePornDB sites. Matching is better when lustr knows them. The **StashDB / ThePornDB** switch at the top picks which database the page shows; each has its own links and "Not on …" marks.
+
+- **Linking on one links the other**: when you link a site on one database (by hand or with Auto-link), lustr looks for it on the other too, by the linked studio's name first, and links it when one matches exactly. Otherwise it waits under **Needs a look** there.
 
 - **Library default sites**: a site every video in a library is from.
 - **Auto-link** (for the top 150, the top 300 or all of your sites not checked yet) links sites that match a studio exactly, or a network's parent studio. The rest are kept for review under **Needs a look (checked, not linked)**.

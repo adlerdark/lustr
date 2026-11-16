@@ -20,7 +20,7 @@ The **Overview** shows the state of the database: how many videos and files, del
 | **Performers with no videos** | Performers who appear in no video but still have a profile (photo, attributes, aliases, a StashDB link). Delete the ones you don't need. |
 | **Same performer, different spelling** | Names that differ only in capitals, dots, spaces, apostrophes or accents. **Merge** a group into one name, or mark it **Not the same**. |
 | **Gender check** | Performers whose gender or Male Cast mark doesn't fit the videos they're in. |
-| **Tag cleanup** | Malformed values, nationality words stored as ethnicities, and sites spelled several ways. Everything is ticked; untick what you want to keep, then apply. |
+| **Tag cleanup** | Malformed values, nationality words stored as ethnicities, sites spelled several ways, sites with capitals or spaces (renamed to lowercase with periods; you can edit the new name) and sites no video uses. Everything is ticked; untick what you want to keep, then apply. |
 | **Corrupt files** | Videos marked as corrupt. See [Corrupt files](corrupt.md). |
 | **Backups** | See below. |
 | **Problem report** | Everything needed to look into a problem, ready to attach to a GitHub issue. See [Problem report](#problem-report). |
